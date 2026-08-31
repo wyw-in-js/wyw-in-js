@@ -21,9 +21,10 @@ type ParsedOxc = {
 // 200 evicts under sustained pressure on large monorepos — the
 // removeUnusedAfterReplacement cleanup loop reparses on every iteration
 // (new content -> new key) and applyOxcProcessors reparses after extraction.
-// 1000 is still bounded (~50-100 MB worst case for an enormous build) and
+// 1000 evicted cross-file snippet entries once keys became filename-agnostic;
+// 4000 is still bounded (~200-400 MB worst case for an enormous build) and
 // keeps every entry hot across the actions for a single file.
-const MAX_PARSE_CACHE_ENTRIES = 1000;
+const MAX_PARSE_CACHE_ENTRIES = 4000;
 const parseCache = new Map<string, ParsedOxc>();
 const commentsByProgram = new WeakMap<Program, readonly Comment[]>();
 
@@ -36,11 +37,16 @@ const getJsxFallbackFilename = (filename: string): string | null => {
   return null;
 };
 
+// Keyed by astType, not filename: the parse depends only on the grammar and
+// the code, so identical per-candidate snippet programs
+// (`const __wyw_static_value = ...;`) and identical files share one entry
+// no matter which path asked. On a large monorepo this removes thousands of
+// snippet reparses per build.
 const makeCacheKey = (
   filename: string,
   code: string,
   sourceType: OxcSourceType
-): string => `${sourceType}\0${filename}\0${code}`;
+): string => `${sourceType}\0${getAstType(filename)}\0${code}`;
 
 const setCachedParse = (key: string, value: ParsedOxc): ParsedOxc => {
   parseCache.set(key, value);
@@ -63,6 +69,11 @@ export const parseOxcCached = (
   const cacheKey = makeCacheKey(filename, code, sourceType);
   const cached = parseCache.get(cacheKey);
   if (cached) {
+    // Refresh recency so insertion-order eviction behaves as LRU: hot entries
+    // (the current file's program, common snippets) must outlive one-shot
+    // content versions produced by the cleanup loops.
+    parseCache.delete(cacheKey);
+    parseCache.set(cacheKey, cached);
     const knownMeasurement = cached.pipelineMeasurement;
     const measurement = recordPipelineCachedParseHit(
       cached,
@@ -135,7 +146,7 @@ export const parseOxcCached = (
     throw new Error(fatalError.message);
   }
 
-  const cachedParse = setCachedParse(cacheKey, {
+  const value: ParsedOxc = {
     comments: parsed.comments,
     jsxFallback,
     module: {
@@ -143,7 +154,17 @@ export const parseOxcCached = (
     },
     pipelineMeasurement: undefined,
     program: parsed.program as Program,
-  });
+  };
+  if (parsed.module.hasModuleSyntax) {
+    // Module syntax pins 'unambiguous' to the module grammar, so both
+    // sourceType requests resolve to the same AST — publish it under both
+    // keys instead of parsing the same content twice.
+    const other: OxcSourceType =
+      sourceType === 'module' ? 'unambiguous' : 'module';
+    setCachedParse(makeCacheKey(filename, code, other), value);
+  }
+
+  const cachedParse = setCachedParse(cacheKey, value);
   const telemetryMeasurement = recordPipelineCachedParseMiss(
     filename,
     code,
