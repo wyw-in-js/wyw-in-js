@@ -1,4 +1,4 @@
-import { parseSync } from 'oxc-parser';
+import { parseSync, rawTransferSupported } from 'oxc-parser';
 import type { Comment, Program } from 'oxc-parser';
 
 import {
@@ -7,6 +7,27 @@ import {
 } from '../debug/pipelineTelemetry';
 
 type OxcSourceType = 'module' | 'unambiguous';
+
+type OxcParseOptions = Parameters<typeof parseSync>[2] & {
+  experimentalRawTransfer?: boolean;
+};
+
+// Raw transfer deserializes the AST from a shared buffer instead of a JSON
+// string. Same AST shape, but several times cheaper — JSON materialization
+// dominated parse cost in profiles of large builds.
+const useRawTransfer = rawTransferSupported();
+
+export const parseOxcSync = (
+  filename: string,
+  code: string,
+  options: OxcParseOptions
+): ReturnType<typeof parseSync> => {
+  const optionsWithTransfer: OxcParseOptions = {
+    ...options,
+    experimentalRawTransfer: useRawTransfer,
+  };
+  return parseSync(filename, code, optionsWithTransfer);
+};
 
 type ParsedOxc = {
   comments: Comment[];
@@ -90,9 +111,9 @@ export const parseOxcCached = (
   }
 
   const astType = getAstType(filename);
-  let parsed: ReturnType<typeof parseSync>;
+  let parsed: ReturnType<typeof parseOxcSync>;
   try {
-    parsed = parseSync(filename, code, {
+    parsed = parseOxcSync(filename, code, {
       astType,
       range: true,
       sourceType,
@@ -115,7 +136,7 @@ export const parseOxcCached = (
     // Some bundlers pass .js files with JSX to WyW before a later JSX transform.
     jsxFallback = true;
     try {
-      parsed = parseSync(jsxFallbackFilename, code, {
+      parsed = parseOxcSync(jsxFallbackFilename, code, {
         astType: getAstType(jsxFallbackFilename),
         range: true,
         sourceType,

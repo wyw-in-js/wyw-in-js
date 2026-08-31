@@ -1,8 +1,8 @@
+import { parseOxcSync } from '../utils/parseOxc';
 import { readFileSync } from 'fs';
 import { dirname, extname, isAbsolute } from 'path';
 import { createRequire } from 'module';
 
-import { parseSync } from 'oxc-parser';
 
 import type { Debugger, EvalRule, Evaluator } from '@wyw-in-js/shared';
 import { logger } from '@wyw-in-js/shared';
@@ -54,9 +54,9 @@ export function parseFile(
 
   const astType =
     filename.endsWith('.ts') || filename.endsWith('.tsx') ? 'ts' : 'js';
-  let parseResult: ReturnType<typeof parseSync>;
+  let parseResult: ReturnType<typeof parseOxcSync>;
   try {
-    parseResult = parseSync(filename, originalCode, {
+    parseResult = parseOxcSync(filename, originalCode, {
       astType,
       range: true,
       sourceType: 'module',

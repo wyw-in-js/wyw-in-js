@@ -1,5 +1,5 @@
 /* eslint-disable no-continue, @typescript-eslint/no-use-before-define */
-import { parseSync } from 'oxc-parser';
+import { parseOxcSync } from '../utils/parseOxc';
 import type {
   BindingPattern,
   ExportAllDeclaration,
@@ -427,9 +427,9 @@ const collectPassthroughReexports = (
 const parseProgram = (code: string, filename: string): Program => {
   const astType =
     filename.endsWith('.ts') || filename.endsWith('.tsx') ? 'ts' : 'js';
-  let parsed: ReturnType<typeof parseSync>;
+  let parsed: ReturnType<typeof parseOxcSync>;
   try {
-    parsed = parseSync(filename, code, {
+    parsed = parseOxcSync(filename, code, {
       astType,
       range: true,
       sourceType: 'module',
