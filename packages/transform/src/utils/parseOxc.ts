@@ -46,7 +46,12 @@ type ParsedOxc = {
 // 4000 is still bounded (~200-400 MB worst case for an enormous build) and
 // keeps every entry hot across the actions for a single file.
 const MAX_PARSE_CACHE_ENTRIES = 4000;
-const parseCache = new Map<string, ParsedOxc>();
+// Bucketed by (sourceType, astType) with the code string itself as the inner
+// key: building `${sourceType}\0${astType}\0${code}` allocated a whole-file
+// string per lookup (65k lookups per build in profiles) purely to feed the
+// map hash.
+const parseCache = new Map<string, Map<string, ParsedOxc>>();
+let parseCacheSize = 0;
 const commentsByProgram = new WeakMap<Program, readonly Comment[]>();
 
 const getAstType = (filename: string): 'js' | 'ts' =>
@@ -58,24 +63,46 @@ const getJsxFallbackFilename = (filename: string): string | null => {
   return null;
 };
 
-// Keyed by astType, not filename: the parse depends only on the grammar and
-// the code, so identical per-candidate snippet programs
+// Buckets are keyed by astType, not filename: the parse depends only on the
+// grammar and the code, so identical per-candidate snippet programs
 // (`const __wyw_static_value = ...;`) and identical files share one entry
 // no matter which path asked. On a large monorepo this removes thousands of
 // snippet reparses per build.
-const makeCacheKey = (
+const getParseCacheBucket = (
   filename: string,
-  code: string,
   sourceType: OxcSourceType
-): string => `${sourceType}\0${getAstType(filename)}\0${code}`;
+): Map<string, ParsedOxc> => {
+  const bucketKey = `${sourceType}\0${getAstType(filename)}`;
+  let bucket = parseCache.get(bucketKey);
+  if (!bucket) {
+    bucket = new Map();
+    parseCache.set(bucketKey, bucket);
+  }
+  return bucket;
+};
 
-const setCachedParse = (key: string, value: ParsedOxc): ParsedOxc => {
-  parseCache.set(key, value);
+const setCachedParse = (
+  bucket: Map<string, ParsedOxc>,
+  code: string,
+  value: ParsedOxc
+): ParsedOxc => {
+  if (!bucket.has(code)) {
+    parseCacheSize += 1;
+  }
+  bucket.set(code, value);
   commentsByProgram.set(value.program, value.comments);
-  if (parseCache.size > MAX_PARSE_CACHE_ENTRIES) {
-    const oldestKey = parseCache.keys().next().value;
-    if (oldestKey) {
-      parseCache.delete(oldestKey);
+  if (parseCacheSize > MAX_PARSE_CACHE_ENTRIES) {
+    // Evict the oldest entry of the largest bucket; buckets are few (≤4).
+    let largest: Map<string, ParsedOxc> | null = null;
+    for (const candidate of parseCache.values()) {
+      if (!largest || candidate.size > largest.size) {
+        largest = candidate;
+      }
+    }
+    const oldestCode = largest?.keys().next().value;
+    if (largest && oldestCode !== undefined) {
+      largest.delete(oldestCode);
+      parseCacheSize -= 1;
     }
   }
 
@@ -87,14 +114,14 @@ export const parseOxcCached = (
   code: string,
   sourceType: OxcSourceType
 ): ParsedOxc => {
-  const cacheKey = makeCacheKey(filename, code, sourceType);
-  const cached = parseCache.get(cacheKey);
+  const bucket = getParseCacheBucket(filename, sourceType);
+  const cached = bucket.get(code);
   if (cached) {
     // Refresh recency so insertion-order eviction behaves as LRU: hot entries
     // (the current file's program, common snippets) must outlive one-shot
     // content versions produced by the cleanup loops.
-    parseCache.delete(cacheKey);
-    parseCache.set(cacheKey, cached);
+    bucket.delete(code);
+    bucket.set(code, cached);
     const knownMeasurement = cached.pipelineMeasurement;
     const measurement = recordPipelineCachedParseHit(
       cached,
@@ -182,10 +209,10 @@ export const parseOxcCached = (
     // keys instead of parsing the same content twice.
     const other: OxcSourceType =
       sourceType === 'module' ? 'unambiguous' : 'module';
-    setCachedParse(makeCacheKey(filename, code, other), value);
+    setCachedParse(getParseCacheBucket(filename, other), code, value);
   }
 
-  const cachedParse = setCachedParse(cacheKey, value);
+  const cachedParse = setCachedParse(bucket, code, value);
   const telemetryMeasurement = recordPipelineCachedParseMiss(
     filename,
     code,
