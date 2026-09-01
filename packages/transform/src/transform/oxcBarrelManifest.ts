@@ -1,5 +1,4 @@
 /* eslint-disable no-continue, @typescript-eslint/no-use-before-define */
-import { parseOxcSync } from '../utils/parseOxc';
 import type {
   BindingPattern,
   ExportAllDeclaration,
@@ -14,6 +13,7 @@ import type {
 } from 'oxc-parser';
 
 import { recordPipelineUncachedParse } from '../debug/pipelineTelemetry';
+import { parseOxcSync } from '../utils/parseOxc';
 
 import type {
   BarrelManifestCacheEntry,

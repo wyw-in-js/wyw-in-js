@@ -1,6 +1,5 @@
 /* eslint-disable no-restricted-syntax */
 
-import { parseOxcSync } from './parseOxc';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
@@ -19,6 +18,8 @@ import type {
 } from 'oxc-parser';
 
 import { recordPipelineUncachedParse } from '../debug/pipelineTelemetry';
+
+import { parseOxcSync } from './parseOxc';
 
 type Replacement = {
   end: number;

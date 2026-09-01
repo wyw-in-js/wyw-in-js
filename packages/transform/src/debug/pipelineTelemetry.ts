@@ -1,6 +1,10 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
 import type { EventEmitter } from '../utils/EventEmitter';
+import {
+  getOxcParserLanguage,
+  type OxcParserLanguage,
+} from '../utils/oxcParserLanguage';
 import { serializePipelineTelemetryJSONl } from './pipelineTelemetry.jsonl';
 import {
   getCodeMeasurement,
@@ -390,35 +394,13 @@ export const recordPipelineDisposableRoot = (
   );
 };
 
-type PipelineParserLanguage = 'dts' | 'js' | 'jsx' | 'ts' | 'tsx';
-
 const PIPELINE_PARSER_LANGUAGE_INDEX = {
   js: 0,
   jsx: 1,
   ts: 2,
   tsx: 3,
   dts: 4,
-} as const satisfies Record<PipelineParserLanguage, number>;
-
-const getPipelineParserLanguage = (
-  filename: string
-): PipelineParserLanguage => {
-  if (filename.endsWith('.jsx')) return 'jsx';
-  if (filename.endsWith('.tsx')) return 'tsx';
-  const basenameStart =
-    Math.max(filename.lastIndexOf('/'), filename.lastIndexOf('\\')) + 1;
-  if (filename.endsWith('.ts')) {
-    return filename.lastIndexOf('.d.') > basenameStart ? 'dts' : 'ts';
-  }
-  if (filename.endsWith('.mts') || filename.endsWith('.cts')) {
-    const basenameLength = filename.length - basenameStart;
-    return basenameLength > 6 &&
-      (filename.endsWith('.d.mts') || filename.endsWith('.d.cts'))
-      ? 'dts'
-      : 'ts';
-  }
-  return 'js';
-};
+} as const satisfies Record<OxcParserLanguage, number>;
 
 const createPipelineParserKey = (
   sourceType: string,
@@ -426,7 +408,7 @@ const createPipelineParserKey = (
   astType: string,
   jsxFallbackAllowed: boolean
 ): number | string => {
-  const language = getPipelineParserLanguage(filename);
+  const language = getOxcParserLanguage(filename);
   if (
     (sourceType === 'module' || sourceType === 'unambiguous') &&
     (astType === 'js' || astType === 'ts')

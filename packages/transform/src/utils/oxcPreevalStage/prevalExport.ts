@@ -1,7 +1,5 @@
-import { parseOxcSync } from '../parseOxc';
-
-
 import { recordPipelineUncachedParse } from '../../debug/pipelineTelemetry';
+import { parseOxcSync } from '../parseOxc';
 
 const parseSourceType = (
   code: string,

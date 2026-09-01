@@ -5,6 +5,10 @@ import {
   recordPipelineCachedParseMiss,
   recordPipelineCachedParseHit,
 } from '../debug/pipelineTelemetry';
+import {
+  getOxcParserLanguage,
+  type OxcParserLanguage,
+} from './oxcParserLanguage';
 
 type OxcSourceType = 'module' | 'unambiguous';
 
@@ -12,9 +16,19 @@ type OxcParseOptions = Parameters<typeof parseSync>[2] & {
   experimentalRawTransfer?: boolean;
 };
 
-// Raw transfer deserializes the AST from a shared buffer instead of a JSON
-// string. Same AST shape, but several times cheaper — JSON materialization
-// dominated parse cost in profiles of large builds.
+export const isOxcRawTransferAstTypeCompatible = (
+  language: OxcParserLanguage,
+  astType: 'js' | 'ts' | undefined
+): boolean => {
+  if (astType === undefined) return true;
+
+  const languageAstType = language === 'js' || language === 'jsx' ? 'js' : 'ts';
+  return astType === languageAstType;
+};
+
+// Raw transfer deserializes the Program AST from a shared buffer instead of a
+// JSON string. JSON materialization dominated parse cost in large-build
+// profiles.
 const useRawTransfer = rawTransferSupported();
 
 export const parseOxcSync = (
@@ -22,9 +36,15 @@ export const parseOxcSync = (
   code: string,
   options: OxcParseOptions
 ): ReturnType<typeof parseSync> => {
+  const language = options.lang ?? getOxcParserLanguage(filename);
   const optionsWithTransfer: OxcParseOptions = {
     ...options,
-    experimentalRawTransfer: useRawTransfer,
+    // Oxc's raw and JSON deserializers currently disagree on node spans when
+    // a JS-shaped AST is requested for a TypeScript-family language. Preserve
+    // the established JSON representation for any mixed language/AST mode.
+    experimentalRawTransfer:
+      useRawTransfer &&
+      isOxcRawTransferAstTypeCompatible(language, options.astType),
   };
   return parseSync(filename, code, optionsWithTransfer);
 };
@@ -43,13 +63,12 @@ type ParsedOxc = {
 // removeUnusedAfterReplacement cleanup loop reparses on every iteration
 // (new content -> new key) and applyOxcProcessors reparses after extraction.
 // 1000 evicted cross-file snippet entries once keys became filename-agnostic;
-// 4000 is still bounded (~200-400 MB worst case for an enormous build) and
-// keeps every entry hot across the actions for a single file.
+// 4000 kept those entries hot in the measured build. This is a count bound;
+// retained bytes still depend on the source and AST sizes.
 const MAX_PARSE_CACHE_ENTRIES = 4000;
-// Bucketed by (sourceType, astType) with the code string itself as the inner
-// key: building `${sourceType}\0${astType}\0${code}` allocated a whole-file
-// string per lookup (65k lookups per build in profiles) purely to feed the
-// map hash.
+// Bucketed by parser semantics with the code string itself as the inner key:
+// building a key containing the code allocated a whole-file string per lookup
+// purely to feed the map hash.
 const parseCache = new Map<string, Map<string, ParsedOxc>>();
 let parseCacheSize = 0;
 const commentsByProgram = new WeakMap<Program, readonly Comment[]>();
@@ -63,16 +82,16 @@ const getJsxFallbackFilename = (filename: string): string | null => {
   return null;
 };
 
-// Buckets are keyed by astType, not filename: the parse depends only on the
-// grammar and the code, so identical per-candidate snippet programs
-// (`const __wyw_static_value = ...;`) and identical files share one entry
-// no matter which path asked. On a large monorepo this removes thousands of
-// snippet reparses per build.
+// The filename selects Oxc's language dialect independently of astType and
+// controls whether .js may fall back to JSX, so both semantics are part of the
+// bucket key. Paths with equivalent parser behavior still share entries.
 const getParseCacheBucket = (
   filename: string,
   sourceType: OxcSourceType
 ): Map<string, ParsedOxc> => {
-  const bucketKey = `${sourceType}\0${getAstType(filename)}`;
+  const bucketKey = `${sourceType}\0${getOxcParserLanguage(
+    filename
+  )}\0${getAstType(filename)}\0${getJsxFallbackFilename(filename) !== null}`;
   let bucket = parseCache.get(bucketKey);
   if (!bucket) {
     bucket = new Map();
@@ -92,7 +111,7 @@ const setCachedParse = (
   bucket.set(code, value);
   commentsByProgram.set(value.program, value.comments);
   if (parseCacheSize > MAX_PARSE_CACHE_ENTRIES) {
-    // Evict the oldest entry of the largest bucket; buckets are few (≤4).
+    // Evict the oldest entry of the largest bucket; the bucket set is small.
     let largest: Map<string, ParsedOxc> | null = null;
     for (const candidate of parseCache.values()) {
       if (!largest || candidate.size > largest.size) {
@@ -194,14 +213,17 @@ export const parseOxcCached = (
     throw new Error(fatalError.message);
   }
 
-  const value: ParsedOxc = {
+  const sharedValue = {
     comments: parsed.comments,
     jsxFallback,
     module: {
       hasModuleSyntax: parsed.module.hasModuleSyntax,
     },
-    pipelineMeasurement: undefined,
     program: parsed.program as Program,
+  };
+  const value: ParsedOxc = {
+    ...sharedValue,
+    pipelineMeasurement: undefined,
   };
   if (parsed.module.hasModuleSyntax) {
     // Module syntax pins 'unambiguous' to the module grammar, so both
@@ -209,7 +231,12 @@ export const parseOxcCached = (
     // keys instead of parsing the same content twice.
     const other: OxcSourceType =
       sourceType === 'module' ? 'unambiguous' : 'module';
-    setCachedParse(getParseCacheBucket(filename, other), code, value);
+    // Cache entries keep source-type-specific telemetry identity, while their
+    // immutable parse payload is shared.
+    setCachedParse(getParseCacheBucket(filename, other), code, {
+      ...sharedValue,
+      pipelineMeasurement: undefined,
+    });
   }
 
   const cachedParse = setCachedParse(bucket, code, value);

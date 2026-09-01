@@ -1,4 +1,3 @@
-import { parseOxcSync } from '../utils/parseOxc';
 import type {
   ExportNamedDeclaration,
   ImportDeclaration,
@@ -9,6 +8,7 @@ import type {
 } from 'oxc-parser';
 
 import { recordPipelineUncachedParse } from '../debug/pipelineTelemetry';
+import { parseOxcSync } from '../utils/parseOxc';
 
 const isNode = (value: unknown): value is Node =>
   !!value &&

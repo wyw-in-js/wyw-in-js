@@ -1,7 +1,7 @@
-import { parseSync } from 'oxc-parser';
 import type { Program } from 'oxc-parser';
 
 import { recordPipelineUncachedParse } from '../../debug/pipelineTelemetry';
+import { parseOxcSync } from '../../utils/parseOxc';
 
 export const parseRewrittenBarrel = (
   code: string,
@@ -9,9 +9,9 @@ export const parseRewrittenBarrel = (
 ): Program => {
   const astType =
     filename.endsWith('.ts') || filename.endsWith('.tsx') ? 'ts' : 'js';
-  let parsed: ReturnType<typeof parseSync>;
+  let parsed: ReturnType<typeof parseOxcSync>;
   try {
-    parsed = parseSync(filename, code, {
+    parsed = parseOxcSync(filename, code, {
       astType,
       range: true,
       sourceType: 'module',

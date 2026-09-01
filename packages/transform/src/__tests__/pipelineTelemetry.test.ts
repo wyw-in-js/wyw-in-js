@@ -719,6 +719,54 @@ describe('pipeline telemetry boundary', () => {
     expect(serialized).not.toContain(uncachedCode);
   });
 
+  it('attributes shared module-syntax cache entries to each requested source type', async () => {
+    const emitter = createEmitter();
+    const summaries: PipelineTelemetrySummary[] = [];
+    const unregister = registerPipelineTelemetryReporter(emitter, (summary) =>
+      summaries.push(summary)
+    );
+    const filename = '/project/pipeline-telemetry-shared-source-type.ts';
+    const code = 'export const sharedSourceType: number = 1;';
+
+    await runWithPipelineTelemetry(
+      emitter,
+      () => ({ filename }),
+      async () => {
+        parseOxcCached(filename, code, 'module');
+        parseOxcCached(filename, code, 'unambiguous');
+      }
+    );
+    unregister();
+
+    expect(summaries).toHaveLength(1);
+    expect(
+      summaries[0].parse.revisions.map(
+        ({ cacheHits, cacheMisses, parserAttempts, parserKey, requests }) => ({
+          cacheHits,
+          cacheMisses,
+          parserAttempts,
+          parserKey,
+          requests,
+        })
+      )
+    ).toEqual([
+      {
+        cacheHits: 0,
+        cacheMisses: 1,
+        parserAttempts: 1,
+        parserKey: 'oxc:module:ts:ts:r1:j0',
+        requests: 1,
+      },
+      {
+        cacheHits: 1,
+        cacheMisses: 0,
+        parserAttempts: 0,
+        parserKey: 'oxc:unambiguous:ts:ts:r1:j0',
+        requests: 1,
+      },
+    ]);
+  });
+
   it('derives zero attempts for a cached JSX hit warmed outside the root', async () => {
     const filename = '/project/pipeline-telemetry-warm-jsx.js';
     const code = 'export const warmElement = <span>ready</span>;';
