@@ -1,6 +1,6 @@
 {
   "name": "@wyw-in-js/transform",
-  "version": "2.5.0",
+  "version": "2.5.1",
   "type": "module",
   "dependencies": {
     "@jridgewell/remapping": "^2.3.5",
