@@ -44,9 +44,9 @@ describe('TransformCacheCollection: concurrent recovery isolation', () => {
 
     recover(cache, 'recovering.tsx');
 
-    expect(cache.getRecoveryError('recovering.tsx', versionBefore)).toMatchObject(
-      { name: 'UnknownDependencyGraphResetError' }
-    );
+    expect(
+      cache.getRecoveryError('recovering.tsx', versionBefore)
+    ).toMatchObject({ name: 'UnknownDependencyGraphResetError' });
     expect(cache.getRecoveryError('unrelated.tsx', versionBefore)).toBeNull();
   });
 

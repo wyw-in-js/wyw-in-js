@@ -86,9 +86,12 @@ it('keeps concurrent transforms alive when one file recovers', async () => {
     );
 
   try {
-    for (const f of files) {
-      await run(f);
-    }
+    // Warm the shared cache one file at a time, so the concurrent pass below
+    // starts from cached entrypoints rather than a cold build.
+    await files.reduce<Promise<unknown>>(
+      (previous, f) => previous.then(() => run(f)),
+      Promise.resolve()
+    );
 
     // A fail-closed recovery for an unrelated phantom file lands while six
     // transforms are in flight on the shared cache.

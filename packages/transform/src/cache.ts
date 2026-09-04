@@ -312,15 +312,14 @@ export class TransformCacheCollection<
     const ownsUnconvergedRecovery =
       token !== undefined && this.ownsPendingRecovery(token);
 
+    // Reading a file that a recovery reset is what makes a traversal stale. A
+    // traversal that read nothing a recovery touched keeps working -- that is
+    // what stops one file's reset from failing every concurrent transform.
     for (const [filename, recovery] of this.fileRecoveryErrors) {
-      if (recovery.version <= version) {
-        continue;
-      }
-
-      // Reading a file that a recovery reset is what makes a traversal stale.
-      // A traversal that read nothing a recovery touched keeps working -- that
-      // is what stops one file's reset from failing every concurrent transform.
-      if (ownsUnconvergedRecovery || visited.has(filename)) {
+      if (
+        recovery.version > version &&
+        (ownsUnconvergedRecovery || visited.has(filename))
+      ) {
         return recovery.error;
       }
     }
@@ -647,7 +646,7 @@ export class TransformCacheCollection<
       // generic staleness of the traversal it was retired with.
       throw this.pendingUnknownGraphs.has(filename)
         ? this.fileRecoveryErrors.get(filename)?.error ??
-          graphTraversalTokenError
+            graphTraversalTokenError
         : graphTraversalTokenError;
     }
 
