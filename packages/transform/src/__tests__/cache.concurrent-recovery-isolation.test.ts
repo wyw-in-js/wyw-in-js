@@ -79,13 +79,87 @@ describe('TransformCacheCollection: concurrent recovery isolation', () => {
     ).toMatchObject({ name: 'UnknownDependencyGraphResetError' });
   });
 
-  it('still clears cached entrypoints so the next check rebuilds them', () => {
+  it('evicts completed entrypoints', () => {
     const cache = new TransformCacheCollection<MockEntrypoint>();
+    cache.add('entrypoints', 'recovering.tsx', entrypoint('recovering.tsx'));
     cache.add('entrypoints', 'other.tsx', entrypoint('other.tsx'));
 
     recover(cache, 'recovering.tsx');
 
+    // Nothing reachable through an unknown graph can be trusted, and that
+    // closure cannot be enumerated, so every completed module is rebuilt.
+    expect(cache.get('entrypoints', 'recovering.tsx')).toBeUndefined();
     expect(cache.get('entrypoints', 'other.tsx')).toBeUndefined();
+  });
+
+  it('keeps the in-flight rebuild of the unknown dependency', () => {
+    const cache = new TransformCacheCollection<MockEntrypoint>();
+    const inFlight = entrypoint('theme.ts', {
+      isProcessing: true,
+      transformed: false,
+    });
+    cache.add('entrypoints', 'theme.ts', inFlight);
+    cache.add('exports', 'theme.ts', ['reset']);
+
+    recover(cache, 'component.tsx', ['theme.ts']);
+
+    // The rebuild that will complete the graph must survive; what was derived
+    // from the dependency before the graph was known must not.
+    expect(cache.get('entrypoints', 'theme.ts')).toBe(inFlight);
+    expect(cache.get('exports', 'theme.ts')).toBeUndefined();
+    expect(cache.consumeInvalidation('theme.ts')).toBe(true);
+  });
+
+  it('does not retire a traversal that never read the recovered file', () => {
+    const cache = new TransformCacheCollection<MockEntrypoint>();
+    const unrelated = cache.createGraphTraversalToken();
+    cache.add('entrypoints', 'other.tsx', entrypoint('other.tsx'));
+    cache.invalidateIfChangedWithDetails(
+      'other.tsx',
+      'export {}',
+      'loaded',
+      unrelated
+    );
+
+    recover(cache, 'recovering.tsx');
+
+    expect(cache.getGraphTraversalTokenError(unrelated)).toBeNull();
+  });
+
+  it('retires a traversal that read the recovered file', () => {
+    const cache = new TransformCacheCollection<MockEntrypoint>();
+    const reader = cache.createGraphTraversalToken();
+    cache.add('entrypoints', 'recovering.tsx', entrypoint('recovering.tsx'));
+    cache.invalidateIfChangedWithDetails(
+      'recovering.tsx',
+      'export {}',
+      'loaded',
+      reader
+    );
+
+    recover(cache, 'recovering.tsx');
+
+    expect(cache.getGraphTraversalTokenError(reader)).toMatchObject({
+      name: 'UnknownDependencyGraphResetError',
+    });
+  });
+
+  it('lets two files recover concurrently without retiring each other', () => {
+    const cache = new TransformCacheCollection<MockEntrypoint>();
+    const first = cache.createGraphTraversalToken();
+    cache.beginUnknownGraphRecovery(
+      'a.tsx',
+      new Set(['theme.ts']),
+      'export const a = 1;',
+      first
+    );
+
+    recover(cache, 'b.tsx', ['theme.ts']);
+
+    expect(cache.getGraphTraversalTokenError(first)).toBeNull();
+    expect(
+      cache.getRecoveryError('a.tsx', cache.getLifecycleVersion(), first)
+    ).toBeNull();
   });
 
   it('forgets recovery errors when the cache namespace changes', () => {
@@ -143,6 +217,38 @@ describe('TransformCacheCollection: loader content at unchanged mtime', () => {
       true
     );
     expect(cache.get('entrypoints', leaf)).toBeUndefined();
+  });
+
+  it('keeps the graphs of evicted modules known across a recovery', () => {
+    const cache = new TransformCacheCollection<MockEntrypoint>();
+    mockedStatSync.mockReturnValue({ mtimeMs: 500 } as fs.Stats);
+    mockedReadFileSync.mockReturnValue('export const c = "red";');
+
+    cache.checkFreshness(leaf, leaf);
+    cache.add('entrypoints', leaf, entrypoint(leaf));
+    cache.add(
+      'entrypoints',
+      parent,
+      entrypoint(parent, {
+        initialCode: parentCode,
+        dependencies: new Map([['./leaf.js', { resolved: leaf }]]),
+      })
+    );
+
+    cache.beginUnknownGraphRecovery(
+      'unrelated.tsx',
+      new Set(['missing.linaria.ts']),
+      'export const a = 1;',
+      cache.createGraphTraversalToken()
+    );
+
+    // Both modules were evicted, but their snapshots survived: the parent's
+    // graph is still verifiable, so its rebuild does not reset in turn.
+    expect(cache.get('entrypoints', parent)).toBeUndefined();
+    expect(cache.get('entrypoints', leaf)).toBeUndefined();
+    expect(
+      cache.invalidateIfChangedWithDetails(parent, parentCode, 'loaded')
+    ).toEqual({ changed: false, unknownDependencyGraphs: new Set() });
   });
 
   it('detects a changed dependency behind an unchanged mtime', () => {

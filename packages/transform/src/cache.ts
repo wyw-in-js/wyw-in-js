@@ -70,9 +70,8 @@ interface IGraphTraversalTokenOwner {
   getLifecycleVersion(): number;
   getScopedRecoveryError(
     version: number,
-    visited: ReadonlySet<string>,
-    token?: object
-  ): Error | null | undefined;
+    visited: ReadonlySet<string>
+  ): Error | undefined;
 }
 
 const graphTraversalTokenStates = new WeakMap<
@@ -274,68 +273,36 @@ export class TransformCacheCollection<
 
     const scopedError = owner.getScopedRecoveryError(
       state.version,
-      state.visited,
-      token
+      state.visited
     );
-    // A traversal that never read a file with an unconverged recovery kept
-    // reading state no recovery invalidated, so it stays usable: a concurrent
-    // transform on a shared cache must not fail for another file's incomplete
-    // graph.
+    // A traversal that never read a file a recovery reset kept reading state
+    // no recovery invalidated, so it stays usable: a concurrent transform on a
+    // shared cache must not fail for another file's incomplete graph.
     if (scopedError === undefined) {
       return null;
     }
 
-    return (
-      owner.getLifecycleError(state.version) ??
-      scopedError ??
-      Object.assign(
-        new Error(
-          '[wyw-in-js] Dependency-graph traversal outlived its cache lifecycle.'
-        ),
-        { name: 'StaleDependencyGraphTraversalError' }
-      )
-    );
+    return owner.getLifecycleError(state.version) ?? scopedError;
   }
 
   /**
-   * How a recovery since `version` affects a traversal that read `visited`.
-   * `undefined` means no recovery reached it; an `Error` is the recovery to
-   * report; `null` means it was reached by a recovery with no error to name.
+   * The recovery that retired a traversal from `version` which read `visited`,
+   * or `undefined` while no recovery has reset anything it read. A recovery
+   * resets only its own file, so a traversal is stale exactly when that file
+   * is among the ones it read; unrelated recoveries leave it usable.
    */
   public getScopedRecoveryError(
     version: number,
-    visited: ReadonlySet<string>,
-    token?: object
-  ): Error | null | undefined {
-    // A traversal that opened a recovery of its own can no longer complete the
-    // graph it was assembling once a later recovery clears the cache under it.
-    const ownsUnconvergedRecovery =
-      token !== undefined && this.ownsPendingRecovery(token);
-
-    // Reading a file that a recovery reset is what makes a traversal stale. A
-    // traversal that read nothing a recovery touched keeps working -- that is
-    // what stops one file's reset from failing every concurrent transform.
+    visited: ReadonlySet<string>
+  ): Error | undefined {
     for (const [filename, recovery] of this.fileRecoveryErrors) {
-      if (
-        recovery.version > version &&
-        (ownsUnconvergedRecovery || visited.has(filename))
-      ) {
+      if (recovery.version > version && visited.has(filename)) {
         return recovery.error;
       }
     }
 
     // A global reset carries no subject, so it retires every traversal.
     return this.lifecycleError ?? undefined;
-  }
-
-  private ownsPendingRecovery(token: object): boolean {
-    for (const pending of this.pendingUnknownGraphs.values()) {
-      if (pending.recoveryToken === token) {
-        return true;
-      }
-    }
-
-    return false;
   }
 
   public beginUnknownGraphRecovery(
@@ -356,7 +323,7 @@ export class TransformCacheCollection<
       }
     );
 
-    this.beginFailClosedRecovery(error, filename);
+    this.beginFailClosedRecovery(error, filename, unknownDependencies);
     graphTraversalTokenStates.set(recoveryToken, {
       owner: this,
       version: this.lifecycleVersion,
@@ -388,22 +355,59 @@ export class TransformCacheCollection<
     this.beginFailClosedRecovery(error, filename);
   }
 
-  private beginFailClosedRecovery(error: Error, subject?: string): void {
-    const pendingUnknownGraphs = new Map(this.pendingUnknownGraphs);
-    const { resetVersion } = this;
+  private beginFailClosedRecovery(
+    error: Error,
+    subject?: string,
+    unknownDependencies: ReadonlySet<string> = new Set()
+  ): void {
+    // The version bump also retires the eval runner's semantic session, so a
+    // warm evaluated module can never hide the graph this recovery is about.
     this.lifecycleVersion += 1;
-    // A recovery is triggered by one file's incomplete graph. Poison only that
-    // file: an unrelated transform running concurrently on the same shared
-    // cache rebuilds from the cleared state instead of inheriting an error
-    // about a file it never referenced.
+
     if (subject === undefined) {
       this.lifecycleError = error;
-    } else {
-      this.fileRecoveryErrors.set(subject, {
-        error,
-        version: this.lifecycleVersion,
-      });
+      this.resetLifecycle();
+      return;
     }
+
+    // An unknown graph means nothing reachable through it can be trusted, and
+    // that closure cannot be enumerated: a completed module two hops behind the
+    // unknown dependency may be reused by an evaluated-entrypoint fast path
+    // that never re-reads disk. So every completed entrypoint goes, as before.
+    // What stays is what a full clear destroyed for no gain: the in-flight
+    // rebuilds (the unknown dependency's own rebuild is the one thing that can
+    // complete the graph; evicting it left a once-published module without a
+    // graph, so every later check reset again), the dependency snapshots that
+    // keep evicted graphs known, and the content hashes that let the next read
+    // detect a change instead of merely re-seeding.
+    this.fileRecoveryErrors.set(subject, {
+      error,
+      version: this.lifecycleVersion,
+    });
+    for (const [key, entrypoint] of this.entrypoints) {
+      if (!entrypoint.isProcessing) {
+        this.invalidate('entrypoints', this.unsaltedKey(key));
+      }
+    }
+    this.clear('exports');
+    this.clear('barrelManifests');
+    this.invalidateForFile(subject);
+    for (const dependency of unknownDependencies) {
+      this.markInvalidated(dependency);
+    }
+  }
+
+  private unsaltedKey(cacheKey: string): string {
+    if (!this.keySalt) {
+      return cacheKey;
+    }
+
+    return cacheKey.slice(0, -(this.keySalt.length + '::'.length));
+  }
+
+  private resetLifecycle(): void {
+    const pendingUnknownGraphs = new Map(this.pendingUnknownGraphs);
+    const { resetVersion } = this;
     this.clear('all');
     // This is an internal recovery attempt, not an explicit configuration or
     // user cache reset. Preserve the supersede budget across retries so a
@@ -583,7 +587,10 @@ export class TransformCacheCollection<
     cacheNames.forEach((cacheName) => {
       this.invalidate(cacheName, filename);
     });
+    this.markInvalidated(filename);
+  }
 
+  private markInvalidated(filename: string): void {
     const key = stripQueryAndHash(filename);
     const version = this.invalidatedFiles.get(key) ?? 0;
     this.invalidatedFiles.set(key, version + 1);
@@ -1086,10 +1093,12 @@ export class TransformCacheCollection<
       return false;
     }
 
+    // Tolerance follows the same rule as retirement: a traversal keeps it until
+    // a recovery resets a file it read, not until any recovery happens.
     const tokenState = graphTraversalTokenStates.get(graphTraversalToken);
     if (
       tokenState?.owner !== this ||
-      tokenState.version !== this.lifecycleVersion
+      this.getGraphTraversalTokenError(graphTraversalToken) !== null
     ) {
       return false;
     }
