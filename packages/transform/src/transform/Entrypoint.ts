@@ -227,6 +227,8 @@ export class Entrypoint extends BaseEntrypoint {
 
   #isProcessing = false;
 
+  #processingStarted = false;
+
   #invalidationError: Error | null = null;
 
   readonly #cacheLifecycleVersion: number;
@@ -336,6 +338,15 @@ export class Entrypoint extends BaseEntrypoint {
 
   public get isProcessing(): boolean {
     return this.#isProcessing;
+  }
+
+  /**
+   * Whether processEntrypoint has ever started on this generation. Stays true
+   * after processing ends. False for an analysis root that only resolved
+   * imports (static preeval, barrel rewriting) and was never processed.
+   */
+  public get processingStarted(): boolean {
+    return this.#processingStarted;
   }
 
   private get invalidationError(): Error | null {
@@ -488,6 +499,20 @@ export class Entrypoint extends BaseEntrypoint {
       return ['cached', cached];
     }
 
+    // A root without bundler code (an analysis root, on-demand eval
+    // preparation) targets a file the bundler may already have handed over.
+    // loadAndParse re-parses that loaded code instead of the bytes on disk, so
+    // the new generation must carry it as loaded code as well: hashed as the
+    // disk content it would report a change, evict the cached generation and
+    // forget its dependency snapshot on every such root.
+    const reusableEntrypoint =
+      loadedCode === undefined ? cache.get('entrypoints', name) : undefined;
+    const entrypointCode =
+      loadedCode ??
+      (typeof reusableEntrypoint?.initialCode === 'string'
+        ? reusableEntrypoint.initialCode
+        : undefined);
+
     const exports = recoveredFromUnknownGraph ? undefined : cached?.exports;
     const evaluatedOnly =
       changed || recoveredFromUnknownGraph ? [] : cached?.evaluatedOnly ?? [];
@@ -517,7 +542,7 @@ export class Entrypoint extends BaseEntrypoint {
       const reusedEntrypoint = new Entrypoint(
         services,
         parent ? [parent] : [],
-        loadedCode,
+        entrypointCode,
         name,
         mergedOnly,
         exports,
@@ -628,7 +653,7 @@ export class Entrypoint extends BaseEntrypoint {
     const newEntrypoint = new Entrypoint(
       services,
       parent ? [parent] : [],
-      loadedCode,
+      entrypointCode,
       name,
       mergedOnly,
       exports,
@@ -756,6 +781,7 @@ export class Entrypoint extends BaseEntrypoint {
 
   public beginProcessing() {
     this.#isProcessing = true;
+    this.#processingStarted = true;
     if (!this.#processingPromise) {
       this.#processingPromise = new Promise<void>((resolve) => {
         this.#resolveProcessing = resolve;

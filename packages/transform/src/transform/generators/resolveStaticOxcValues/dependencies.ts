@@ -2,6 +2,7 @@
 
 import { Entrypoint } from '../../Entrypoint';
 import type { IEntrypointDependency } from '../../Entrypoint.types';
+import { isAborted } from '../../actions/AbortError';
 import type { ITransformAction, SyncScenarioFor } from '../../types';
 import { getWeakCacheMap } from './cache';
 
@@ -30,7 +31,7 @@ export function* resolveDependency(
   source: string,
   imported: string
 ): SyncScenarioFor<IEntrypointDependency | null> {
-  const entrypoint =
+  let entrypoint =
     importer === action.entrypoint.name
       ? action.entrypoint
       : Entrypoint.createRoot(
@@ -41,10 +42,32 @@ export function* resolveDependency(
           { graphTraversalToken: action.entrypoint.graphTraversalToken }
         );
   const imports = new Map([[source, [imported]]]);
-  const [resolved] = yield* action.getNext('resolveImports', entrypoint, {
-    imports,
-    phase: 'initial',
-  });
+  let resolved: IEntrypointDependency | undefined;
+  for (;;) {
+    try {
+      [resolved] = yield* action.getNext('resolveImports', entrypoint, {
+        imports,
+        phase: 'initial',
+      });
+      break;
+    } catch (e) {
+      // The analysis root for another file is superseded whenever a concurrent
+      // transform requests that file with a wider `only`. resolveImports then
+      // aborts for it, but nothing in this pipeline is superseded: the abort
+      // handlers of processEntrypoint and workflow only restart their own
+      // entrypoint, so the error would fail this transform. Import resolution
+      // does not depend on `only`; continue on the superseding generation.
+      const successor =
+        entrypoint !== action.entrypoint && isAborted(e)
+          ? entrypoint.supersededWith
+          : null;
+      if (!successor) {
+        throw e;
+      }
+
+      entrypoint = successor;
+    }
+  }
 
   // Non-relative sources (package names, aliases) can still be importer-
   // dependent because of nested packages, tsconfig boundaries, and bundler
