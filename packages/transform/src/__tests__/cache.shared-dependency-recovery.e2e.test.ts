@@ -40,10 +40,9 @@ const resolveWithExtensions = (candidate: string) => {
 // The shape from #422: a theme module that static preeval reads from nearly
 // every component is itself a root the bundler is still processing. A cached
 // component re-requested while the theme is in flight may find the theme's
-// graph unknown and recover. A recovery that cleared the whole cache evicted the
-// in-flight theme too, so the theme never got a dependency snapshot, every later
-// re-request found it unknown again, and the build never converged.
-it('converges once the in-flight shared dependency completes', async () => {
+// graph unknown and recover. Transactional recovery retires that attempt, so
+// its top-level transform must restart cleanly and publish a complete graph.
+it('converges after retrying an in-flight shared dependency', async () => {
   // The eval runner reports real paths; keep the transform side on them too.
   const root = fs.realpathSync(
     fs.mkdtempSync(path.join(os.tmpdir(), 'wyw-shared-dep-'))
@@ -159,10 +158,10 @@ it('converges once the in-flight shared dependency completes', async () => {
       versionBeforeRecovery + 1
     );
 
-    // The theme's in-flight rebuild must have survived that recovery: once it
-    // completes it publishes its dependency snapshot and the graph is known.
-    // The bundler transforms the theme's own dependency as well; a module the
-    // eval runner loaded but no loader ever published stays fail-closed.
+    // Releasing the retired attempt lets its top-level transform observe the
+    // epoch change, restart, and publish a complete dependency snapshot. The
+    // bundler transforms the theme's own dependency as well; a module the eval
+    // runner loaded but no loader ever published stays fail-closed.
     unblockTheme.resolve();
     const [themeResult] = await Promise.all([themeTransform, run(paletteFile)]);
     expect(themeResult.code).toContain('margin: 0');

@@ -39,6 +39,19 @@ type RollupPluginOptions = {
   sourceMap?: boolean;
 } & Partial<PluginOptions>;
 
+let rollupGraphScopeId = 0;
+const rollupGraphScopeKeys = new WeakMap<PluginContext['resolve'], string>();
+
+const getRollupGraphScopeKey = (ctx: PluginContext): string => {
+  const cached = rollupGraphScopeKeys.get(ctx.resolve);
+  if (cached) return cached;
+
+  rollupGraphScopeId += 1;
+  const key = `rollup:${rollupGraphScopeId}`;
+  rollupGraphScopeKeys.set(ctx.resolve, key);
+  return key;
+};
+
 export default function wywInJS({
   cssFilename,
   exclude,
@@ -166,10 +179,13 @@ export default function wywInJS({
         if (!filter(id) || id in cssLookup) return;
 
         const log = logger.extend('rollup').extend(getFileIdx(id));
+        const rollupGraphScopeKey = getRollupGraphScopeKey(this);
 
         log('init %s', id);
 
         const transformServices = {
+          asyncResolveKey: rollupGraphScopeKey,
+          loadDependencyCodeKey: rollupGraphScopeKey,
           options: {
             filename: id,
             pluginOptions: rest,

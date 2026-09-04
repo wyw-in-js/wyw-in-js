@@ -1,3 +1,4 @@
+/* eslint-disable no-await-in-loop, no-continue */
 /**
  * This file exposes sync and async transform functions that:
  * - parse the passed code to AST
@@ -9,10 +10,15 @@
  */
 
 import { isFeatureEnabled } from '@wyw-in-js/shared';
+import { AsyncLocalStorage } from 'node:async_hooks';
 
 import type { PartialOptions } from './transform/helpers/loadWywOptions';
 import { loadWywOptions } from './transform/helpers/loadWywOptions';
-import { TransformCacheCollection } from './cache';
+import {
+  CacheKeySaltBusyError,
+  TransformCacheCollection,
+  type TransformCacheEpoch,
+} from './cache';
 import {
   createActionContext,
   disposeActionContext,
@@ -22,7 +28,9 @@ import { asyncActionRunner } from './transform/actions/actionRunner';
 import { baseHandlers } from './transform/generators';
 import { withDefaultServices } from './transform/helpers/withDefaultServices';
 import type { Handlers, Services } from './transform/types';
-import { configureEvalSession } from './transform/evalSession';
+import { configureEvalSession, getEvalCacheKey } from './transform/evalSession';
+import { isCacheEpochAbortedError } from './transform/actions/CacheEpochAbortedError';
+import { CacheRecoveryConvergenceError } from './transform/actions/CacheRecoveryConvergenceError';
 import type { Result } from './types';
 import {
   hasPipelineTelemetryReporter,
@@ -32,7 +40,7 @@ import {
   runWithPipelineTelemetry,
 } from './debug/pipelineTelemetry';
 
-type PartialServices = Partial<Omit<Services, 'options'>> & {
+type PartialServices = Partial<Omit<Services, 'cacheEpoch' | 'options'>> & {
   options: Omit<Services['options'], 'pluginOptions'> & {
     pluginOptions?: PartialOptions;
   };
@@ -40,39 +48,43 @@ type PartialServices = Partial<Omit<Services, 'options'>> & {
 
 type AllHandlers<TMode extends 'async' | 'sync'> = Handlers<TMode>;
 
-const executeTransform = async (
-  partialServices: PartialServices,
-  originalCode: string,
-  asyncResolve: (
-    what: string,
-    importer: string,
-    stack: string[]
-  ) => Promise<string | null>,
-  customHandlers: Partial<AllHandlers<'sync'>>
-): Promise<Result> => {
-  const { options: partialOptions } = partialServices;
-  const pluginOptions = loadWywOptions(partialOptions.pluginOptions);
-  const services = withDefaultServices({
-    ...partialServices,
-    options: {
-      ...partialOptions,
-      pluginOptions,
-    },
-  });
-  const { options } = services;
+const MAX_CACHE_RECOVERY_RETRIES = 3;
 
-  if (
-    !isFeatureEnabled(pluginOptions.features, 'globalCache', options.filename)
-  ) {
-    // If global cache is disabled, we need to create a new cache for each file
-    services.cache = new TransformCacheCollection();
+interface ActiveCacheKeySaltLease {
+  active: boolean;
+  cacheOwner: WeakRef<TransformCacheEpoch['owner']>;
+  keySalt: string;
+  parent: ActiveCacheKeySaltLease | undefined;
+}
+
+const activeCacheKeySaltLeases =
+  new AsyncLocalStorage<ActiveCacheKeySaltLease>();
+
+const findActiveCacheKeySaltLease = (
+  lease: ActiveCacheKeySaltLease | undefined,
+  cacheOwner?: TransformCacheEpoch['owner']
+): ActiveCacheKeySaltLease | undefined => {
+  for (let current = lease; current; current = current.parent) {
+    const currentOwner = current.cacheOwner.deref();
+    if (
+      current.active &&
+      currentOwner &&
+      (cacheOwner === undefined || currentOwner === cacheOwner)
+    ) {
+      return current;
+    }
   }
 
-  const resolveImports = configureEvalSession(
-    services,
-    pluginOptions,
-    asyncResolve
-  );
+  return undefined;
+};
+
+const executeTransformAttempt = async (
+  services: Services,
+  originalCode: string,
+  resolveImports: ReturnType<typeof configureEvalSession>,
+  customHandlers: Partial<AllHandlers<'sync'>>
+): Promise<Result> => {
+  const { options } = services;
 
   /*
    * This method can be run simultaneously for multiple files.
@@ -90,6 +102,7 @@ const executeTransform = async (
   );
 
   if (entrypoint.ignored) {
+    entrypoint.assertCurrentCacheEpoch();
     markPipelineRootStatus('ignored');
     return {
       code: originalCode,
@@ -116,18 +129,132 @@ const executeTransform = async (
       resolveImports,
     });
 
+    entrypoint.assertCurrentCacheEpoch();
     entrypoint.log('%s is ready', entrypoint.name);
 
     return result;
-  } catch (err) {
-    entrypoint.log('Unhandled error %O', err);
+  } finally {
+    disposeActionContext(actionContext);
+  }
+};
 
+const executeTransform = async (
+  partialServices: PartialServices,
+  originalCode: string,
+  asyncResolve: (
+    what: string,
+    importer: string,
+    stack: string[]
+  ) => Promise<string | null>,
+  customHandlers: Partial<AllHandlers<'sync'>>
+): Promise<Result> => {
+  const { options: partialOptions } = partialServices;
+  const pluginOptions = loadWywOptions(partialOptions.pluginOptions);
+  const options = { ...partialOptions, pluginOptions };
+  const configuredCache = isFeatureEnabled(
+    pluginOptions.features,
+    'globalCache',
+    options.filename
+  )
+    ? partialServices.cache ?? new TransformCacheCollection()
+    : new TransformCacheCollection();
+  const inheritedLeases = activeCacheKeySaltLeases.getStore();
+  const parentLease = findActiveCacheKeySaltLease(inheritedLeases);
+  const configuredCacheOwner = configuredCache.getCurrentEpoch().owner;
+  const inheritedCacheLease = findActiveCacheKeySaltLease(
+    inheritedLeases,
+    configuredCacheOwner
+  );
+  const evalCacheKey = getEvalCacheKey(
+    pluginOptions,
+    partialServices.asyncResolveKey,
+    asyncResolve,
+    partialServices.loadDependencyCode,
+    options.root,
+    partialServices.loadDependencyCodeKey
+  );
+  let releaseKeySalt: (() => void) | undefined;
+  let activeLease: ActiveCacheKeySaltLease | undefined;
+
+  try {
+    if (parentLease) {
+      // A bundler may recursively invoke transform() while its parent awaits
+      // dependency loading. Waiting for any lease here can form an ABBA cycle.
+      // The exact same cache/key session may join its ancestor; everything
+      // else fails closed so adapters cannot silently switch cache semantics.
+      const nestedRelease = configuredCache.tryAcquireKeySalt(
+        evalCacheKey,
+        inheritedCacheLease?.keySalt === evalCacheKey
+      );
+      if (!nestedRelease) {
+        throw new CacheKeySaltBusyError();
+      }
+      releaseKeySalt = nestedRelease;
+    } else {
+      releaseKeySalt = await configuredCache.acquireKeySalt(evalCacheKey);
+    }
+
+    const cache = configuredCache;
+    const cacheOwner = cache.getCurrentEpoch().owner;
+    activeLease = {
+      active: true,
+      cacheOwner: new WeakRef(cacheOwner),
+      keySalt: evalCacheKey,
+      parent: inheritedLeases,
+    };
+
+    return await activeCacheKeySaltLeases.run(activeLease, async () => {
+      const retriedEpochs = new Set<number>();
+
+      for (;;) {
+        try {
+          const cacheEpoch = await cache.acquireReadyEpoch();
+          const services = withDefaultServices({
+            ...partialServices,
+            cache,
+            cacheEpoch,
+            options,
+          });
+          const resolveImports = configureEvalSession(
+            services,
+            pluginOptions,
+            asyncResolve,
+            evalCacheKey
+          );
+
+          return await executeTransformAttempt(
+            services,
+            originalCode,
+            resolveImports,
+            customHandlers
+          );
+        } catch (error) {
+          if (
+            isCacheEpochAbortedError(error) &&
+            !retriedEpochs.has(error.toEpoch) &&
+            retriedEpochs.size < MAX_CACHE_RECOVERY_RETRIES
+          ) {
+            retriedEpochs.add(error.toEpoch);
+            continue;
+          }
+
+          throw isCacheEpochAbortedError(error)
+            ? new CacheRecoveryConvergenceError(
+                options.filename,
+                retriedEpochs.size,
+                error
+              )
+            : error;
+        }
+      }
+    });
+  } catch (error) {
     if (
       isFeatureEnabled(pluginOptions.features, 'softErrors', options.filename)
     ) {
       markPipelineRootStatus('soft-error');
       // eslint-disable-next-line no-console
-      console.error(`Error during transform of ${entrypoint.name}:`, err);
+      console.error(`Error during transform of ${options.filename}:`, error);
 
       return {
         code: originalCode,
@@ -135,9 +262,12 @@ const executeTransform = async (
       };
     }
 
-    throw err;
+    throw error;
   } finally {
-    disposeActionContext(actionContext);
+    if (activeLease) {
+      activeLease.active = false;
+    }
+    releaseKeySalt?.();
   }
 };
 

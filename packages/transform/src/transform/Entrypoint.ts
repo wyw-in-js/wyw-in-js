@@ -229,8 +229,6 @@ export class Entrypoint extends BaseEntrypoint {
 
   #invalidationError: Error | null = null;
 
-  readonly #cacheLifecycleVersion: number;
-
   #pendingOnly: string[] | null = null;
 
   #preevalResult: IPreevalResult | null = null;
@@ -266,6 +264,8 @@ export class Entrypoint extends BaseEntrypoint {
     private readonly skipCacheInvalidation = false,
     private readonly unknownGraphTraversalToken: object = {}
   ) {
+    const cacheEpoch = services.cacheEpoch ?? services.cache.getCurrentEpoch();
+    services.cache.assertEpoch(cacheEpoch);
     super(
       services,
       evaluatedOnly,
@@ -278,8 +278,6 @@ export class Entrypoint extends BaseEntrypoint {
       invalidationDependencies,
       invalidateOnDependencyChange
     );
-
-    this.#cacheLifecycleVersion = services.cache.getLifecycleVersion();
 
     this.loadedAndParsed =
       loadedAndParsed ??
@@ -341,12 +339,7 @@ export class Entrypoint extends BaseEntrypoint {
   private get invalidationError(): Error | null {
     return (
       this.#invalidationError ??
-      this.services.cache.getLifecycleError(this.#cacheLifecycleVersion) ??
-      this.services.cache.getRecoveryError(
-        this.name,
-        this.#cacheLifecycleVersion,
-        this.unknownGraphTraversalToken
-      ) ??
+      this.cacheEpoch.owner.getEpochError(this.cacheEpoch) ??
       this.services.cache.getGraphTraversalTokenError(
         this.unknownGraphTraversalToken
       ) ??
@@ -356,11 +349,21 @@ export class Entrypoint extends BaseEntrypoint {
   }
 
   public get cacheLifecycleVersion(): number {
-    return this.#cacheLifecycleVersion;
+    return this.cacheEpoch.version;
   }
 
   public get graphTraversalToken(): object {
     return this.unknownGraphTraversalToken;
+  }
+
+  public assertCurrentCacheEpoch(): void {
+    this.cacheEpoch.owner.assertEpoch(this.cacheEpoch);
+    const traversalError = this.services.cache.getGraphTraversalTokenError(
+      this.unknownGraphTraversalToken
+    );
+    if (traversalError) {
+      throw traversalError;
+    }
   }
 
   public static createRoot(
@@ -418,7 +421,7 @@ export class Entrypoint extends BaseEntrypoint {
       );
 
       if (status !== 'cached') {
-        cache.add('entrypoints', name, entrypoint);
+        cache.publish(entrypoint.cacheEpoch, 'entrypoints', name, entrypoint);
       }
 
       return status === 'loop' ? 'loop' : entrypoint;
@@ -434,9 +437,11 @@ export class Entrypoint extends BaseEntrypoint {
     options: CreateEntrypointOptions
   ): ['loop' | 'created' | 'cached', Entrypoint] {
     const { cache } = services;
+    const cacheEpoch = services.cacheEpoch ?? cache.getCurrentEpoch();
+    cache.assertEpoch(cacheEpoch);
 
     const cached = cache.get('entrypoints', name);
-    let graphTraversalToken =
+    const graphTraversalToken =
       options.graphTraversalToken ?? cache.createGraphTraversalToken();
     let changed = false;
     let currentCode = loadedCode;
@@ -447,7 +452,8 @@ export class Entrypoint extends BaseEntrypoint {
           name,
           loadedCode,
           'loaded',
-          options.graphTraversalToken
+          options.graphTraversalToken,
+          cacheEpoch
         ));
     } else {
       try {
@@ -462,7 +468,8 @@ export class Entrypoint extends BaseEntrypoint {
             name,
             currentCode,
             'fs',
-            options.graphTraversalToken
+            options.graphTraversalToken,
+            cacheEpoch
           ));
       }
     }
@@ -474,19 +481,17 @@ export class Entrypoint extends BaseEntrypoint {
 
     const recoveredFromUnknownGraph = unknownDependencyGraphs.size > 0;
     if (recoveredFromUnknownGraph) {
-      changed = true;
-      graphTraversalToken = {};
-      const recoveryError = cache.beginUnknownGraphRecovery(
+      const recovery = cache.startUnknownGraphRecovery(
         name,
         unknownDependencyGraphs,
         currentCode!,
         graphTraversalToken
       );
-      services.evalBroker?.resetAfterCacheInvalidation(
-        cache,
-        recoveryError,
-        'unknown-dependency-graph'
-      );
+      if (recovery.started) {
+        recovery.complete();
+      }
+
+      throw recovery.abortError;
     }
 
     if (!recoveredFromUnknownGraph && !cached?.evaluated && cached?.ignored) {
@@ -618,13 +623,17 @@ export class Entrypoint extends BaseEntrypoint {
         if (count > SUPERSEDE_STORM_LIMIT) {
           const error = createSupersedeStormError(name);
           cached.failInvalidation(error);
-          cache.beginSupersedeStormRecovery(error, name);
-          blockSupersedeWindow(services, name, currentCode!, error);
-          services.evalBroker?.resetAfterCacheInvalidation(
-            cache,
+          const recovery = cache.startSupersedeStormRecovery(
             error,
-            'supersede-storm'
+            name,
+            cacheEpoch
           );
+          blockSupersedeWindow(services, name, currentCode!, error);
+          if (recovery.started) {
+            recovery.complete();
+          } else {
+            throw recovery.abortError;
+          }
           throw error;
         }
       }
@@ -678,11 +687,13 @@ export class Entrypoint extends BaseEntrypoint {
   }
 
   public addDependency(dependency: IEntrypointDependency): void {
+    this.assertCurrentCacheEpoch();
     this.resolveTasks.delete(dependency.source);
     this.dependencies.set(dependency.source, dependency);
   }
 
   public addInvalidationDependency(dependency: IEntrypointDependency): void {
+    this.assertCurrentCacheEpoch();
     this.resolveTasks.delete(dependency.source);
     this.invalidationDependencies.set(dependency.source, dependency);
   }
@@ -690,13 +701,15 @@ export class Entrypoint extends BaseEntrypoint {
   public addResolveTask(
     name: string,
     dependency: Promise<IEntrypointDependency>
-  ): void {
+  ): Promise<IEntrypointDependency> {
+    this.assertCurrentCacheEpoch();
     // Bounded retry of transient null resolutions. The first time a
     // resolveTask settles to null, evict it from the cache so the next
     // consumer re-attempts the resolver. After RESOLVE_TASK_MAX_NULL_ATTEMPTS
     // failures the entry stays cached so we don't thrash. Successful (non-null)
     // resolutions remain cached normally; this branch only ever fires for null.
     const tracked = dependency.then((resolved) => {
+      this.assertCurrentCacheEpoch();
       if (resolved.resolved !== null) {
         return resolved;
       }
@@ -713,9 +726,11 @@ export class Entrypoint extends BaseEntrypoint {
       return resolved;
     });
     this.resolveTasks.set(name, tracked);
+    return tracked;
   }
 
   public applyDeferredSupersede(services: Services = this.services) {
+    this.assertCurrentCacheEpoch();
     if (this.#supersededWith || this.#pendingOnly === null) {
       return null;
     }
@@ -730,7 +745,12 @@ export class Entrypoint extends BaseEntrypoint {
     this.log('apply deferred supersede (%o -> %o)', this.only, mergedOnly);
 
     const nextEntrypoint = this.supersede(mergedOnly, services);
-    services.cache.add('entrypoints', this.name, nextEntrypoint);
+    services.cache.publish(
+      this.cacheEpoch,
+      'entrypoints',
+      this.name,
+      nextEntrypoint
+    );
 
     return nextEntrypoint;
   }
@@ -838,17 +858,8 @@ export class Entrypoint extends BaseEntrypoint {
     loadedCode?: string,
     services: Services = this.services
   ): Entrypoint | 'loop' {
+    this.assertCurrentCacheEpoch();
     this.assertNotSuperseded();
-    // The child's own graph may be mid-recovery on another traversal. Publishing
-    // it from this parent would reuse the state that recovery cleared.
-    const childRecoveryError = this.services.cache.getRecoveryError(
-      name,
-      this.#cacheLifecycleVersion,
-      this.unknownGraphTraversalToken
-    );
-    if (childRecoveryError) {
-      throw childRecoveryError;
-    }
 
     return Entrypoint.create(services, this, name, only, loadedCode, {
       graphTraversalToken: this.unknownGraphTraversalToken,
@@ -856,6 +867,7 @@ export class Entrypoint extends BaseEntrypoint {
   }
 
   public createEvaluated(services: Services = this.services) {
+    this.assertCurrentCacheEpoch();
     const evaluatedOnly = mergeOnly(this.evaluatedOnly, this.only);
     this.log('create EvaluatedEntrypoint for %o', evaluatedOnly);
 
@@ -904,6 +916,7 @@ export class Entrypoint extends BaseEntrypoint {
   }
 
   public markInvalidateOnDependencyChange(filename: string): void {
+    this.assertCurrentCacheEpoch();
     this.invalidateOnDependencyChange.add(filename);
   }
 
@@ -925,14 +938,11 @@ export class Entrypoint extends BaseEntrypoint {
     code: string | null,
     hasWywMetadata: boolean
   ): void {
+    this.assertCurrentCacheEpoch();
     this.#hasTransformResult = true;
     this.#hasWywMetadata = hasWywMetadata;
     this.#transformResultCode = code;
 
-    // Reusing a completed transform is also successful convergence. The next
-    // invalidation starts a new lineage instead of inheriting the attempts
-    // that led to this reusable result.
-    this.services.cache.completeUnknownGraphRecovery(this.name, this);
     resetSupersedeWindow(this.services, this.name);
   }
 
@@ -956,14 +966,11 @@ export class Entrypoint extends BaseEntrypoint {
     res: ITransformFileResult | null,
     services: Services = this.services
   ) {
+    this.assertCurrentCacheEpoch();
     this.#hasTransformResult = true;
     this.#hasWywMetadata = Boolean(res?.metadata);
     this.#transformResultCode = res?.code ?? null;
 
-    // A completed transform releases the superseded generations that led to
-    // it. A later dependency rebuild is a new lineage and must get its own
-    // diagnostic budget instead of inheriting a nearly-full storm window.
-    services.cache.completeUnknownGraphRecovery(this.name, this);
     resetSupersedeWindow(services, this.name);
 
     services.eventEmitter.entrypointEvent(this.seqId, {
@@ -973,6 +980,7 @@ export class Entrypoint extends BaseEntrypoint {
   }
 
   public setPreevalResult(result: IPreevalResult): void {
+    this.assertCurrentCacheEpoch();
     this.#preevalResult = result;
   }
 
@@ -993,6 +1001,7 @@ export class Entrypoint extends BaseEntrypoint {
     newOnlyOrEntrypoint: string[] | Entrypoint,
     services: Services = this.services
   ): Entrypoint {
+    this.assertCurrentCacheEpoch();
     this.#pendingOnly = null;
     const widensOnly = !(newOnlyOrEntrypoint instanceof Entrypoint);
     const newEntrypoint = widensOnly

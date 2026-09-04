@@ -8,6 +8,7 @@ import {
 import { processEntrypoint } from '../../generators/processEntrypoint';
 import type {
   Services,
+  AsyncScenarioForAction,
   IProcessEntrypointAction,
   SyncScenarioForAction,
   IResolveImportsAction,
@@ -327,5 +328,65 @@ describe('actionRunner', () => {
     );
 
     syncActionRunner(action, handlers);
+  });
+
+  it('does not resume a parent action after its cache epoch is retired', async () => {
+    let releaseChild!: () => void;
+    let markChildStarted!: () => void;
+    const childGate = new Promise<void>((resolve) => {
+      releaseChild = resolve;
+    });
+    const childStarted = new Promise<void>((resolve) => {
+      markChildStarted = resolve;
+    });
+    const parentResumed = jest.fn();
+    const parentClosed = jest.fn();
+    const childClosed = jest.fn();
+    const entrypoint = createEntrypoint(services, '/foo/bar.js', ['default']);
+    const handlers = getHandlers<'async'>({
+      async *workflow(
+        this: IWorkflowAction
+      ): AsyncScenarioForAction<IWorkflowAction> {
+        try {
+          yield ['processEntrypoint', this.entrypoint, undefined, null];
+          parentResumed();
+          return { code: '', sourceMap: null };
+        } finally {
+          parentClosed();
+        }
+      },
+      async *processEntrypoint(
+        this: IProcessEntrypointAction
+      ): AsyncScenarioForAction<IProcessEntrypointAction> {
+        this.entrypoint.beginProcessing();
+        try {
+          markChildStarted();
+          await childGate;
+        } finally {
+          this.entrypoint.endProcessing();
+          childClosed();
+        }
+      },
+    });
+    const running = asyncActionRunner(
+      entrypoint.createAction('workflow', undefined, null),
+      handlers
+    );
+
+    await childStarted;
+    const recovery = services.cache.startUnknownGraphRecovery(
+      '/foo/recovery.js',
+      new Set(['/foo/missing.js']),
+      'export const value = 1;',
+      services.cache.createGraphTraversalToken(entrypoint.cacheEpoch)
+    );
+    recovery.complete();
+    releaseChild();
+
+    await expect(running).rejects.toBe(recovery.abortError);
+    expect(parentResumed).not.toHaveBeenCalled();
+    expect(parentClosed).toHaveBeenCalledTimes(1);
+    expect(childClosed).toHaveBeenCalledTimes(1);
+    expect(entrypoint.isProcessing).toBe(false);
   });
 });

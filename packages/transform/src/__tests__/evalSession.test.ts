@@ -13,6 +13,81 @@ describe('getEvalCacheKey', () => {
     ).toBe(getEvalCacheKey(pluginOptions, 'webpack:compiler-a', asyncResolveB));
   });
 
+  it('covers recreated dependency loaders with loadDependencyCodeKey', () => {
+    const pluginOptions = loadWywOptions({ configFile: false });
+    const asyncResolve = async () => null;
+    const loadDependencyCodeA = async () => undefined;
+    const loadDependencyCodeB = async () => undefined;
+
+    expect(
+      getEvalCacheKey(
+        pluginOptions,
+        'rollup:plugin-a',
+        asyncResolve,
+        loadDependencyCodeA,
+        undefined,
+        'rollup:plugin-a'
+      )
+    ).toBe(
+      getEvalCacheKey(
+        pluginOptions,
+        'rollup:plugin-a',
+        asyncResolve,
+        loadDependencyCodeB,
+        undefined,
+        'rollup:plugin-a'
+      )
+    );
+  });
+
+  it('changes the key when dependency loader semantics change', () => {
+    const pluginOptions = loadWywOptions({ configFile: false });
+    const asyncResolve = async () => null;
+
+    expect(
+      getEvalCacheKey(
+        pluginOptions,
+        'rollup:plugin-a',
+        asyncResolve,
+        async () => undefined,
+        undefined,
+        'loader-a'
+      )
+    ).not.toBe(
+      getEvalCacheKey(
+        pluginOptions,
+        'rollup:plugin-a',
+        asyncResolve,
+        async () => undefined,
+        undefined,
+        'loader-b'
+      )
+    );
+  });
+
+  it('falls back to dependency loader identity without a stable key', () => {
+    const pluginOptions = loadWywOptions({ configFile: false });
+    const asyncResolve = async () => null;
+    const loadDependencyCodeA = async () => undefined;
+    const loadDependencyCodeB = async () => undefined;
+
+    expect(
+      getEvalCacheKey(
+        pluginOptions,
+        'rollup:plugin-a',
+        asyncResolve,
+        loadDependencyCodeA
+      )
+    ).not.toBe(
+      getEvalCacheKey(
+        pluginOptions,
+        'rollup:plugin-a',
+        asyncResolve,
+        loadDependencyCodeB
+      )
+    );
+  });
+
   it('changes the key when asyncResolveKey changes', () => {
     const pluginOptions = loadWywOptions({ configFile: false });
 

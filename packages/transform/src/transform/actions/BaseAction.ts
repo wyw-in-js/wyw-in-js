@@ -164,11 +164,16 @@ export class BaseAction<TAction extends ActionQueueItem>
       onError?: (e: unknown) => void
     ) => {
       if ('then' in result) {
-        result.then((r) => {
-          if (r.done) {
-            this.result = r.value;
-          }
-        }, onError);
+        result
+          .then((r) => {
+            if (r.done) {
+              this.result = r.value;
+            }
+          }, onError)
+          // The runner awaits the original promise and propagates its error.
+          // Do not let an error thrown by this bookkeeping observer become a
+          // second, unhandled rejection.
+          .catch(() => {});
       } else if (result.done) {
         this.result = result.value;
       }
@@ -237,6 +242,8 @@ export class BaseAction<TAction extends ActionQueueItem>
         processError(e);
         return this.activeScenarioNextResults[nextIdx++] as IterationResult;
       },
+      return: (value: never): IterationResult =>
+        this.activeScenario!.return(value) as IterationResult,
     };
   }
 

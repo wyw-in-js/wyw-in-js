@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { registerEvalBrokerRecoveryParticipant } from '../../eval/brokerRegistry';
 import { Entrypoint } from '../Entrypoint';
 import type { Services } from '../types';
 
@@ -35,9 +36,9 @@ const BASE_TIME = new Date('2026-01-01T00:00:00Z').getTime();
 const STORM_LIMIT = 100;
 
 // These tests intentionally keep TransformCacheCollection's real
-// invalidateIfChanged implementation. An unknown dependency graph triggers
-// the production invalidation path, including eviction of the cached parent;
-// mocking the method to return true would miss the stale-output regression.
+// invalidateIfChanged implementation. Each generation observes a real edit to
+// a dependency whose graph is complete, so the storm guard is exercised
+// independently from unknown-graph epoch recovery.
 describe('supersede storm guard', () => {
   const only = ['__wywPreval'];
   const rootCode = 'export const token = "red";';
@@ -47,21 +48,35 @@ describe('supersede storm guard', () => {
   let name: string;
   let root: string;
   let services: Services;
+  let dependencyRevision: number;
 
   const createRootOnce = (loadedCode: string | undefined) =>
     Entrypoint.createRoot(services, name, only, loadedCode);
 
-  const createUnknownGraph = () => {
+  const publishDependency = (code: string) => {
     const depEntrypoint = Entrypoint.createRoot(
       services,
       depName,
       ['value'],
-      depCode
+      code
     );
-    depEntrypoint.beginProcessing();
-    services.cache.invalidateIfChanged(depName, depCode, undefined, 'fs');
-    services.cache.delete('entrypoints', depName);
-    depEntrypoint.endProcessing();
+    depEntrypoint.setTransformResult({ code, metadata: null });
+  };
+
+  const editDependency = () => {
+    dependencyRevision += 1;
+    const code = `export const value = ${dependencyRevision};`;
+    fs.writeFileSync(depName, code);
+    const mtime = new Date(BASE_TIME + dependencyRevision * 1_000);
+    fs.utimesSync(depName, mtime, mtime);
+    return code;
+  };
+
+  const invalidateParent = (loadedCode: string | undefined) => {
+    const dependencyCode = editDependency();
+    const entrypoint = createRootOnce(loadedCode);
+    publishDependency(dependencyCode);
+    return entrypoint;
   };
 
   const attachUnknownDependency = (entrypoint: Entrypoint) => {
@@ -81,7 +96,7 @@ describe('supersede storm guard', () => {
   const runInvalidations = (count: number, loadedCode: string | undefined) => {
     let last: Entrypoint | undefined;
     for (let i = 0; i < count; i += 1) {
-      last = createRootOnce(loadedCode);
+      last = invalidateParent(loadedCode);
     }
     return last!;
   };
@@ -102,7 +117,9 @@ describe('supersede storm guard', () => {
       evalConfig: {},
     }));
 
-    createUnknownGraph();
+    dependencyRevision = 1;
+    services.cache.checkFreshness(depName, depName);
+    publishDependency(depCode);
   });
 
   afterEach(() => {
@@ -113,16 +130,27 @@ describe('supersede storm guard', () => {
   it('fails safely after a real unknown-graph invalidation storm', () => {
     const first = createParent(rootCode);
     const last = runInvalidations(STORM_LIMIT, rootCode);
+    const firstBrokerReset = jest.fn();
+    const secondBrokerReset = jest.fn();
+    const participants = [firstBrokerReset, secondBrokerReset].map((reset) => ({
+      isDisposed: false,
+      resetAfterCacheInvalidation: reset,
+    }));
+    participants.forEach((participant) => {
+      registerEvalBrokerRecoveryParticipant(services.cache, participant);
+    });
     let stormError: unknown;
 
     expect(last.generation).toBe(first.generation + STORM_LIMIT);
     try {
-      createRootOnce(rootCode);
+      invalidateParent(rootCode);
     } catch (error) {
       stormError = error;
     }
     expect(stormError).toBeInstanceOf(Error);
     expect((stormError as Error).message).toContain('Supersede storm detected');
+    expect(firstBrokerReset).toHaveBeenCalledTimes(1);
+    expect(secondBrokerReset).toHaveBeenCalledTimes(1);
 
     // invalidateIfChanged evicted the parent before the diagnostic. No stale
     // entrypoint is returned or silently put back into the cache. A workflow
@@ -131,22 +159,26 @@ describe('supersede storm guard', () => {
     expect(services.cache.get('entrypoints', name)).toBeUndefined();
     let retainedError: unknown;
     try {
-      last.assertNotSuperseded();
+      last.assertCurrentCacheEpoch();
     } catch (error) {
       retainedError = error;
     }
-    expect(retainedError).toBe(stormError);
+    expect(retainedError).toMatchObject({
+      cause: stormError,
+      code: 'WYW_CACHE_EPOCH_ABORTED',
+    });
 
     let ancestorError: unknown;
     try {
-      first.assertNotSuperseded();
+      first.assertCurrentCacheEpoch();
     } catch (error) {
       ancestorError = error;
     }
-    expect(ancestorError).toBe(stormError);
+    expect(ancestorError).toBe(retainedError);
 
     // Cache eviction must not reopen the same warm-eval retry loop. The
     // unchanged source remains blocked with the original diagnostic object.
+    services.cacheEpoch = services.cache.getCurrentEpoch();
     let retryError: unknown;
     try {
       createRootOnce(rootCode);
@@ -159,7 +191,10 @@ describe('supersede storm guard', () => {
   it('unblocks a terminal storm after a real source edit', () => {
     createParent(rootCode);
     runInvalidations(STORM_LIMIT, rootCode);
-    expect(() => createRootOnce(rootCode)).toThrow(/Supersede storm detected/);
+    expect(() => invalidateParent(rootCode)).toThrow(
+      /Supersede storm detected/
+    );
+    services.cacheEpoch = services.cache.getCurrentEpoch();
 
     const nextCode = 'export const token = "blue";';
     const afterEdit = createRootOnce(nextCode);
@@ -170,7 +205,10 @@ describe('supersede storm guard', () => {
   it('unblocks a terminal storm after a quiet interval', () => {
     createParent(rootCode);
     runInvalidations(STORM_LIMIT, rootCode);
-    expect(() => createRootOnce(rootCode)).toThrow(/Supersede storm detected/);
+    expect(() => invalidateParent(rootCode)).toThrow(
+      /Supersede storm detected/
+    );
+    services.cacheEpoch = services.cache.getCurrentEpoch();
 
     setSystemTime(new Date(BASE_TIME + 10_001));
     expect(createRootOnce(rootCode).originalCode).toBe(rootCode);
@@ -179,7 +217,10 @@ describe('supersede storm guard', () => {
   it('unblocks a terminal storm after an explicit cache reset', () => {
     createParent(rootCode);
     runInvalidations(STORM_LIMIT, rootCode);
-    expect(() => createRootOnce(rootCode)).toThrow(/Supersede storm detected/);
+    expect(() => invalidateParent(rootCode)).toThrow(
+      /Supersede storm detected/
+    );
+    services.cacheEpoch = services.cache.getCurrentEpoch();
 
     services.cache.clear('all');
     expect(createRootOnce(rootCode).originalCode).toBe(rootCode);
@@ -188,9 +229,13 @@ describe('supersede storm guard', () => {
   it('unblocks a terminal storm after the cache key salt changes', () => {
     createParent(rootCode);
     runInvalidations(STORM_LIMIT, rootCode);
-    expect(() => createRootOnce(rootCode)).toThrow(/Supersede storm detected/);
+    expect(() => invalidateParent(rootCode)).toThrow(
+      /Supersede storm detected/
+    );
+    services.cacheEpoch = services.cache.getCurrentEpoch();
 
     services.cache.setKeySalt('next-config');
+    services.cacheEpoch = services.cache.getCurrentEpoch();
     expect(createRootOnce(rootCode).originalCode).toBe(rootCode);
   });
 
@@ -220,7 +265,9 @@ describe('supersede storm guard', () => {
       nextCode
     );
     attachUnknownDependency(widened);
+    const dependencyCode = editDependency();
     const next = Entrypoint.createRoot(services, name, widenedOnly, nextCode);
+    publishDependency(dependencyCode);
 
     expect(widened.generation).toBe(first.generation + STORM_LIMIT + 1);
     expect(next).not.toBe(widened);
@@ -235,7 +282,7 @@ describe('supersede storm guard', () => {
     const nextCode = 'export const token = "blue";';
     const edited = createRootOnce(nextCode);
     attachUnknownDependency(edited);
-    const next = createRootOnce(nextCode);
+    const next = invalidateParent(nextCode);
 
     expect(edited.originalCode).toBe(nextCode);
     expect(next).not.toBe(edited);
@@ -258,7 +305,18 @@ describe('supersede storm guard', () => {
     const nextMtime = new Date(Date.now() + 1_000);
     fs.utimesSync(depName, nextMtime, nextMtime);
 
-    expect(() => createRootOnce(rootCode)).toThrow(/potentially stale output/);
+    let recoveryError: unknown;
+    try {
+      createRootOnce(rootCode);
+    } catch (error) {
+      recoveryError = error;
+    }
+    expect(recoveryError).toMatchObject({
+      cause: expect.objectContaining({
+        code: 'WYW_UNKNOWN_DEPENDENCY_GRAPH_RESET',
+      }),
+      code: 'WYW_CACHE_EPOCH_ABORTED',
+    });
     expect(services.cache.get('entrypoints', name)).toBeUndefined();
   });
 
@@ -269,7 +327,7 @@ describe('supersede storm guard', () => {
     // 101ms spacing means no 10-second window contains more than 100 events.
     for (let i = 0; i < 150; i += 1) {
       setSystemTime(new Date(BASE_TIME + i * 101));
-      last = createRootOnce(rootCode);
+      last = invalidateParent(rootCode);
     }
 
     expect(last.generation).toBe(first.generation + 150);
@@ -280,7 +338,7 @@ describe('supersede storm guard', () => {
     const beforeQuiet = runInvalidations(STORM_LIMIT, rootCode);
 
     setSystemTime(new Date(BASE_TIME + 10_001));
-    const afterQuiet = createRootOnce(rootCode);
+    const afterQuiet = invalidateParent(rootCode);
 
     expect(afterQuiet).not.toBe(beforeQuiet);
     expect(afterQuiet.generation).toBe(first.generation + STORM_LIMIT + 1);
@@ -292,7 +350,7 @@ describe('supersede storm guard', () => {
 
     attachUnknownDependency(completed);
     completed.setTransformResult({ code: rootCode, metadata: null });
-    const next = createRootOnce(rootCode);
+    const next = invalidateParent(rootCode);
 
     expect(next).not.toBe(completed);
     expect(next.generation).toBe(first.generation + STORM_LIMIT + 1);
@@ -318,12 +376,12 @@ describe('supersede storm guard', () => {
     });
     services.cache.add('entrypoints', name, reused);
 
-    const next = createRootOnce(rootCode);
+    const next = invalidateParent(rootCode);
     expect(next).not.toBe(reused);
     expect(next.generation).toBe(reused.generation + 1);
   });
 
-  it('keeps recovery pending when a parent from the retired lifecycle tries to create a child', () => {
+  it('prevents a parent from the retired epoch from publishing a child', () => {
     const oldParent = createRootOnce(rootCode);
     const victimName = path.join(root, 'victim.ts');
     const victimDependency = path.join(root, 'victim-dependency.ts');
@@ -331,16 +389,21 @@ describe('supersede storm guard', () => {
     fs.writeFileSync(victimName, victimCode);
     fs.writeFileSync(victimDependency, 'export const dependency = 1;');
 
-    services.cache.beginUnknownGraphRecovery(
+    const recovery = services.cache.startUnknownGraphRecovery(
       victimName,
       new Set([victimDependency]),
       victimCode,
-      {}
+      services.cache.createGraphTraversalToken()
     );
+    recovery.complete();
 
     expect(() =>
       oldParent.createChild(victimName, ['victim'], victimCode)
-    ).toThrow(/dependency graph is incomplete/);
+    ).toThrow(
+      expect.objectContaining({
+        code: 'WYW_CACHE_EPOCH_ABORTED',
+      })
+    );
     expect(services.cache.get('entrypoints', victimName)).toBeUndefined();
 
     const details = services.cache.invalidateIfChangedWithDetails(
@@ -348,71 +411,40 @@ describe('supersede storm guard', () => {
       victimCode,
       'loaded'
     );
-    expect([...details.unknownDependencyGraphs]).toEqual([victimDependency]);
+    expect([...details.unknownDependencyGraphs]).toEqual([]);
   });
 
-  it('does not let a retired traversal token bypass a retained recovery marker', () => {
+  it('retires a rebuilt entrypoint when another global recovery starts', () => {
     const otherName = path.join(root, 'other.ts');
     const otherDependency = path.join(root, 'other-dependency.ts');
     const otherCode = 'export const other = 1;';
     fs.writeFileSync(otherName, otherCode);
     fs.writeFileSync(otherDependency, 'export const dependency = 1;');
 
-    const recoveryToken = {};
-    services.cache.beginUnknownGraphRecovery(
+    const firstRecovery = services.cache.startUnknownGraphRecovery(
       name,
       new Set([depName]),
       rootCode,
-      recoveryToken
+      services.cache.createGraphTraversalToken()
     );
-    const recoveryEntrypoint = Entrypoint.createRoot(
-      services,
-      name,
-      only,
-      rootCode,
-      { graphTraversalToken: recoveryToken }
-    );
+    firstRecovery.complete();
+    services.cacheEpoch = services.cache.getCurrentEpoch();
+    const recoveryEntrypoint = createRootOnce(rootCode);
 
-    // A recovery of an unrelated file resets nothing this traversal read, so
-    // it keeps working on the same shared cache.
-    services.cache.beginUnknownGraphRecovery(
+    const secondRecovery = services.cache.startUnknownGraphRecovery(
       otherName,
       new Set([otherDependency]),
       otherCode,
-      {}
+      services.cache.createGraphTraversalToken()
     );
-    expect(() => recoveryEntrypoint.assertNotSuperseded()).not.toThrow();
-
-    // A second recovery of the same file, opened by another request, is what
-    // retires it: the retained marker now belongs to the newer recovery.
-    services.cache.beginUnknownGraphRecovery(
-      name,
-      new Set([depName]),
-      rootCode,
-      {}
-    );
+    secondRecovery.complete();
 
     expect(() => recoveryEntrypoint.assertNotSuperseded()).toThrow(
-      /dependency graph is incomplete/
+      expect.objectContaining({
+        code: 'WYW_CACHE_EPOCH_ABORTED',
+      })
     );
-    expect(() =>
-      Entrypoint.createRoot(services, name, only, rootCode, {
-        graphTraversalToken: recoveryEntrypoint.graphTraversalToken,
-      })
-    ).toThrow(/dependency graph is incomplete/);
-    expect(() =>
-      Entrypoint.createRoot(services, name, only, undefined, {
-        graphTraversalToken: recoveryEntrypoint.graphTraversalToken,
-      })
-    ).toThrow(/dependency graph is incomplete/);
     expect(services.cache.get('entrypoints', name)).toBeUndefined();
-
-    const details = services.cache.invalidateIfChangedWithDetails(
-      name,
-      rootCode,
-      'loaded'
-    );
-    expect([...details.unknownDependencyGraphs]).toEqual([depName]);
   });
 
   it('never rate-limits genuinely changing loaded source', () => {

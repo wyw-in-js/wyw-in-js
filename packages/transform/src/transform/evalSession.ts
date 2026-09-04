@@ -59,7 +59,8 @@ export const getEvalCacheKey = (
   asyncResolveKey: string | undefined,
   asyncResolve: AsyncResolve,
   loadDependencyCode?: Services['loadDependencyCode'],
-  root?: string
+  root?: string,
+  loadDependencyCodeKey?: string
 ) => {
   const evalOptions = pluginOptions.eval ?? {};
   const payload = JSON.stringify({
@@ -71,11 +72,10 @@ export const getEvalCacheKey = (
     globals: canonicalizeForHash(encodeGlobals(evalOptions.globals ?? {})),
     customResolver: getResolverId(evalOptions.customResolver),
     customLoader: getResolverId(evalOptions.customLoader),
-    // Bundlers like webpack can recreate transport resolvers per file. Allow
-    // them to provide a stable scope key so cache/broker reuse tracks resolver
-    // semantics instead of closure identity.
+    // Bundlers can recreate transport callbacks per file. Stable scope keys
+    // attest unchanged semantics without conflating resolver and loader axes.
     bundlerResolver: asyncResolveKey ?? getResolverId(asyncResolve),
-    bundlerLoader: getResolverId(loadDependencyCode),
+    bundlerLoader: loadDependencyCodeKey ?? getResolverId(loadDependencyCode),
     overrideContext: getResolverId(pluginOptions.overrideContext),
     importOverrides: pluginOptions.importOverrides ?? null,
     extensions: pluginOptions.extensions,
@@ -89,17 +89,27 @@ export const getEvalCacheKey = (
 export const configureEvalSession = (
   services: Services,
   pluginOptions: StrictOptions,
-  asyncResolve: AsyncResolve
+  asyncResolve: AsyncResolve,
+  precomputedEvalCacheKey?: string
 ): Handler<'async' | 'sync', IResolveImportsAction> => {
-  const evalCacheKey = getEvalCacheKey(
-    pluginOptions,
-    services.asyncResolveKey,
-    asyncResolve,
-    services.loadDependencyCode,
-    services.options.root
-  );
+  const evalCacheKey =
+    precomputedEvalCacheKey ??
+    getEvalCacheKey(
+      pluginOptions,
+      services.asyncResolveKey,
+      asyncResolve,
+      services.loadDependencyCode,
+      services.options.root,
+      services.loadDependencyCodeKey
+    );
 
-  services.cache.setKeySalt(evalCacheKey);
+  if (precomputedEvalCacheKey === undefined) {
+    services.cache.setKeySalt(evalCacheKey);
+  } else if (services.cache.getKeySalt() !== evalCacheKey) {
+    throw new Error(
+      '[wyw-in-js] Evaluation cache key changed outside its active lease'
+    );
+  }
   // `Services` is the mutable per-transform session object; this wires the
   // eval-specific session state behind the evalSession module boundary.
   // eslint-disable-next-line no-param-reassign

@@ -16,7 +16,8 @@ import type {
 import { isFeatureEnabled } from '@wyw-in-js/shared';
 
 import type { Entrypoint } from '../transform/Entrypoint';
-import { TransformCacheCollection } from '../cache';
+import type { CacheRecoveryReason } from '../transform/actions/CacheEpochAbortedError';
+import { TransformCacheCollection, type TransformCacheEpoch } from '../cache';
 import type { ParentEntrypoint } from '../types';
 import { isStaticallyEvaluatableModule } from '../transform/isStaticallyEvaluatableModule';
 import type { Services } from '../transform/types';
@@ -83,6 +84,7 @@ import {
   sendEvalLoadResult,
   type LoadTransmissionTelemetry,
 } from './brokerTelemetry';
+import { registerEvalBrokerRecoveryParticipant } from './brokerRegistry';
 import {
   debugAction,
   debugEvalEnabled,
@@ -282,7 +284,7 @@ type CachedExportEntrypointLike = {
 };
 
 const collectKnownExportNames = (
-  services: Services,
+  services: EpochServices,
   id: string,
   cachedEntrypoint?: CachedExportEntrypointLike
 ): string[] | undefined => {
@@ -310,12 +312,12 @@ const collectKnownExportNames = (
       ...analyzed.reexports.map((reexport) => reexport.exported),
     ])
   );
-  services.cache.add('exports', id, knownExports);
+  services.cache.publish(services.cacheEpoch, 'exports', id, knownExports);
   return knownExports;
 };
 
 const getSerializableStaticImportKeys = (
-  services: Services,
+  services: EpochServices,
   id: string,
   cachedEntrypoint: CachedExportEntrypointLike,
   requiredOnly: string[],
@@ -461,13 +463,29 @@ type EvalRequestContext = {
   inputQueue: WriteQueue;
   runner: ChildProcessWithoutNullStreams;
   sessionId: number;
-  services: Services;
+  services: EpochServices;
 };
 
 type EvaluateResult = {
   values: Map<string, unknown> | null;
   dependencies: string[];
 };
+
+type EpochServices = Services & Required<Pick<Services, 'cacheEpoch'>>;
+
+const bindServicesToEpoch = (
+  services: Services,
+  epoch: TransformCacheEpoch = services.cacheEpoch ??
+    services.cache.getCurrentEpoch()
+): EpochServices => {
+  services.cache.assertEpoch(epoch);
+  return services.cacheEpoch === epoch
+    ? (services as EpochServices)
+    : { ...services, cacheEpoch: epoch };
+};
+
+const getServicesCacheOwner = (services: EpochServices) =>
+  services.cacheEpoch.owner;
 
 type EvalFileDebugLine = {
   contentBase64: string | null;
@@ -486,7 +504,7 @@ type EvalFileDebugLine = {
 type PendingEval = {
   cacheGeneration: CacheGeneration;
   entrypoint: Entrypoint;
-  services: Services;
+  services: EpochServices;
   telemetry: EvalTelemetryToken | undefined;
   resolve: (value: EvaluateResult) => void;
   reject: (reason?: unknown) => void;
@@ -1124,21 +1142,25 @@ const toSerializedError = (error: unknown) => {
   };
 };
 
-const createDetachedServices = (services: Services): Services => ({
-  ...services,
-  asyncResolve: undefined,
-  cache: new TransformCacheCollection(),
-  emitWarning: undefined,
-  evalBroker: undefined,
-  eventEmitter: EventEmitter.dummy,
-  loadAndParseFn: loadAndParse,
-  loadDependencyCode: undefined,
-  log: rootLog,
-  options: {
-    ...services.options,
-    inputSourceMap: undefined,
-  },
-});
+const createDetachedServices = (services: EpochServices): EpochServices => {
+  const cache = new TransformCacheCollection();
+  return {
+    ...services,
+    asyncResolve: undefined,
+    cache,
+    cacheEpoch: cache.getCurrentEpoch(),
+    emitWarning: undefined,
+    evalBroker: undefined,
+    eventEmitter: EventEmitter.dummy,
+    loadAndParseFn: loadAndParse,
+    loadDependencyCode: undefined,
+    log: rootLog,
+    options: {
+      ...services.options,
+      inputSourceMap: undefined,
+    },
+  };
+};
 
 export class EvalBroker {
   private runner: ChildProcessWithoutNullStreams | null = null;
@@ -1150,7 +1172,7 @@ export class EvalBroker {
   private requestEpoch = 0;
 
   private readonly cacheGenerations = new WeakMap<
-    TransformCacheCollection,
+    TransformCacheEpoch['owner'],
     CacheGeneration
   >();
 
@@ -1265,9 +1287,9 @@ export class EvalBroker {
 
   private activeEvalTelemetry: EvalTelemetryToken | undefined;
 
-  private currentServices: Services;
+  private currentServices: EpochServices;
 
-  private readonly detachedServices: Services | null;
+  private readonly detachedServices: EpochServices | null;
 
   private readonly sendLoadMessage = (
     message: MainToRunnerMessage,
@@ -1283,9 +1305,14 @@ export class EvalBroker {
     ) => Promise<string | null>,
     detachServicesWhenIdle = false
   ) {
-    this.currentServices = services;
+    const epochServices = bindServicesToEpoch(services);
+    this.currentServices = epochServices;
+    registerEvalBrokerRecoveryParticipant(
+      getServicesCacheOwner(epochServices),
+      this
+    );
     this.detachedServices = detachServicesWhenIdle
-      ? createDetachedServices(services)
+      ? createDetachedServices(epochServices)
       : null;
     this.recordBrokerLifecycle('broker-created', 'constructor');
     this.detachCurrentServices();
@@ -1434,7 +1461,14 @@ export class EvalBroker {
     if (this.disposed) {
       throw new Error('[wyw-in-js] Eval broker has been disposed');
     }
-    const activeServices = services ?? this.currentServices;
+    const activeServices = bindServicesToEpoch(
+      services ?? this.currentServices,
+      entrypoint.cacheEpoch
+    );
+    registerEvalBrokerRecoveryParticipant(
+      getServicesCacheOwner(activeServices),
+      this
+    );
     const telemetry = hasEvalTelemetryReporter(activeServices.eventEmitter)
       ? beginEvalTelemetry(activeServices.eventEmitter, this, () => ({
           entrypoint: entrypoint.name,
@@ -1442,7 +1476,9 @@ export class EvalBroker {
       : undefined;
     return new Promise<EvaluateResult>((resolve, reject) => {
       const pendingEval: PendingEval = {
-        cacheGeneration: this.getCacheGeneration(activeServices.cache),
+        cacheGeneration: this.getCacheGeneration(
+          getServicesCacheOwner(activeServices)
+        ),
         entrypoint,
         services: activeServices,
         telemetry,
@@ -1507,7 +1543,7 @@ export class EvalBroker {
             throw new Error('[wyw-in-js] Eval broker has been disposed');
           }
           this.assertCacheGeneration(
-            member.services.cache,
+            getServicesCacheOwner(member.services),
             member.cacheGeneration,
             member.entrypoint
           );
@@ -1533,11 +1569,11 @@ export class EvalBroker {
 
   private async runOneEntrypoint(
     entrypoint: Entrypoint,
-    activeServices: Services,
+    activeServices: EpochServices,
     cacheGeneration: CacheGeneration
   ): Promise<EvaluateResult> {
     this.assertCacheGeneration(
-      activeServices.cache,
+      getServicesCacheOwner(activeServices),
       cacheGeneration,
       entrypoint
     );
@@ -1586,13 +1622,13 @@ export class EvalBroker {
       // already preparing to reinitialize for its own semantic session.
       await this.ensureRunner();
       this.assertCacheGeneration(
-        activeServices.cache,
+        getServicesCacheOwner(activeServices),
         cacheGeneration,
         entrypoint
       );
       await this.initRunner(entrypoint, reuseModules, cacheGeneration);
       this.assertCacheGeneration(
-        activeServices.cache,
+        getServicesCacheOwner(activeServices),
         cacheGeneration,
         entrypoint
       );
@@ -1611,7 +1647,7 @@ export class EvalBroker {
       // let a response from the superseded generation publish module exports
       // into the replacement entrypoint's shared cache.
       this.assertCacheGeneration(
-        activeServices.cache,
+        getServicesCacheOwner(activeServices),
         cacheGeneration,
         entrypoint
       );
@@ -1816,7 +1852,12 @@ export class EvalBroker {
         target.evaluatedOnly.splice(0, target.evaluatedOnly.length, ...merged);
       }
 
-      this.currentServices.cache.add('entrypoints', id, target);
+      this.currentServices.cache.publish(
+        this.currentServices.cacheEpoch,
+        'entrypoints',
+        id,
+        target
+      );
     });
   }
 
@@ -1871,9 +1912,9 @@ export class EvalBroker {
   }
 
   public resetAfterCacheInvalidation(
-    cache: TransformCacheCollection,
+    cache: TransformCacheEpoch['owner'],
     error: Error,
-    reason: 'supersede-storm' | 'unknown-dependency-graph'
+    reason: CacheRecoveryReason
   ): void {
     const invalidatedGeneration = this.getCacheGeneration(cache);
     invalidatedGeneration.invalidationError = error;
@@ -1897,7 +1938,8 @@ export class EvalBroker {
     // cache B. An idle runner still owned by A is retired so asynchronous VM
     // continuations from its old generation cannot reach A's replacement.
     const ownsActiveEvaluation =
-      this.activeEntrypoint !== null && this.currentServices.cache === cache;
+      this.activeEntrypoint !== null &&
+      getServicesCacheOwner(this.currentServices) === cache;
     const ownsIdleSemanticSession =
       this.activeEntrypoint === null &&
       this.semanticSessionCacheGeneration === invalidatedGeneration;
@@ -1944,7 +1986,7 @@ export class EvalBroker {
   }
 
   private assertCacheGeneration(
-    cache: TransformCacheCollection,
+    cache: TransformCacheEpoch['owner'],
     generation: CacheGeneration,
     entrypoint?: Entrypoint | null
   ): void {
@@ -1957,7 +1999,9 @@ export class EvalBroker {
     entrypoint?.assertNotSuperseded();
   }
 
-  private getCacheGeneration(cache: TransformCacheCollection): CacheGeneration {
+  private getCacheGeneration(
+    cache: TransformCacheEpoch['owner']
+  ): CacheGeneration {
     const current = this.cacheGenerations.get(cache);
     if (current) return current;
     const created = { invalidationError: null };
@@ -2289,10 +2333,12 @@ export class EvalBroker {
   private async initRunner(
     entrypoint: Entrypoint,
     reuseModules = true,
-    cacheGeneration = this.getCacheGeneration(this.currentServices.cache)
+    cacheGeneration = this.getCacheGeneration(
+      getServicesCacheOwner(this.currentServices)
+    )
   ) {
-    const { cache } = this.currentServices;
-    this.assertCacheGeneration(cache, cacheGeneration, entrypoint);
+    const cacheOwner = getServicesCacheOwner(this.currentServices);
+    this.assertCacheGeneration(cacheOwner, cacheGeneration, entrypoint);
     const features = this.getRunnerFeatures();
     const stableHash = this.getStableInitHash(this.currentServices, features);
     const debugEvalFiles = this.currentServices.eventEmitter.enabled;
@@ -2328,7 +2374,7 @@ export class EvalBroker {
           timeoutMs
         );
         try {
-          this.assertCacheGeneration(cache, cacheGeneration, entrypoint);
+          this.assertCacheGeneration(cacheOwner, cacheGeneration, entrypoint);
           if (this.disposed) {
             throw new Error('[wyw-in-js] Eval broker has been disposed');
           }
@@ -2342,7 +2388,7 @@ export class EvalBroker {
         this.lastHappyDomEnabled = true;
         return;
       } catch (error) {
-        this.assertCacheGeneration(cache, cacheGeneration, entrypoint);
+        this.assertCacheGeneration(cacheOwner, cacheGeneration, entrypoint);
         if (isEvalTimeoutError(error)) {
           this.happyDomDisabled = true;
           this.warnHappyDomDisabledOnce(timeoutMs);
@@ -2357,7 +2403,7 @@ export class EvalBroker {
             fallbackPayload.debugEvalFiles = true;
           }
           await this.initActiveRunner(fallbackPayload, INIT_TIMEOUT_MS);
-          this.assertCacheGeneration(cache, cacheGeneration, entrypoint);
+          this.assertCacheGeneration(cacheOwner, cacheGeneration, entrypoint);
           this.lastInitKey = `${this.getStableInitHash(
             this.currentServices,
             fallbackFeatures
@@ -2372,7 +2418,7 @@ export class EvalBroker {
 
     try {
       await this.initActiveRunner(payload, timeoutMs);
-      this.assertCacheGeneration(cache, cacheGeneration, entrypoint);
+      this.assertCacheGeneration(cacheOwner, cacheGeneration, entrypoint);
       this.lastInitKey = initKey;
       this.lastHappyDomEnabled = nextHappyDomEnabled;
     } catch (error) {
@@ -2392,7 +2438,7 @@ export class EvalBroker {
           );
         }
         await this.ensureRunner();
-        this.assertCacheGeneration(cache, cacheGeneration, entrypoint);
+        this.assertCacheGeneration(cacheOwner, cacheGeneration, entrypoint);
         const fallbackFeatures = this.getRunnerFeatures();
         const fallbackPayload = buildRunnerInitPayload(
           this.currentServices,
@@ -2404,7 +2450,7 @@ export class EvalBroker {
           fallbackPayload.debugEvalFiles = true;
         }
         await this.initActiveRunner(fallbackPayload, INIT_TIMEOUT_MS);
-        this.assertCacheGeneration(cache, cacheGeneration, entrypoint);
+        this.assertCacheGeneration(cacheOwner, cacheGeneration, entrypoint);
         this.lastInitKey = `${this.getStableInitHash(
           this.currentServices,
           fallbackFeatures
@@ -2618,7 +2664,9 @@ export class EvalBroker {
     }
 
     return {
-      cacheGeneration: this.getCacheGeneration(this.currentServices.cache),
+      cacheGeneration: this.getCacheGeneration(
+        getServicesCacheOwner(this.currentServices)
+      ),
       entrypoint: this.activeEntrypoint,
       epoch: this.requestEpoch,
       inputQueue,
@@ -2643,7 +2691,7 @@ export class EvalBroker {
     return (
       context.epoch === this.requestEpoch &&
       context.cacheGeneration ===
-        this.getCacheGeneration(context.services.cache) &&
+        this.getCacheGeneration(getServicesCacheOwner(context.services)) &&
       context.runner === this.runner &&
       context.sessionId === this.activeRunnerSessionId &&
       context.services === this.currentServices &&
@@ -4211,13 +4259,18 @@ export const getEvalBroker = (
   ) => Promise<string | null>,
   cacheKey: string
 ) => {
-  const scope = services.evalBrokerScope ?? services.cache;
+  const epochServices = bindServicesToEpoch(services);
+  const scope = epochServices.evalBrokerScope ?? epochServices.cache;
   let cached = evalBrokers.get(scope);
   if (cached?.broker.isDisposed) {
     evalBrokers.delete(scope);
     cached = undefined;
   }
   if (cached) {
+    registerEvalBrokerRecoveryParticipant(
+      getServicesCacheOwner(epochServices),
+      cached.broker
+    );
     if (hasEvalTelemetryReporter(services.eventEmitter)) {
       recordEvalBrokerLifecycle(services.eventEmitter, cached.broker, () => ({
         event: 'broker-reused',
@@ -4234,9 +4287,9 @@ export const getEvalBroker = (
   // as the broker's permanent fallback; every configured transform supplies
   // its resolver through the current Services object.
   const broker = new EvalBroker(
-    services,
-    services.evalBrokerScope ? missingScopedAsyncResolve : asyncResolve,
-    Boolean(services.evalBrokerScope)
+    epochServices,
+    epochServices.evalBrokerScope ? missingScopedAsyncResolve : asyncResolve,
+    Boolean(epochServices.evalBrokerScope)
   );
   evalBrokers.set(scope, { key: cacheKey, broker });
   return broker;

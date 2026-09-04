@@ -11,7 +11,10 @@ import type {
 } from 'oxc-parser';
 
 import { oxcShaker } from '../../shaker';
-import { TransformCacheCollection } from '../../cache';
+import {
+  TransformCacheCollection,
+  type TransformCacheEpoch,
+} from '../../cache';
 import { EventEmitter } from '../../utils/EventEmitter';
 import { collectOxcExportsAndImports } from '../../utils/collectOxcExportsAndImports';
 import { analyzeOxcBarrelFile } from '../oxcBarrelManifest';
@@ -90,12 +93,17 @@ type Replacement = {
   value: string;
 };
 
-const createAnalysisServices = (services: Services): Services => ({
+const createAnalysisServices = (
+  services: Services,
+  cacheEpoch: TransformCacheEpoch
+): Services => ({
   ...services,
   cache: new TransformCacheCollection({
     barrelManifests: services.cache.barrelManifests,
+    epochOwner: cacheEpoch.owner,
     exports: services.cache.exports,
   }),
+  cacheEpoch,
   eventEmitter: EventEmitter.dummy,
 });
 
@@ -689,7 +697,12 @@ function* getWildcardExportDependencies(
     filename
   );
   this.entrypoint.assertNotSuperseded();
-  this.services.cache.add('exports', filename, exportNames);
+  this.services.cache.publish(
+    this.entrypoint.cacheEpoch,
+    'exports',
+    filename,
+    exportNames
+  );
 
   const wildcardReexports = collectOxcExportsAndImports(
     loadedAndParsed.code,
@@ -738,7 +751,12 @@ function* getWildcardExportDependencies(
   }
 
   this.entrypoint.assertNotSuperseded();
-  this.services.cache.setCacheDependencies('exports', filename, dependencies);
+  this.services.cache.publishCacheDependencies(
+    this.entrypoint.cacheEpoch,
+    'exports',
+    filename,
+    dependencies
+  );
 
   return [...dependencies];
 }
@@ -793,7 +811,12 @@ function* getOrBuildOxcBarrelManifest(
       reason: 'custom-evaluator',
     } as const;
     this.entrypoint.assertNotSuperseded();
-    this.services.cache.add('barrelManifests', filename, externalEntry);
+    this.services.cache.publish(
+      this.entrypoint.cacheEpoch,
+      'barrelManifests',
+      filename,
+      externalEntry
+    );
     return externalEntry;
   }
 
@@ -803,7 +826,12 @@ function* getOrBuildOxcBarrelManifest(
       reason: 'ignored',
     } as const;
     this.entrypoint.assertNotSuperseded();
-    this.services.cache.add('barrelManifests', filename, ignoredEntry);
+    this.services.cache.publish(
+      this.entrypoint.cacheEpoch,
+      'barrelManifests',
+      filename,
+      ignoredEntry
+    );
     return ignoredEntry;
   }
 
@@ -813,14 +841,24 @@ function* getOrBuildOxcBarrelManifest(
       reason: 'custom-evaluator',
     } as const;
     this.entrypoint.assertNotSuperseded();
-    this.services.cache.add('barrelManifests', filename, customEntry);
+    this.services.cache.publish(
+      this.entrypoint.cacheEpoch,
+      'barrelManifests',
+      filename,
+      customEntry
+    );
     return customEntry;
   }
 
   const analyzed = analyzeOxcBarrelFile(loadedAndParsed.code, filename);
   if (!isRawBarrelManifest(analyzed)) {
     this.entrypoint.assertNotSuperseded();
-    this.services.cache.add('barrelManifests', filename, analyzed);
+    this.services.cache.publish(
+      this.entrypoint.cacheEpoch,
+      'barrelManifests',
+      filename,
+      analyzed
+    );
     return analyzed;
   }
 
@@ -922,8 +960,14 @@ function* getOrBuildOxcBarrelManifest(
   }
 
   this.entrypoint.assertNotSuperseded();
-  this.services.cache.add('barrelManifests', filename, manifest);
-  this.services.cache.setCacheDependencies(
+  this.services.cache.publish(
+    this.entrypoint.cacheEpoch,
+    'barrelManifests',
+    filename,
+    manifest
+  );
+  this.services.cache.publishCacheDependencies(
+    this.entrypoint.cacheEpoch,
     'barrelManifests',
     filename,
     manifestDependencies
@@ -1321,7 +1365,10 @@ export function* rewriteOptimizedOxcBarrelImports(
   resolvedImports: IEntrypointDependency[]
 ): Generator<any, RewriteResult, any> {
   const dependencies = buildResolvedDependencyMap(resolvedImports);
-  const analysisServices = createAnalysisServices(this.services);
+  const analysisServices = createAnalysisServices(
+    this.services,
+    this.entrypoint.cacheEpoch
+  );
   const program = parseRewrittenBarrel(code, filename);
   const replacements: Replacement[] = [];
   const generatedSources = new Set<string>();

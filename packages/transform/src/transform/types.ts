@@ -1,7 +1,7 @@
 import type { Debugger, Artifact, StrictOptions } from '@wyw-in-js/shared';
 import type { RawSourceMap } from 'source-map';
 
-import type { TransformCacheCollection } from '../cache';
+import type { TransformCacheCollection, TransformCacheEpoch } from '../cache';
 import type { Options, ITransformFileResult } from '../types';
 import type { EventEmitter } from '../utils/EventEmitter';
 import type { WYWTransformMetadata } from '../utils/TransformMetadata';
@@ -25,9 +25,12 @@ export type LoadDependencyCodeFn = (
 
 export type Services = {
   cache: TransformCacheCollection;
+  cacheEpoch?: TransformCacheEpoch;
   emitWarning?: (message: string) => void;
   eventEmitter: EventEmitter;
   loadDependencyCode?: LoadDependencyCodeFn;
+  /** Stable semantic identity for the bundler dependency loader. */
+  loadDependencyCodeKey?: string;
   loadAndParseFn: LoadAndParseFn;
   log: Debugger;
   options: Options & {
@@ -38,6 +41,7 @@ export type Services = {
     importer: string,
     stack: string[]
   ) => Promise<string | null>;
+  /** Stable semantic identity for the bundler resolver. */
   asyncResolveKey?: string;
   /**
    * Optional lifetime scope for the eval runner process. This is deliberately

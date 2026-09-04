@@ -18,6 +18,9 @@ import type {
   Services,
   SyncScenarioForAction,
 } from '../types';
+import { isCacheEpochAbortedError } from '../actions/CacheEpochAbortedError';
+import { isCacheKeySaltBusyError } from '../actions/CacheKeySaltBusyError';
+import { isCacheRecoveryConvergenceError } from '../actions/CacheRecoveryConvergenceError';
 
 type AsyncResolve = (
   what: string,
@@ -37,6 +40,16 @@ const getEvalOptions = (services: Services): EvalOptionsV2 => ({
   ...DEFAULT_EVAL_OPTIONS,
   ...(services.options.pluginOptions.eval ?? {}),
 });
+
+const isCacheRecoveryControlError = (error: unknown): boolean =>
+  isCacheEpochAbortedError(error) ||
+  isCacheKeySaltBusyError(error) ||
+  isCacheRecoveryConvergenceError(error) ||
+  (error !== null &&
+    typeof error === 'object' &&
+    ['WYW_SUPERSEDE_STORM', 'WYW_UNKNOWN_DEPENDENCY_GRAPH_RESET'].includes(
+      String((error as { code?: unknown }).code)
+    ));
 
 const resolveWithConfiguredEvalResolver = async (
   services: Services,
@@ -202,6 +215,10 @@ async function loadDependencyCodes(
               loadedCode,
             };
       } catch (err) {
+        if (isCacheRecoveryControlError(err)) {
+          throw err;
+        }
+
         entrypoint.log(
           '[load] ❌ cannot load %s in %s: %O',
           dependency.source,
@@ -266,6 +283,10 @@ export function* syncResolveImports(
       resolved = resolve(source, entrypoint.name, getStack(entrypoint));
       log('[sync-resolve] ✅ %s -> %s (only: %o)', source, resolved, only);
     } catch (err) {
+      if (isCacheRecoveryControlError(err)) {
+        throw err;
+      }
+
       log('[sync-resolve] ❌ cannot resolve %s: %O', source, err);
     }
 
@@ -326,6 +347,10 @@ export async function* asyncResolveImports(
         resolve
       );
     } catch (err) {
+      if (isCacheRecoveryControlError(err)) {
+        throw err;
+      }
+
       log(
         '[async-resolve] ❌ cannot resolve %s in %s: %O',
         source,
@@ -395,15 +420,12 @@ export async function* asyncResolveImports(
         });
 
         // … and update the cache
-        entrypoint.addResolveTask(source, newTask);
-        return newTask;
+        return entrypoint.addResolveTask(source, newTask);
       }
 
       const resolveTask = getResolveTask(source, importsOnly);
 
-      entrypoint.addResolveTask(source, resolveTask);
-
-      return resolveTask;
+      return entrypoint.addResolveTask(source, resolveTask);
     })
   );
   entrypoint.assertNotSuperseded();

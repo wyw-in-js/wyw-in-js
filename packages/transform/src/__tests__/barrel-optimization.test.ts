@@ -8,6 +8,7 @@ import {
   asyncActionRunner,
   syncActionRunner,
 } from '../transform/actions/actionRunner';
+import { isCacheEpochAbortedError } from '../transform/actions/CacheEpochAbortedError';
 import { baseProcessingHandlers } from '../transform/generators/baseProcessingHandlers';
 import {
   processEntrypoint,
@@ -133,35 +134,43 @@ const runEntrypoint = (
   resolve = createResolver(root),
   onGetExports?: (services: Services) => void
 ) => {
-  const services = createServices(root, filename, cache, eventEmitter);
-  const entrypoint = Entrypoint.createRoot(
-    services,
-    filename,
-    ['*'],
-    undefined
-  );
-  if (entrypoint.ignored) {
-    throw new Error(`Unexpected ignored entrypoint ${filename}`);
+  for (let attempt = 0; ; attempt += 1) {
+    const services = createServices(root, filename, cache, eventEmitter);
+    try {
+      const entrypoint = Entrypoint.createRoot(
+        services,
+        filename,
+        ['*'],
+        undefined
+      );
+      if (entrypoint.ignored) {
+        throw new Error(`Unexpected ignored entrypoint ${filename}`);
+      }
+
+      const handlers = {
+        ...baseProcessingHandlers,
+        getExports(this: IGetExportsAction) {
+          onGetExports?.(this.services);
+          return baseProcessingHandlers.getExports.call(this);
+        },
+        processEntrypoint,
+        resolveImports(this: IResolveImportsAction) {
+          return syncResolveImports.call(this, resolve);
+        },
+      };
+
+      syncActionRunner(
+        entrypoint.createAction('processEntrypoint', undefined, null),
+        handlers
+      );
+
+      return entrypoint;
+    } catch (error) {
+      if (!isCacheEpochAbortedError(error) || attempt === 3) {
+        throw error;
+      }
+    }
   }
-
-  const handlers = {
-    ...baseProcessingHandlers,
-    getExports(this: IGetExportsAction) {
-      onGetExports?.(this.services);
-      return baseProcessingHandlers.getExports.call(this);
-    },
-    processEntrypoint,
-    resolveImports(this: IResolveImportsAction) {
-      return syncResolveImports.call(this, resolve);
-    },
-  };
-
-  syncActionRunner(
-    entrypoint.createAction('processEntrypoint', undefined, null),
-    handlers
-  );
-
-  return entrypoint;
 };
 
 const runEntrypointAsync = async (
@@ -862,6 +871,7 @@ describe('barrel optimization', () => {
       fs.writeFileSync(consumerFile, consumerCode);
 
       const cache = new TransformCacheCollection();
+      const recoveryToken = cache.createGraphTraversalToken();
       const started = createDeferred();
       const unblock = createDeferred();
       const resolve = createResolver(root);
@@ -884,18 +894,27 @@ describe('barrel optimization', () => {
         createRecorder().eventEmitter,
         gatedResolve
       );
+      let staleError: unknown;
+      const staleOutcome = staleTransform.then(
+        () => undefined,
+        (error) => {
+          staleError = error;
+        }
+      );
       await started.promise;
 
       fs.writeFileSync(barrelFile, `export { value } from './leaf-b';\n`);
-      const resetError = cache.beginUnknownGraphRecovery(
+      const recovery = cache.startUnknownGraphRecovery(
         consumerFile,
         new Set([barrelFile]),
         consumerCode,
-        {}
+        recoveryToken
       );
+      recovery.complete();
       unblock.resolve();
 
-      await expect(staleTransform).rejects.toBe(resetError);
+      await staleOutcome;
+      expect(staleError).toBe(recovery.abortError);
       expect(cache.get('barrelManifests', barrelFile)).toBeUndefined();
       expect(cache.get('exports', barrelFile)).toBeUndefined();
 

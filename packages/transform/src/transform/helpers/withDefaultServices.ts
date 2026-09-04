@@ -10,9 +10,11 @@ export type PartialServices = Partial<Omit<Services, RequiredServices>> &
 
 export const withDefaultServices = ({
   cache = new TransformCacheCollection(),
+  cacheEpoch,
   emitWarning,
   eventEmitter = EventEmitter.dummy,
   loadDependencyCode,
+  loadDependencyCodeKey,
   loadAndParseFn = loadAndParse,
   log = rootLog,
   options,
@@ -20,9 +22,11 @@ export const withDefaultServices = ({
   evalBrokerScope,
 }: PartialServices): Services => ({
   cache,
+  cacheEpoch,
   emitWarning,
   eventEmitter,
   loadDependencyCode,
+  loadDependencyCodeKey,
   loadAndParseFn,
   log,
   options,

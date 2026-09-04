@@ -3,6 +3,7 @@ import type { Debugger } from '@wyw-in-js/shared';
 
 import type { ParentEntrypoint } from '../types';
 import { getFileIdx } from '../utils/getFileIdx';
+import type { TransformCacheEpoch } from '../cache';
 
 import type { Services } from './types';
 import type { IEntrypointDependency } from './Entrypoint.types';
@@ -148,6 +149,8 @@ export abstract class BaseEntrypoint {
 
   public readonly log: Debugger;
 
+  public readonly cacheEpoch: TransformCacheEpoch;
+
   // eslint-disable-next-line no-plusplus
   public readonly seqId = entrypointSeqId++;
 
@@ -168,6 +171,7 @@ export abstract class BaseEntrypoint {
     >,
     public readonly invalidateOnDependencyChange: Set<string>
   ) {
+    this.cacheEpoch = services.cacheEpoch ?? services.cache.getCurrentEpoch();
     this.idx = getFileIdx(name);
     this.log =
       parents[0]?.log.extend(this.ref, '->') ?? services.log.extend(this.ref);

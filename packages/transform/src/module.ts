@@ -39,6 +39,7 @@ import {
 } from './transform/Entrypoint.helpers';
 import type { IEvaluatedEntrypoint } from './transform/EvaluatedEntrypoint';
 import type { IEntrypointDependency } from './transform/Entrypoint.types';
+import { isCacheEpochAbortedError } from './transform/actions/CacheEpochAbortedError';
 import { isUnprocessedEntrypointError } from './transform/actions/UnprocessedEntrypointError';
 import type { Services } from './transform/types';
 import {
@@ -419,11 +420,15 @@ export class Module {
   async evaluate(): Promise<void> {
     const { entrypoint } = this;
     entrypoint.assertTransformed();
+    const cacheEpoch =
+      this.services.cacheEpoch ?? this.services.cache.getCurrentEpoch();
+    this.cache.assertEpoch(cacheEpoch);
 
     const cached = this.cache.get('entrypoints', entrypoint.name)!;
     let evaluatedCreated = false;
     if (!entrypoint.supersededWith) {
-      this.cache.add(
+      this.cache.publish(
+        cacheEpoch,
         'entrypoints',
         entrypoint.name,
         entrypoint.createEvaluated(this.services)
@@ -471,7 +476,7 @@ export class Module {
     } catch (e) {
       this.isEvaluated = false;
       if (evaluatedCreated) {
-        this.cache.add('entrypoints', entrypoint.name, cached);
+        this.cache.publish(cacheEpoch, 'entrypoints', entrypoint.name, cached);
       }
 
       if (isUnprocessedEntrypointError(e)) {
@@ -482,6 +487,10 @@ export class Module {
       if (e instanceof EvalError) {
         this.debug('%O', e);
 
+        throw e;
+      }
+
+      if (isCacheEpochAbortedError(e)) {
         throw e;
       }
 

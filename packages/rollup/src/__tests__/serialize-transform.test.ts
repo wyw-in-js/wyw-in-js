@@ -320,6 +320,65 @@ describe('@wyw-in-js/rollup serializeTransform', () => {
     await plugin.transform!.call(ctx, 'console.log("test")', '/abs/entry.ts');
 
     expect(calls).toEqual(['entry:start', 'dependency', 'entry:end']);
+    const [entryServices, dependencyServices] = transformMock.mock.calls.map(
+      ([services]) => services
+    );
+    expect(entryServices.asyncResolveKey).toMatch(/^rollup:\d+$/);
+    expect(dependencyServices.asyncResolveKey).toBe(
+      entryServices.asyncResolveKey
+    );
+    expect(entryServices.loadDependencyCodeKey).toBe(
+      entryServices.asyncResolveKey
+    );
+    expect(dependencyServices.loadDependencyCodeKey).toBe(
+      entryServices.loadDependencyCodeKey
+    );
+  });
+
+  it('keeps one semantic resolver scope across contexts in a Rollup graph', async () => {
+    const { default: wywInJS } = await import('../index');
+    const plugin = wywInJS({ serializeTransform: false });
+    const resolve = jest.fn(async (what: string) => ({
+      id: what,
+      external: false,
+    }));
+
+    await plugin.transform!.call(
+      { ...createContext(), resolve },
+      'export {}',
+      '/abs/a.ts'
+    );
+    await plugin.transform!.call(
+      { ...createContext(), resolve },
+      'export {}',
+      '/abs/b.ts'
+    );
+
+    const [firstServices, secondServices] = transformMock.mock.calls.map(
+      ([services]) => services
+    );
+    expect(firstServices.asyncResolveKey).toBe(secondServices.asyncResolveKey);
+    expect(firstServices.loadDependencyCodeKey).toBe(
+      secondServices.loadDependencyCodeKey
+    );
+  });
+
+  it('isolates semantic resolver scopes between Rollup graphs', async () => {
+    const { default: wywInJS } = await import('../index');
+    const plugin = wywInJS({ serializeTransform: false });
+
+    await plugin.transform!.call(createContext(), 'export {}', '/abs/a.ts');
+    await plugin.transform!.call(createContext(), 'export {}', '/abs/b.ts');
+
+    const [firstServices, secondServices] = transformMock.mock.calls.map(
+      ([services]) => services
+    );
+    expect(firstServices.asyncResolveKey).not.toBe(
+      secondServices.asyncResolveKey
+    );
+    expect(firstServices.loadDependencyCodeKey).not.toBe(
+      secondServices.loadDependencyCodeKey
+    );
   });
 
   it('supports stable CSS filenames for CSS bundlers with watch caches', async () => {

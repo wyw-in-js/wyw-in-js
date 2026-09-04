@@ -82,7 +82,11 @@ export function* workflow(
       // A root bundler pass for a plain dependency must not pin eval/cache state.
       // If another WyW file needs this module, it will be prepared on demand.
       recordPipelineDisposableRoot(entrypoint.name, 'preeval');
-      cache.delete('entrypoints', entrypoint.name);
+      cache.removePublished(
+        entrypoint.cacheEpoch,
+        'entrypoints',
+        entrypoint.name
+      );
     }
 
     return {
@@ -132,7 +136,11 @@ export function* workflow(
       recordPipelineLateNoMetadata(entrypoint.name, entrypoint.only, 'collect');
       if (isLoadedEntrypointWithoutArtifacts(entrypoint)) {
         recordPipelineDisposableRoot(entrypoint.name, 'collect');
-        cache.delete('entrypoints', entrypoint.name);
+        cache.removePublished(
+          entrypoint.cacheEpoch,
+          'entrypoints',
+          entrypoint.name
+        );
       }
 
       return {

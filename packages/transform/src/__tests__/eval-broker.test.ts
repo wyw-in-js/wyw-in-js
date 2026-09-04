@@ -17,6 +17,7 @@ import {
 import { shaker } from '../shaker';
 import { withDefaultServices } from '../transform/helpers/withDefaultServices';
 import { Entrypoint } from '../transform/Entrypoint';
+import { isCacheEpochAbortedError } from '../transform/actions/CacheEpochAbortedError';
 import {
   disposeEvalBroker,
   EvalBroker,
@@ -26,6 +27,7 @@ import {
 import { prepareModuleOnDemand } from '../eval/prepareModuleOnDemand';
 import { serializeValue } from '../eval/serialize';
 import { EventEmitter } from '../utils/EventEmitter';
+import { TransformCacheCollection, type TransformCacheEpoch } from '../cache';
 
 const createPluginOptions = (overrides: PartialOptions = {}) =>
   loadWywOptions({
@@ -54,14 +56,37 @@ const createServices = (
   overrides: PartialOptions = {}
 ) => {
   const pluginOptions = createPluginOptions(overrides);
+  const cache = new TransformCacheCollection();
   return withDefaultServices({
     babel,
+    cache,
+    cacheEpoch: cache.getCurrentEpoch(),
     options: {
       root,
       filename,
       pluginOptions,
     },
-  });
+  }) as ReturnType<typeof withDefaultServices> & {
+    cacheEpoch: TransformCacheEpoch;
+  };
+};
+
+const createEntrypointAfterRecovery = <T>(
+  services: ReturnType<typeof createServices>,
+  create: () => T
+): T => {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return create();
+    } catch (error) {
+      if (!isCacheEpochAbortedError(error) || attempt === 3) {
+        throw error;
+      }
+
+      // eslint-disable-next-line no-param-reassign
+      services.cacheEpoch = services.cache.getCurrentEpoch();
+    }
+  }
 };
 
 const testCssProcessorFile = join(
@@ -386,12 +411,13 @@ describe('EvalBroker', () => {
       await bStarted;
       const runnerB = getPrivateBroker(broker).runner;
       const resetError = new Error('cache A reset');
-      servicesA.cache.beginSupersedeStormRecovery(resetError);
-      broker.resetAfterCacheInvalidation(
-        servicesA.cache,
+      const recovery = servicesA.cache.startSupersedeStormRecovery(
         resetError,
-        'supersede-storm'
+        entryA,
+        servicesA.cacheEpoch
       );
+      expect(recovery.started).toBe(true);
+      recovery.complete();
       const notRejected = Symbol('not-rejected');
       const earlyAResult = await Promise.race([
         rejectionA,
@@ -400,13 +426,14 @@ describe('EvalBroker', () => {
         }),
       ]);
 
-      expect(earlyAResult).toBe(resetError);
+      expect(earlyAResult).toBe(recovery.abortError);
       expect(getPrivateBroker(broker).runner).toBe(runnerB);
 
       releaseB();
       expect((await evalB).values?.get('value')).toBe('from-b');
-      await expect(evalA).rejects.toBe(resetError);
+      await expect(evalA).rejects.toBe(recovery.abortError);
 
+      servicesA.cacheEpoch = servicesA.cache.getCurrentEpoch();
       const freshEntrypointA = Entrypoint.createRoot(
         servicesA,
         entryA,
@@ -502,12 +529,13 @@ describe('EvalBroker', () => {
 
       await aStarted;
       const resetError = new Error('active cache A reset');
-      servicesA.cache.beginSupersedeStormRecovery(resetError);
-      broker.resetAfterCacheInvalidation(
-        servicesA.cache,
+      const recovery = servicesA.cache.startSupersedeStormRecovery(
         resetError,
-        'supersede-storm'
+        entryA,
+        servicesA.cacheEpoch
       );
+      expect(recovery.started).toBe(true);
+      recovery.complete();
       const notRejected = Symbol('not-rejected');
       const earlyAResult = await Promise.race([
         rejectionA,
@@ -516,9 +544,9 @@ describe('EvalBroker', () => {
         }),
       ]);
 
-      expect(earlyAResult).toBe(resetError);
+      expect(earlyAResult).toBe(recovery.abortError);
       expect((await evalB).values?.get('value')).toBe('from-b');
-      await expect(evalA).rejects.toBe(resetError);
+      await expect(evalA).rejects.toBe(recovery.abortError);
 
       releaseA();
       await aFinished;
@@ -575,12 +603,13 @@ describe('EvalBroker', () => {
       ensuring = privateBroker.ensureRunner();
 
       const resetError = new Error('reset while runner is becoming ready');
-      services.cache.beginSupersedeStormRecovery(resetError);
-      broker.resetAfterCacheInvalidation(
-        services.cache,
+      const recovery = services.cache.startSupersedeStormRecovery(
         resetError,
-        'supersede-storm'
+        entry,
+        services.cacheEpoch
       );
+      expect(recovery.started).toBe(true);
+      recovery.complete();
       expect(staleRunner.kill).toHaveBeenCalledTimes(1);
 
       releaseReady();
@@ -771,8 +800,11 @@ describe('EvalBroker', () => {
     };
     services.asyncResolve = asyncResolve;
     const broker = new EvalBroker(services, asyncResolve);
+    services.evalBroker = broker;
     const createEntrypoint = () =>
-      Entrypoint.createRoot(services, entry, ['__wywPreval'], source);
+      createEntrypointAfterRecovery(services, () =>
+        Entrypoint.createRoot(services, entry, ['__wywPreval'], source)
+      );
     let retry: ReturnType<typeof broker.evaluate> | undefined;
 
     try {
@@ -1357,6 +1389,70 @@ describe('EvalBroker', () => {
       expect(second.isDisposed).toBe(false);
     } finally {
       disposeEvalBroker(scope);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('broadcasts one recovery to every scoped broker serving the cache', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wyw-eval-broker-'));
+    const entryA = join(root, 'a.js');
+    const entryB = join(root, 'b.js');
+    const recoveryFile = join(root, 'recovery.js');
+    const source = 'export const __wywPreval = {};';
+    writeFileSync(recoveryFile, source);
+    const cache = new TransformCacheCollection();
+    const scopeA = {};
+    const scopeB = {};
+    const servicesA = createServices(root, entryA);
+    const servicesB = createServices(root, entryB);
+    servicesA.cache = cache;
+    servicesA.cacheEpoch = cache.getCurrentEpoch();
+    servicesA.evalBrokerScope = scopeA;
+    servicesB.cache = cache;
+    servicesB.cacheEpoch = cache.getCurrentEpoch();
+    servicesB.evalBrokerScope = scopeB;
+    const resolver = async () => null;
+    const brokerA = getEvalBroker(servicesA, resolver, 'stable-key');
+    const brokerB = getEvalBroker(servicesB, resolver, 'stable-key');
+    servicesA.evalBroker = brokerA;
+    servicesB.evalBroker = brokerB;
+    const resetA = jest.spyOn(brokerA, 'resetAfterCacheInvalidation');
+    const resetB = jest.spyOn(brokerB, 'resetAfterCacheInvalidation');
+    const freshness = jest
+      .spyOn(cache, 'invalidateIfChangedWithDetails')
+      .mockReturnValueOnce({
+        changed: false,
+        unknownDependencyGraphs: new Set([join(root, 'missing.js')]),
+      });
+    let abortError: unknown;
+
+    try {
+      Entrypoint.createRoot(servicesA, recoveryFile, ['__wywPreval'], source);
+    } catch (error) {
+      abortError = error;
+    }
+
+    try {
+      expect(abortError).toMatchObject({
+        code: 'WYW_CACHE_EPOCH_ABORTED',
+        reason: 'unknown-dependency-graph',
+      });
+      expect(resetA).toHaveBeenCalledTimes(1);
+      expect(resetB).toHaveBeenCalledTimes(1);
+      expect(resetA).toHaveBeenCalledWith(
+        cache.getCurrentEpoch().owner,
+        abortError,
+        'unknown-dependency-graph'
+      );
+      expect(resetB).toHaveBeenCalledWith(
+        cache.getCurrentEpoch().owner,
+        abortError,
+        'unknown-dependency-graph'
+      );
+    } finally {
+      freshness.mockRestore();
+      disposeEvalBroker(scopeA);
+      disposeEvalBroker(scopeB);
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -2193,19 +2289,16 @@ describe('EvalBroker', () => {
     await Promise.resolve();
     expect(customLoader).toHaveBeenCalledTimes(1);
 
-    const resetError = services.cache.beginUnknownGraphRecovery(
+    const recovery = services.cache.startUnknownGraphRecovery(
       importer,
       new Set([dep]),
       entryCode,
-      {}
+      oldEntrypoint.graphTraversalToken
     );
-    broker.resetAfterCacheInvalidation(
-      services.cache,
-      resetError,
-      'unknown-dependency-graph'
-    );
+    recovery.complete();
     expect(oldRunner.kill).toHaveBeenCalledTimes(1);
 
+    services.cacheEpoch = services.cache.getCurrentEpoch();
     const freshEntrypoint = Entrypoint.createRoot(
       services,
       importer,
@@ -2732,9 +2825,12 @@ describe('EvalBroker', () => {
         what.startsWith('.') ? resolve(dirname(importer), what) : null
       )
     );
+    services.evalBroker = broker;
     const evaluate = () =>
       broker.evaluate(
-        Entrypoint.createRoot(services, entry, ['__wywPreval'], entryCode)
+        createEntrypointAfterRecovery(services, () =>
+          Entrypoint.createRoot(services, entry, ['__wywPreval'], entryCode)
+        )
       );
     const captureError = async () => {
       try {
@@ -5921,6 +6017,7 @@ describe('EvalBroker', () => {
     });
     const services = createServices(root, join(root, 'entry.js'));
     const broker = new EvalBroker(services, asyncResolve);
+    services.evalBroker = broker;
 
     const ep = Entrypoint.createRoot(
       services,
@@ -5989,11 +6086,13 @@ describe('EvalBroker', () => {
     // User creates the previously-missing file.
     writeFileSync(join(root, 'target.js'), 'export const value = 42;');
 
-    const ep2 = Entrypoint.createRoot(
-      services,
-      join(root, 'entry.js'),
-      ['__wywPreval'],
-      readFileSync(join(root, 'entry.js'), 'utf-8')
+    const ep2 = createEntrypointAfterRecovery(services, () =>
+      Entrypoint.createRoot(
+        services,
+        join(root, 'entry.js'),
+        ['__wywPreval'],
+        readFileSync(join(root, 'entry.js'), 'utf-8')
+      )
     );
     const result = await broker.evaluate(ep2);
     expect(result.values?.get('v')).toBe(42);
@@ -7132,11 +7231,8 @@ describe('EvalBroker', () => {
       writeFileSync(leaf, 'export const value = 2;');
 
       asyncResolve.mockClear();
-      const rebuilt = Entrypoint.createRoot(
-        services,
-        entry,
-        ['__wywPreval'],
-        undefined
+      const rebuilt = createEntrypointAfterRecovery(services, () =>
+        Entrypoint.createRoot(services, entry, ['__wywPreval'], undefined)
       );
       const refreshed = await broker.evaluate(rebuilt);
 
@@ -7148,7 +7244,9 @@ describe('EvalBroker', () => {
       // external request must re-arm fail-closed recovery rather than treating
       // that one pass as proof of convergence.
       const lifecycleBeforeRetry = services.cache.getLifecycleVersion();
-      Entrypoint.createRoot(services, entry, ['__wywPreval'], undefined);
+      expect(() =>
+        Entrypoint.createRoot(services, entry, ['__wywPreval'], undefined)
+      ).toThrow(expect.objectContaining({ code: 'WYW_CACHE_EPOCH_ABORTED' }));
       expect(services.cache.getLifecycleVersion()).toBeGreaterThan(
         lifecycleBeforeRetry
       );
@@ -7305,12 +7403,13 @@ describe('EvalBroker', () => {
         }
         resetScheduled = true;
         queueMicrotask(() => {
-          servicesA.cache.beginSupersedeStormRecovery(resetError);
-          broker.resetAfterCacheInvalidation(
-            servicesA.cache,
+          const recovery = servicesA.cache.startSupersedeStormRecovery(
             resetError,
-            'supersede-storm'
+            entryA,
+            servicesA.cacheEpoch
           );
+          expect(recovery.started).toBe(true);
+          recovery.complete();
         });
       };
 
@@ -7333,7 +7432,13 @@ describe('EvalBroker', () => {
         ]);
 
         expect(resetScheduled).toBe(true);
-        expect(resultA).toEqual({ reason: resetError, status: 'rejected' });
+        expect(resultA).toEqual({
+          reason: expect.objectContaining({
+            cause: resetError,
+            code: 'WYW_CACHE_EPOCH_ABORTED',
+          }),
+          status: 'rejected',
+        });
         expect(resultB.status).toBe('fulfilled');
         if (resultB.status === 'fulfilled') {
           expect(resultB.value.values?.get('value')).toBe(entryB);

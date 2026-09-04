@@ -12,6 +12,12 @@ import {
 import type { BarrelManifestCacheEntry } from './transform/barrelManifest.types';
 import type { Entrypoint } from './transform/Entrypoint';
 import type { IEvaluatedEntrypoint } from './transform/EvaluatedEntrypoint';
+import {
+  CacheEpochAbortedError,
+  type CacheRecoveryReason,
+} from './transform/actions/CacheEpochAbortedError';
+import { CacheKeySaltBusyError } from './transform/actions/CacheKeySaltBusyError';
+import { resetEvalBrokersAfterCacheInvalidation } from './eval/brokerRegistry';
 import { getFileIdx } from './utils/getFileIdx';
 import { stripQueryAndHash } from './utils/parseRequest';
 
@@ -60,24 +66,76 @@ const isEntrypointGraphIncomplete = (
 interface ICaches<TEntrypoint extends IBaseCachedEntrypoint> {
   barrelManifests: Map<string, BarrelManifestCacheEntry>;
   entrypoints: Map<string, TEntrypoint>;
+  epochOwner: TransformCacheCollection<IBaseCachedEntrypoint>;
   exports: Map<string, string[]>;
 }
 
 type MapValue<T> = T extends Map<string, infer V> ? V : never;
 
-interface IGraphTraversalTokenOwner {
-  getLifecycleError(version: number): Error | null;
-  getLifecycleVersion(): number;
-  getScopedRecoveryError(
-    version: number,
-    visited: ReadonlySet<string>
-  ): Error | undefined;
+export interface TransformCacheEpoch {
+  readonly owner: TransformCacheCollection<IBaseCachedEntrypoint>;
+  readonly version: number;
 }
+
+interface CacheEpochState {
+  abortError: CacheEpochAbortedError | null;
+  failure: Error | null;
+  ready: Promise<void>;
+  rejectReady: (error: Error) => void;
+  resolveReady: () => void;
+  status: 'failed' | 'pending' | 'ready';
+}
+
+interface KeySaltLeaseWaiter {
+  readonly keySalt: string | null;
+  reject(error: Error): void;
+  resolve(release: () => void): void;
+}
+
+export interface CacheRecoveryTransition {
+  readonly abortError: CacheEpochAbortedError;
+  readonly started: boolean;
+  complete(): void;
+  fail(error: Error): void;
+}
+
+export { CacheKeySaltBusyError };
 
 const graphTraversalTokenStates = new WeakMap<
   object,
-  { owner: IGraphTraversalTokenOwner; version: number; visited: Set<string> }
+  { epoch: TransformCacheEpoch }
 >();
+
+const createPendingEpochState = (): CacheEpochState => {
+  let resolveReady!: () => void;
+  let rejectReady!: (error: Error) => void;
+  const ready = new Promise<void>((resolve, reject) => {
+    resolveReady = resolve;
+    rejectReady = reject;
+  });
+  // A reset failure makes the replacement epoch terminal. Some callers may
+  // never have reached acquireReadyEpoch() yet, so keep that rejection from
+  // becoming an unhandled promise while preserving it for future awaiters.
+  ready.catch(() => undefined);
+
+  return {
+    abortError: null,
+    failure: null,
+    ready,
+    rejectReady,
+    resolveReady,
+    status: 'pending',
+  };
+};
+
+const createReadyEpochState = (): CacheEpochState => ({
+  abortError: null,
+  failure: null,
+  ready: Promise.resolve(),
+  rejectReady: () => {},
+  resolveReady: () => {},
+  status: 'ready',
+});
 
 const cacheLogger = logger.extend('cache');
 
@@ -116,6 +174,14 @@ export class TransformCacheCollection<
 
   private keySalt: string | null = null;
 
+  private activeKeySaltLease: string | null = null;
+
+  private keySaltLeaseHolders = 0;
+
+  private keySaltLeaseDraining = false;
+
+  private readonly keySaltLeaseWaiters: KeySaltLeaseWaiter[] = [];
+
   private invalidatedFiles = new Map<string, number>();
 
   private consumedInvalidationVersions = new Map<string, number>();
@@ -126,38 +192,170 @@ export class TransformCacheCollection<
 
   private lifecycleVersion = 0;
 
-  // Recovery errors keyed by the file whose graph was incomplete. Bounded by
-  // the number of distinct files ever recovered, and cleared with the cache.
-  private readonly fileRecoveryErrors = new Map<
-    string,
-    { error: Error; version: number }
-  >();
+  private currentEpoch: TransformCacheEpoch;
 
-  private readonly pendingUnknownGraphs = new Map<
-    string,
-    {
-      dependencies: Set<string>;
-      recoveryToken: object;
-      sourceHash: string;
-    }
+  private readonly epochOwner: TransformCacheCollection<IBaseCachedEntrypoint>;
+
+  private readonly epochStates = new WeakMap<
+    TransformCacheEpoch,
+    CacheEpochState
   >();
 
   constructor(caches: Partial<ICaches<TEntrypoint>> = {}) {
     this.barrelManifests = caches.barrelManifests || new Map();
     this.entrypoints = caches.entrypoints || new Map();
     this.exports = caches.exports || new Map();
+    this.epochOwner = caches.epochOwner ?? this;
+    this.currentEpoch = { owner: this, version: this.lifecycleVersion };
+    this.epochStates.set(this.currentEpoch, createReadyEpochState());
   }
 
-  public setKeySalt(keySalt: string | null) {
+  public setKeySalt(keySalt: string | null): void {
+    if (this.epochOwner !== this) {
+      this.epochOwner.setKeySalt(keySalt);
+      return;
+    }
+
     const prevKeySalt = this.keySalt;
     if (prevKeySalt === keySalt) {
       recordPipelineCacheSalt(prevKeySalt, keySalt, 'unchanged');
       return;
     }
 
+    if (
+      this.keySaltLeaseHolders > 0 ||
+      this.keySaltLeaseDraining ||
+      this.keySaltLeaseWaiters.length > 0
+    ) {
+      throw new CacheKeySaltBusyError();
+    }
+
+    this.applyKeySalt(keySalt);
+  }
+
+  public acquireKeySalt(keySalt: string | null): Promise<() => void> {
+    if (this.epochOwner !== this) {
+      return this.epochOwner.acquireKeySalt(keySalt);
+    }
+
+    return new Promise<() => void>((resolve, reject) => {
+      if (
+        this.keySaltLeaseHolders > 0 &&
+        this.keySaltLeaseWaiters.length === 0 &&
+        this.activeKeySaltLease === keySalt
+      ) {
+        this.keySaltLeaseHolders += 1;
+        resolve(this.createKeySaltLeaseRelease());
+        return;
+      }
+
+      this.keySaltLeaseWaiters.push({ keySalt, reject, resolve });
+      this.drainKeySaltLeaseWaiters().catch(() => undefined);
+    });
+  }
+
+  public tryAcquireKeySalt(
+    keySalt: string | null,
+    allowQueuedSameKey = false
+  ): (() => void) | null {
+    if (this.epochOwner !== this) {
+      return this.epochOwner.tryAcquireKeySalt(keySalt, allowQueuedSameKey);
+    }
+
+    const currentState = this.epochStates.get(this.currentEpoch);
+    if (currentState?.status !== 'ready') {
+      return null;
+    }
+
+    if (this.keySaltLeaseHolders > 0) {
+      if (
+        this.activeKeySaltLease !== keySalt ||
+        (!allowQueuedSameKey && this.keySaltLeaseWaiters.length > 0)
+      ) {
+        return null;
+      }
+
+      this.keySaltLeaseHolders += 1;
+      return this.createKeySaltLeaseRelease();
+    }
+
+    if (this.keySaltLeaseDraining || this.keySaltLeaseWaiters.length > 0) {
+      return null;
+    }
+
+    this.applyKeySalt(keySalt);
+    this.activeKeySaltLease = keySalt;
+    this.keySaltLeaseHolders = 1;
+    return this.createKeySaltLeaseRelease();
+  }
+
+  private createKeySaltLeaseRelease(): () => void {
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.keySaltLeaseHolders -= 1;
+      if (this.keySaltLeaseHolders === 0) {
+        this.drainKeySaltLeaseWaiters().catch(() => undefined);
+      }
+    };
+  }
+
+  private async drainKeySaltLeaseWaiters(): Promise<void> {
+    if (
+      this.keySaltLeaseDraining ||
+      this.keySaltLeaseHolders > 0 ||
+      this.keySaltLeaseWaiters.length === 0
+    ) {
+      return;
+    }
+
+    this.keySaltLeaseDraining = true;
+    const { keySalt } = this.keySaltLeaseWaiters[0];
+    try {
+      await this.acquireReadyEpoch();
+      this.applyKeySalt(keySalt);
+
+      const waiters: KeySaltLeaseWaiter[] = [];
+      while (this.keySaltLeaseWaiters[0]?.keySalt === keySalt) {
+        waiters.push(this.keySaltLeaseWaiters.shift()!);
+      }
+
+      this.activeKeySaltLease = keySalt;
+      this.keySaltLeaseHolders = waiters.length;
+      waiters.forEach((waiter) => {
+        waiter.resolve(this.createKeySaltLeaseRelease());
+      });
+    } catch (error) {
+      const leaseError =
+        error instanceof Error ? error : new Error(String(error));
+      while (this.keySaltLeaseWaiters[0]?.keySalt === keySalt) {
+        this.keySaltLeaseWaiters.shift()!.reject(leaseError);
+      }
+    } finally {
+      this.keySaltLeaseDraining = false;
+      if (this.keySaltLeaseHolders === 0) {
+        this.drainKeySaltLeaseWaiters().catch(() => undefined);
+      }
+    }
+  }
+
+  private applyKeySalt(keySalt: string | null): void {
+    const prevKeySalt = this.keySalt;
+    if (prevKeySalt === keySalt) {
+      recordPipelineCacheSalt(prevKeySalt, keySalt, 'unchanged');
+      return;
+    }
+
+    this.assertEpoch(this.currentEpoch);
+
     this.keySalt = keySalt;
     this.resetVersion += 1;
 
+    // Preserve the historical public cache contract: installing the first
+    // semantic key adopts entries that callers populated before transform().
+    // No work is retired because those entries remain in the same epoch; only
+    // their map keys move into the now-named namespace.
     if (prevKeySalt === null && keySalt) {
       recordPipelineCacheSalt(prevKeySalt, keySalt, 'migrate');
       const migrate = <TValue>(cache: Map<string, TValue>) => {
@@ -177,7 +375,10 @@ export class TransformCacheCollection<
       return;
     }
 
-    const clearReason = keySalt === null ? 'salt-disable' : 'salt-change';
+    let clearReason = 'salt-change';
+    if (keySalt === null) {
+      clearReason = 'salt-disable';
+    }
     recordPipelineCacheSalt(
       prevKeySalt,
       keySalt,
@@ -194,115 +395,175 @@ export class TransformCacheCollection<
     recordPipelineCacheClear('exports', clearReason, this.exports.size);
     this.exports.clear();
     this.entrypointDependencySnapshots.clear();
-    this.pendingUnknownGraphs.clear();
-    this.fileRecoveryErrors.clear();
     this.clearCacheDependencies('all');
+
+    this.rotateEpochAfterKeySaltChange(prevKeySalt, keySalt);
   }
 
-  private getKey(key: string) {
+  private rotateEpochAfterKeySaltChange(
+    prevKeySalt: string | null,
+    keySalt: string | null
+  ): void {
+    const fromEpoch = this.currentEpoch;
+    const nextEpoch: TransformCacheEpoch = {
+      owner: this,
+      version: this.lifecycleVersion + 1,
+    };
+    const nextState = createPendingEpochState();
+    const cause = Object.assign(
+      new Error(
+        `[wyw-in-js] Transform cache key changed from ${String(
+          prevKeySalt
+        )} to ${String(keySalt)}.`
+      ),
+      { code: 'WYW_CACHE_KEY_SALT_CHANGED' }
+    );
+    const abortError = new CacheEpochAbortedError(
+      fromEpoch.version,
+      nextEpoch.version,
+      'cache-key-salt-change',
+      cause
+    );
+    this.epochStates.get(fromEpoch)!.abortError = abortError;
+    this.epochStates.set(nextEpoch, nextState);
+    this.currentEpoch = nextEpoch;
+    this.lifecycleVersion = nextEpoch.version;
+    this.lifecycleError = abortError;
+
+    try {
+      resetEvalBrokersAfterCacheInvalidation(
+        this,
+        abortError,
+        'cache-key-salt-change'
+      );
+      nextState.status = 'ready';
+      nextState.resolveReady();
+    } catch (error) {
+      const resetError =
+        error instanceof Error ? error : new Error(String(error));
+      nextState.failure = resetError;
+      nextState.status = 'failed';
+      nextState.rejectReady(resetError);
+      throw resetError;
+    }
+  }
+
+  private getKey(key: string): string {
+    if (this.epochOwner !== this) return this.epochOwner.getKey(key);
     if (!this.keySalt) return key;
     return `${key}::${this.keySalt}`;
   }
 
-  public getKeySalt() {
-    return this.keySalt;
+  public getKeySalt(): string | null {
+    return this.epochOwner === this
+      ? this.keySalt
+      : this.epochOwner.getKeySalt();
   }
 
   public getLifecycleVersion(): number {
-    return this.lifecycleVersion;
+    return this.epochOwner === this
+      ? this.lifecycleVersion
+      : this.epochOwner.getLifecycleVersion();
+  }
+
+  public getCurrentEpoch(): TransformCacheEpoch {
+    if (this.epochOwner !== this) {
+      return this.epochOwner.getCurrentEpoch();
+    }
+    return this.currentEpoch;
+  }
+
+  public async acquireReadyEpoch(): Promise<TransformCacheEpoch> {
+    if (this.epochOwner !== this) {
+      return this.epochOwner.acquireReadyEpoch();
+    }
+    // A recovery publishes the replacement epoch before retiring the eval
+    // runner. Wait for that transition to finish, then make sure another
+    // recovery did not replace it while this caller was waiting.
+    for (;;) {
+      const epoch = this.currentEpoch;
+      // Cache recovery is an explicit async barrier for every new attempt.
+      // eslint-disable-next-line no-await-in-loop
+      await this.epochStates.get(epoch)!.ready;
+      if (epoch === this.currentEpoch) {
+        return epoch;
+      }
+    }
+  }
+
+  public assertEpoch(epoch: TransformCacheEpoch): void {
+    if (epoch.owner !== this.epochOwner) {
+      throw new Error('[wyw-in-js] Transform cache epoch has a wrong owner');
+    }
+
+    if (this.epochOwner !== this) {
+      this.epochOwner.assertEpoch(epoch);
+      return;
+    }
+
+    const state = this.epochStates.get(epoch);
+    if (epoch === this.currentEpoch) {
+      if (state?.status === 'ready') {
+        return;
+      }
+      if (state?.status === 'failed' && state.failure) {
+        throw state.failure;
+      }
+      throw new Error(
+        '[wyw-in-js] Transform cache recovery is still in progress'
+      );
+    }
+
+    const abortError = state?.abortError;
+    if (abortError) {
+      throw abortError;
+    }
+
+    throw (
+      this.lifecycleError ??
+      new Error('[wyw-in-js] Transform cache epoch was invalidated')
+    );
+  }
+
+  public getEpochError(epoch: TransformCacheEpoch): Error | null {
+    try {
+      this.assertEpoch(epoch);
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error : new Error(String(error));
+    }
   }
 
   public getResetVersion(): number {
-    return this.resetVersion;
+    return this.epochOwner === this
+      ? this.resetVersion
+      : this.epochOwner.getResetVersion();
   }
 
   public getLifecycleError(version: number): Error | null {
+    if (this.epochOwner !== this) {
+      return this.epochOwner.getLifecycleError(version);
+    }
     return version === this.lifecycleVersion ? null : this.lifecycleError;
   }
 
-  /**
-   * The recovery error for a generation of `filename` that was created before a
-   * recovery of that same file, so it read the state the recovery cleared. An
-   * unrelated file transforming concurrently on the same cache never inherits
-   * it, and a generation created after the recovery starts clean.
-   */
-  public getRecoveryError(
-    filename: string,
-    sinceVersion: number,
-    graphTraversalToken?: object
-  ): Error | null {
-    const recovery = this.fileRecoveryErrors.get(filename);
-    if (!recovery) {
-      return null;
-    }
-
-    if (recovery.version > sinceVersion) {
-      return recovery.error;
-    }
-
-    // While this file's own recovery has not converged, only the traversal that
-    // opened the recovery may work with it. Any other generation -- a stale
-    // parent creating a child, or a re-request reusing the recovering
-    // entrypoint's token -- must not be published from an incomplete graph.
-    const pending = this.pendingUnknownGraphs.get(filename);
-    if (pending && graphTraversalToken !== pending.recoveryToken) {
-      return recovery.error;
-    }
-
-    return null;
-  }
-
-  public createGraphTraversalToken(): object {
+  public createGraphTraversalToken(
+    epoch: TransformCacheEpoch = this.getCurrentEpoch()
+  ): object {
+    this.assertEpoch(epoch);
     const token = {};
-    graphTraversalTokenStates.set(token, {
-      owner: this,
-      version: this.lifecycleVersion,
-      visited: new Set(),
-    });
+    graphTraversalTokenStates.set(token, { epoch });
     return token;
   }
 
+  // eslint-disable-next-line class-methods-use-this
   public getGraphTraversalTokenError(token: object): Error | null {
     const state = graphTraversalTokenStates.get(token);
     if (!state) {
       return null;
     }
 
-    const owner = state.owner === this ? this : state.owner;
-    if (owner.getLifecycleVersion() === state.version) return null;
-
-    const scopedError = owner.getScopedRecoveryError(
-      state.version,
-      state.visited
-    );
-    // A traversal that never read a file a recovery reset kept reading state
-    // no recovery invalidated, so it stays usable: a concurrent transform on a
-    // shared cache must not fail for another file's incomplete graph.
-    if (scopedError === undefined) {
-      return null;
-    }
-
-    return owner.getLifecycleError(state.version) ?? scopedError;
-  }
-
-  /**
-   * The recovery that retired a traversal from `version` which read `visited`,
-   * or `undefined` while no recovery has reset anything it read. A recovery
-   * resets only its own file, so a traversal is stale exactly when that file
-   * is among the ones it read; unrelated recoveries leave it usable.
-   */
-  public getScopedRecoveryError(
-    version: number,
-    visited: ReadonlySet<string>
-  ): Error | undefined {
-    for (const [filename, recovery] of this.fileRecoveryErrors) {
-      if (recovery.version > version && visited.has(filename)) {
-        return recovery.error;
-      }
-    }
-
-    // A global reset carries no subject, so it retires every traversal.
-    return this.lifecycleError ?? undefined;
+    return state.epoch.owner.getEpochError(state.epoch);
   }
 
   public beginUnknownGraphRecovery(
@@ -311,7 +572,70 @@ export class TransformCacheCollection<
     sourceCode: string,
     recoveryToken: object
   ): Error {
-    const error = Object.assign(
+    const cause = TransformCacheCollection.createUnknownGraphRecoveryError(
+      filename,
+      unknownDependencies
+    );
+    // The released API accepted an arbitrary token and rebound it to the
+    // replacement lifecycle. Keep that contract while the internal start*
+    // API uses a pre-registered token to identify the retiring epoch.
+    graphTraversalTokenStates.set(recoveryToken, {
+      epoch: this.getCurrentEpoch(),
+    });
+    const transition = this.startUnknownGraphRecoveryWithCause(
+      filename,
+      unknownDependencies,
+      sourceCode,
+      recoveryToken,
+      cause
+    );
+    transition.complete();
+    graphTraversalTokenStates.set(recoveryToken, {
+      epoch: this.getCurrentEpoch(),
+    });
+    return cause;
+  }
+
+  /**
+   * @deprecated Unknown-graph recovery is complete when
+   * beginUnknownGraphRecovery returns.
+   */
+  public completeUnknownGraphRecovery(
+    filename: string,
+    publishedEntrypoint?: TEntrypoint
+  ): void {
+    if (this.epochOwner !== this) {
+      this.epochOwner.completeUnknownGraphRecovery(
+        filename,
+        publishedEntrypoint
+      );
+    }
+  }
+
+  /** @internal Use beginUnknownGraphRecovery unless the pending epoch is observed. */
+  public startUnknownGraphRecovery(
+    filename: string,
+    unknownDependencies: ReadonlySet<string>,
+    sourceCode: string,
+    recoveryToken: object
+  ): CacheRecoveryTransition {
+    return this.startUnknownGraphRecoveryWithCause(
+      filename,
+      unknownDependencies,
+      sourceCode,
+      recoveryToken,
+      TransformCacheCollection.createUnknownGraphRecoveryError(
+        filename,
+        unknownDependencies
+      )
+    );
+  }
+
+  private static createUnknownGraphRecoveryError(
+    filename: string,
+    unknownDependencies: ReadonlySet<string>
+  ): Error {
+    return Object.assign(
       new Error(
         `[wyw-in-js] Resetting transform and evaluation caches for ${filename} because the dependency graph is incomplete (${[
           ...unknownDependencies,
@@ -322,100 +646,135 @@ export class TransformCacheCollection<
         name: 'UnknownDependencyGraphResetError',
       }
     );
-
-    this.beginFailClosedRecovery(error, filename, unknownDependencies);
-    graphTraversalTokenStates.set(recoveryToken, {
-      owner: this,
-      version: this.lifecycleVersion,
-      visited: new Set([filename]),
-    });
-    this.pendingUnknownGraphs.set(filename, {
-      dependencies: new Set(unknownDependencies),
-      recoveryToken,
-      sourceHash: hashContent(sourceCode),
-    });
-    return error;
   }
 
-  public completeUnknownGraphRecovery(
-    filename: string,
-    publishedEntrypoint?: TEntrypoint
-  ): void {
-    if (
-      publishedEntrypoint !== undefined &&
-      this.get('entrypoints', filename) !== publishedEntrypoint
-    ) {
-      return;
+  private startUnknownGraphRecoveryWithCause(
+    _filename: string,
+    _unknownDependencies: ReadonlySet<string>,
+    _sourceCode: string,
+    recoveryToken: object,
+    cause: Error
+  ): CacheRecoveryTransition {
+    const recoveryEpoch = graphTraversalTokenStates.get(recoveryToken)?.epoch;
+    if (!recoveryEpoch) {
+      throw new Error('[wyw-in-js] Invalid graph traversal token');
     }
-
-    this.pendingUnknownGraphs.delete(filename);
+    if (recoveryEpoch.owner !== this.epochOwner) {
+      throw new Error('[wyw-in-js] Transform cache epoch has a wrong owner');
+    }
+    if (recoveryEpoch === recoveryEpoch.owner.getCurrentEpoch()) {
+      recoveryEpoch.owner.assertEpoch(recoveryEpoch);
+    }
+    return recoveryEpoch.owner.beginFailClosedRecovery(
+      recoveryEpoch,
+      cause,
+      'unknown-dependency-graph'
+    );
   }
 
-  public beginSupersedeStormRecovery(error: Error, filename?: string): void {
-    this.beginFailClosedRecovery(error, filename);
+  public beginSupersedeStormRecovery(
+    error: Error,
+    filename?: string,
+    epoch: TransformCacheEpoch = this.getCurrentEpoch()
+  ): void {
+    this.startSupersedeStormRecovery(error, filename, epoch).complete();
+  }
+
+  /** @internal Use beginSupersedeStormRecovery unless the pending epoch is observed. */
+  public startSupersedeStormRecovery(
+    error: Error,
+    _filename?: string,
+    epoch: TransformCacheEpoch = this.getCurrentEpoch()
+  ): CacheRecoveryTransition {
+    if (epoch.owner !== this.epochOwner) {
+      throw new Error('[wyw-in-js] Transform cache epoch has a wrong owner');
+    }
+    if (epoch === epoch.owner.getCurrentEpoch()) {
+      epoch.owner.assertEpoch(epoch);
+    }
+    return epoch.owner.beginFailClosedRecovery(epoch, error, 'supersede-storm');
   }
 
   private beginFailClosedRecovery(
-    error: Error,
-    subject?: string,
-    unknownDependencies: ReadonlySet<string> = new Set()
-  ): void {
-    // The version bump also retires the eval runner's semantic session, so a
-    // warm evaluated module can never hide the graph this recovery is about.
-    this.lifecycleVersion += 1;
-
-    if (subject === undefined) {
-      this.lifecycleError = error;
-      this.resetLifecycle();
-      return;
+    epoch: TransformCacheEpoch,
+    cause: Error,
+    reason: CacheRecoveryReason
+  ): CacheRecoveryTransition {
+    if (epoch !== this.currentEpoch) {
+      const abortError =
+        this.epochStates.get(epoch)?.abortError ??
+        new CacheEpochAbortedError(
+          epoch.version,
+          this.currentEpoch.version,
+          reason,
+          cause
+        );
+      return {
+        abortError,
+        started: false,
+        complete: () => {},
+        fail: () => {},
+      };
     }
 
-    // An unknown graph means nothing reachable through it can be trusted, and
-    // that closure cannot be enumerated: a completed module two hops behind the
-    // unknown dependency may be reused by an evaluated-entrypoint fast path
-    // that never re-reads disk. So every completed entrypoint goes, as before.
-    // What stays is what a full clear destroyed for no gain: the in-flight
-    // rebuilds (the unknown dependency's own rebuild is the one thing that can
-    // complete the graph; evicting it left a once-published module without a
-    // graph, so every later check reset again), the dependency snapshots that
-    // keep evicted graphs known, and the content hashes that let the next read
-    // detect a change instead of merely re-seeding.
-    this.fileRecoveryErrors.set(subject, {
-      error,
-      version: this.lifecycleVersion,
-    });
-    for (const [key, entrypoint] of this.entrypoints) {
-      if (!entrypoint.isProcessing) {
-        this.invalidate('entrypoints', this.unsaltedKey(key));
+    const fromEpoch = epoch;
+    const nextEpoch: TransformCacheEpoch = {
+      owner: this,
+      version: this.lifecycleVersion + 1,
+    };
+    const nextState = createPendingEpochState();
+    const abortError = new CacheEpochAbortedError(
+      fromEpoch.version,
+      nextEpoch.version,
+      reason,
+      cause
+    );
+    const fromState = this.epochStates.get(fromEpoch)!;
+    fromState.abortError = abortError;
+    this.epochStates.set(nextEpoch, nextState);
+    this.currentEpoch = nextEpoch;
+    this.lifecycleVersion = nextEpoch.version;
+    this.lifecycleError = abortError;
+    this.resetLifecycle();
+
+    const settle = (error?: Error) => {
+      if (nextState.status !== 'pending') return;
+      if (error) {
+        nextState.failure = error;
+        nextState.status = 'failed';
+        nextState.rejectReady(error);
+      } else {
+        nextState.status = 'ready';
+        nextState.resolveReady();
       }
-    }
-    this.clear('exports');
-    this.clear('barrelManifests');
-    this.invalidateForFile(subject);
-    for (const dependency of unknownDependencies) {
-      this.markInvalidated(dependency);
-    }
-  }
+    };
 
-  private unsaltedKey(cacheKey: string): string {
-    if (!this.keySalt) {
-      return cacheKey;
-    }
-
-    return cacheKey.slice(0, -(this.keySalt.length + '::'.length));
+    return {
+      abortError,
+      started: true,
+      complete: () => {
+        if (nextState.status !== 'pending') return;
+        try {
+          resetEvalBrokersAfterCacheInvalidation(this, abortError, reason);
+          settle();
+        } catch (error) {
+          const resetError =
+            error instanceof Error ? error : new Error(String(error));
+          settle(resetError);
+          throw resetError;
+        }
+      },
+      fail: (error) => settle(error),
+    };
   }
 
   private resetLifecycle(): void {
-    const pendingUnknownGraphs = new Map(this.pendingUnknownGraphs);
     const { resetVersion } = this;
     this.clear('all');
     // This is an internal recovery attempt, not an explicit configuration or
     // user cache reset. Preserve the supersede budget across retries so a
     // graph that never converges still reaches the bounded diagnostic.
     this.resetVersion = resetVersion;
-    pendingUnknownGraphs.forEach((pending, filename) => {
-      this.pendingUnknownGraphs.set(filename, pending);
-    });
     this.contentHashes.clear();
     this.fileMtimes.clear();
     this.invalidatedFiles.clear();
@@ -463,13 +822,6 @@ export class TransformCacheCollection<
     this.clearCacheDependencies(cacheName, key);
     cache.set(cacheKey, value);
 
-    if (
-      cacheName === 'entrypoints' &&
-      !isEntrypointGraphIncomplete(value as unknown as IBaseCachedEntrypoint)
-    ) {
-      this.completeUnknownGraphRecovery(key);
-    }
-
     // Keep the last complete entrypoint snapshot while a replacement is live.
     // Its dependency maps are incomplete while it is processing, so checks
     // merge them with the retained graph. If the replacement is evicted before
@@ -514,6 +866,19 @@ export class TransformCacheCollection<
     }
   }
 
+  public publish<
+    TCache extends CacheNames,
+    TValue extends MapValue<ICaches<TEntrypoint>[TCache]>,
+  >(
+    epoch: TransformCacheEpoch,
+    cacheName: TCache,
+    key: string,
+    value: TValue
+  ): void {
+    this.assertEpoch(epoch);
+    this.add(cacheName, key, value);
+  }
+
   public clear(cacheName: CacheNames | 'all'): void {
     if (cacheName === 'all') {
       cacheNames.forEach((name) => {
@@ -531,13 +896,21 @@ export class TransformCacheCollection<
     if (cacheName === 'entrypoints') {
       this.resetVersion += 1;
       this.entrypointDependencySnapshots.clear();
-      this.pendingUnknownGraphs.clear();
     }
     this.clearCacheDependencies(cacheName);
   }
 
   public delete(cacheName: CacheNames, key: string): void {
     this.invalidate(cacheName, key);
+  }
+
+  public removePublished(
+    epoch: TransformCacheEpoch,
+    cacheName: CacheNames,
+    key: string
+  ): void {
+    this.assertEpoch(epoch);
+    this.delete(cacheName, key);
   }
 
   public get<
@@ -640,42 +1013,21 @@ export class TransformCacheCollection<
     filename: string,
     content: string,
     source: 'fs' | 'loaded' = 'loaded',
-    graphTraversalToken?: object
+    graphTraversalToken?: object,
+    epoch: TransformCacheEpoch = this.getCurrentEpoch()
   ): {
     changed: boolean;
     unknownDependencyGraphs: Set<string>;
   } {
+    this.assertEpoch(epoch);
     const graphTraversalTokenError = graphTraversalToken
       ? this.getGraphTraversalTokenError(graphTraversalToken)
       : null;
     if (graphTraversalTokenError) {
-      // A file with its own unconverged recovery reports that, rather than the
-      // generic staleness of the traversal it was retired with.
-      throw this.pendingUnknownGraphs.has(filename)
-        ? this.fileRecoveryErrors.get(filename)?.error ??
-            graphTraversalTokenError
-        : graphTraversalTokenError;
+      throw graphTraversalTokenError;
     }
 
-    if (graphTraversalToken) {
-      graphTraversalTokenStates.get(graphTraversalToken)?.visited.add(filename);
-    }
-
-    const pendingUnknownGraph = this.pendingUnknownGraphs.get(filename);
-    const sourceHash = hashContent(content);
     const unknownDependencyGraphs = new Set<string>();
-    if (pendingUnknownGraph) {
-      if (pendingUnknownGraph.sourceHash !== sourceHash) {
-        // A genuine root edit begins a new recovery lineage. Unknown edges
-        // found while inspecting the new source below will be recorded
-        // separately.
-        this.pendingUnknownGraphs.delete(filename);
-      } else if (pendingUnknownGraph.recoveryToken !== graphTraversalToken) {
-        pendingUnknownGraph.dependencies.forEach((dependency) => {
-          unknownDependencyGraphs.add(dependency);
-        });
-      }
-    }
     const changed = this.invalidateIfChangedInternal(
       filename,
       content,
@@ -901,12 +1253,6 @@ export class TransformCacheCollection<
       return false;
     }
 
-    if (graphTraversalToken) {
-      graphTraversalTokenStates
-        .get(graphTraversalToken)
-        ?.visited.add(dependencyFilename);
-    }
-
     const strippedDependencyFilename = stripQueryAndHash(dependencyFilename);
     const cachedMtime = this.fileMtimes.get(dependencyFilename);
     const cachedEntrypoint = this.get('entrypoints', dependencyFilename);
@@ -917,10 +1263,8 @@ export class TransformCacheCollection<
     const hasKnownDependencyGraph = cachedEntrypoint
       ? !graphMayBeIncomplete || hasRetainedSnapshot
       : hasRetainedSnapshot;
-    const allowUnknownDependencyGraph = this.canTraverseUnknownGraph(
-      dependencyFilename,
-      graphTraversalToken
-    );
+    const allowUnknownDependencyGraph =
+      this.canTraverseUnknownGraph(graphTraversalToken);
     if (!hasKnownDependencyGraph && !allowUnknownDependencyGraph) {
       // Record this independently of the mtime/hash fast path. The first
       // verification after a cache clear may need to seed its fs hash, but
@@ -1085,26 +1429,17 @@ export class TransformCacheCollection<
     return dependencyChanged;
   }
 
-  private canTraverseUnknownGraph(
-    filename: string,
-    graphTraversalToken?: object
-  ): boolean {
+  private canTraverseUnknownGraph(graphTraversalToken?: object): boolean {
     if (!graphTraversalToken) {
       return false;
     }
 
-    // Tolerance follows the same rule as retirement: a traversal keeps it until
-    // a recovery resets a file it read, not until any recovery happens.
     const tokenState = graphTraversalTokenStates.get(graphTraversalToken);
-    if (
-      tokenState?.owner !== this ||
-      this.getGraphTraversalTokenError(graphTraversalToken) !== null
-    ) {
+    if (!tokenState) {
       return false;
     }
 
-    const pending = this.pendingUnknownGraphs.get(filename);
-    return !pending || pending.recoveryToken === graphTraversalToken;
+    return this.getEpochError(tokenState.epoch) === null;
   }
 
   private didFileContentHashChange(
@@ -1160,6 +1495,16 @@ export class TransformCacheCollection<
     }
 
     cache.set(cacheKey, nextDependencies);
+  }
+
+  public publishCacheDependencies(
+    epoch: TransformCacheEpoch,
+    cacheName: 'barrelManifests' | 'exports',
+    key: string,
+    dependencies: Iterable<string>
+  ): void {
+    this.assertEpoch(epoch);
+    this.setCacheDependencies(cacheName, key, dependencies);
   }
 
   /**
