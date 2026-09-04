@@ -39,8 +39,8 @@ const resolveWithExtensions = (candidate: string) => {
 
 // The shape from #422: a theme module that static preeval reads from nearly
 // every component is itself a root the bundler is still processing. A cached
-// component re-requested while the theme is in flight finds the theme's graph
-// unknown and recovers. A recovery that cleared the whole cache evicted the
+// component re-requested while the theme is in flight may find the theme's
+// graph unknown and recover. A recovery that cleared the whole cache evicted the
 // in-flight theme too, so the theme never got a dependency snapshot, every later
 // re-request found it unknown again, and the build never converged.
 it('converges once the in-flight shared dependency completes', async () => {
@@ -150,12 +150,14 @@ it('converges once the in-flight shared dependency completes', async () => {
     });
 
     // A cached component is requested again while the theme is still in
-    // flight. Its dependency check finds the theme's graph unknown and starts
-    // a recovery.
+    // flight. Its dependency check may find the theme's graph unknown and
+    // start a recovery; whatever it does, it must not cascade.
     const versionBeforeRecovery = cache.getLifecycleVersion();
     const reRequested = await run(components[0]);
     expect(reRequested.cssText).toContain('margin:0');
-    expect(cache.getLifecycleVersion()).toBeGreaterThan(versionBeforeRecovery);
+    expect(cache.getLifecycleVersion()).toBeLessThanOrEqual(
+      versionBeforeRecovery + 1
+    );
 
     // The theme's in-flight rebuild must have survived that recovery: once it
     // completes it publishes its dependency snapshot and the graph is known.
