@@ -1,4 +1,3 @@
-import fs from 'node:fs';
 import { invariant } from 'ts-invariant';
 
 import type { ParentEntrypoint, ITransformFileResult } from '../types';
@@ -12,193 +11,25 @@ import type {
   IIgnoredEntrypoint,
   IPreevalResult,
 } from './Entrypoint.types';
-import { EvaluatedEntrypoint } from './EvaluatedEntrypoint';
+import {
+  EvaluatedEntrypoint,
+  type IEvaluatedEntrypoint,
+} from './EvaluatedEntrypoint';
 import { AbortError } from './actions/AbortError';
 import type { ActionByType } from './actions/BaseAction';
 import { BaseAction } from './actions/BaseAction';
 import { UnprocessedEntrypointError } from './actions/UnprocessedEntrypointError';
+import {
+  createEntrypoint,
+  type CreateEntrypointOptions,
+  type EntrypointFactory,
+  type EntrypointInit,
+} from './createEntrypoint';
+import { resetSupersedeWindow } from './supersedeStorm';
 import type { Services, ActionTypes, ActionQueueItem } from './types';
-import { stripQueryAndHash } from '../utils/parseRequest';
-import { recordPipelineEntrypoint } from '../debug/pipelineTelemetry';
 
 const EMPTY_FILE = '=== empty file ===';
 const DEFAULT_ACTION_CONTEXT = Symbol('defaultActionContext');
-
-// Guards against supersede storms: an oscillating cache invalidation can
-// re-create the same entrypoint with a non-widening `only` on every root
-// request, looping until the process OOMs. An unknown graph gives us no proof
-// that cached dependency output is safe, so the bounded fallback fails loudly
-// instead of returning a stale entrypoint.
-const SUPERSEDE_STORM_WINDOW_MS = 10_000;
-const SUPERSEDE_STORM_LIMIT = 100;
-
-const createSupersedeStormError = (name: string) =>
-  Object.assign(
-    new Error(
-      `[wyw-in-js] Supersede storm detected for ${name}: more than ${SUPERSEDE_STORM_LIMIT} non-widening invalidations within ${SUPERSEDE_STORM_WINDOW_MS}ms. ` +
-        'The dependency graph did not converge, so the transform was stopped instead of returning potentially stale output.'
-    ),
-    {
-      code: 'WYW_SUPERSEDE_STORM',
-      name: 'SupersedeStormError',
-    }
-  );
-
-interface ISupersedeWindow {
-  blocked?: {
-    error: Error;
-    sourceCode: string;
-  };
-  resetVersion: number;
-  seenAt: number[];
-  lastSeenAt: number;
-}
-
-interface ISupersedeTracker {
-  byName: Map<string, ISupersedeWindow>;
-  lastSweepAt: number;
-}
-
-// Keyed by the cache collection so parallel builds and tests don't share
-// windows. The per-cache map is swept after a quiet window so a long-lived dev
-// server does not retain names that stopped invalidating.
-const supersedeWindowsByCache = new WeakMap<object, ISupersedeTracker>();
-
-function getSupersedeTracker(services: Services, now: number) {
-  let tracker = supersedeWindowsByCache.get(services.cache);
-  if (!tracker) {
-    tracker = { byName: new Map(), lastSweepAt: now };
-    supersedeWindowsByCache.set(services.cache, tracker);
-    return tracker;
-  }
-
-  if (now < tracker.lastSweepAt) {
-    // Date.now can move backwards when the system clock is adjusted. Old
-    // timestamps cannot participate in a meaningful rate window afterwards.
-    tracker.byName.clear();
-    tracker.lastSweepAt = now;
-    return tracker;
-  }
-
-  if (now - tracker.lastSweepAt >= SUPERSEDE_STORM_WINDOW_MS) {
-    const cutoff = now - SUPERSEDE_STORM_WINDOW_MS;
-    for (const [name, window] of tracker.byName) {
-      if (window.lastSeenAt <= cutoff) {
-        tracker.byName.delete(name);
-      }
-    }
-    tracker.lastSweepAt = now;
-  }
-
-  return tracker;
-}
-
-function resetSupersedeWindow(services: Services, name: string): void {
-  supersedeWindowsByCache.get(services.cache)?.byName.delete(name);
-}
-
-function getBlockedSupersedeError(
-  services: Services,
-  name: string,
-  currentCode: string | undefined
-): Error | null {
-  const now = Date.now();
-  const tracker = getSupersedeTracker(services, now);
-  const window = tracker.byName.get(name);
-  if (!window?.blocked) {
-    return null;
-  }
-
-  if (window.resetVersion !== services.cache.getResetVersion()) {
-    tracker.byName.delete(name);
-    return null;
-  }
-
-  if (currentCode !== undefined && currentCode !== window.blocked.sourceCode) {
-    tracker.byName.delete(name);
-    return null;
-  }
-
-  // Repeated attempts are activity, not a quiet interval. Preserve the exact
-  // diagnostic object so every retry of unchanged input fails consistently.
-  window.lastSeenAt = now;
-  return window.blocked.error;
-}
-
-function blockSupersedeWindow(
-  services: Services,
-  name: string,
-  sourceCode: string,
-  error: Error
-): void {
-  const now = Date.now();
-  const tracker = getSupersedeTracker(services, now);
-  const window = tracker.byName.get(name) ?? {
-    resetVersion: services.cache.getResetVersion(),
-    seenAt: [],
-    lastSeenAt: now,
-  };
-  window.blocked = { error, sourceCode };
-  window.resetVersion = services.cache.getResetVersion();
-  window.lastSeenAt = now;
-  tracker.byName.set(name, window);
-}
-
-function recordNonWideningSupersede(services: Services, name: string): number {
-  const now = Date.now();
-  const tracker = getSupersedeTracker(services, now);
-  let window = tracker.byName.get(name);
-  if (
-    !window ||
-    now < window.lastSeenAt ||
-    window.resetVersion !== services.cache.getResetVersion()
-  ) {
-    window = {
-      resetVersion: services.cache.getResetVersion(),
-      seenAt: [],
-      lastSeenAt: now,
-    };
-    tracker.byName.set(name, window);
-  }
-
-  const cutoff = now - SUPERSEDE_STORM_WINDOW_MS;
-  window.seenAt = window.seenAt.filter((seenAt) => seenAt > cutoff);
-  window.seenAt.push(now);
-  window.lastSeenAt = now;
-
-  // A caller may catch the diagnostic and retry. Keep enough timestamps to
-  // preserve the over-limit state without letting that retry loop grow this
-  // bookkeeping array itself.
-  if (window.seenAt.length > SUPERSEDE_STORM_LIMIT + 1) {
-    window.seenAt.splice(0, window.seenAt.length - (SUPERSEDE_STORM_LIMIT + 1));
-  }
-
-  return window.seenAt.length;
-}
-
-type CreateEntrypointOptions = {
-  graphTraversalToken?: object;
-  mergeCachedOnly?: boolean;
-};
-
-function hasLoop(
-  name: string,
-  parent: ParentEntrypoint,
-  processed: string[] = []
-): boolean {
-  if (parent.name === name || processed.includes(parent.name)) {
-    return true;
-  }
-
-  for (const p of parent.parents) {
-    const found = hasLoop(name, p, [...processed, parent.name]);
-    if (found) {
-      return found;
-    }
-  }
-
-  return false;
-}
 
 export class Entrypoint extends BaseEntrypoint {
   public readonly evaluated = false;
@@ -229,7 +60,11 @@ export class Entrypoint extends BaseEntrypoint {
 
   #invalidationError: Error | null = null;
 
+  readonly #cacheLifecycleVersion: number;
+
   #pendingOnly: string[] | null = null;
+
+  readonly #originalCode: string | undefined;
 
   #preevalResult: IPreevalResult | null = null;
 
@@ -241,6 +76,8 @@ export class Entrypoint extends BaseEntrypoint {
 
   #transformResultCode: string | null = null;
 
+  #transformResultMutation: object | null = null;
+
   private constructor(
     services: Services,
     parents: ParentEntrypoint[],
@@ -249,7 +86,8 @@ export class Entrypoint extends BaseEntrypoint {
     only: string[],
     exports: Record<string | symbol, unknown> | undefined,
     evaluatedOnly: string[],
-    loadedAndParsed?: IEntrypointCode | IIgnoredEntrypoint,
+    loadedAndParsed: IEntrypointCode | IIgnoredEntrypoint,
+    originalCode: string | undefined,
     protected readonly resolveTasks = new Map<
       string,
       Promise<IEntrypointDependency>
@@ -261,7 +99,6 @@ export class Entrypoint extends BaseEntrypoint {
     >(),
     readonly invalidateOnDependencyChange = new Set<string>(),
     generation = 1,
-    private readonly skipCacheInvalidation = false,
     private readonly unknownGraphTraversalToken: object = {}
   ) {
     const cacheEpoch = services.cacheEpoch ?? services.cache.getCurrentEpoch();
@@ -278,27 +115,16 @@ export class Entrypoint extends BaseEntrypoint {
       invalidationDependencies,
       invalidateOnDependencyChange
     );
+    services.cache.assertEpoch(cacheEpoch);
 
-    this.loadedAndParsed =
-      loadedAndParsed ??
-      services.loadAndParseFn(
-        services,
-        name,
-        initialCode,
-        parents[0]?.log ?? services.log
-      );
+    // Keep the released lifecycle API independent from internal cache epochs.
+    // Namespace rotations retire an epoch without advancing the compatibility
+    // lifecycle counter, so substituting cacheEpoch.version here would make
+    // callers miss a later recovery.
+    this.#cacheLifecycleVersion = services.cache.getLifecycleVersion();
 
-    if (
-      !this.skipCacheInvalidation &&
-      this.loadedAndParsed.code !== undefined
-    ) {
-      services.cache.invalidateIfChanged(
-        name,
-        this.loadedAndParsed.code,
-        undefined,
-        this.initialCode === undefined ? 'fs' : 'loaded'
-      );
-    }
+    this.loadedAndParsed = loadedAndParsed;
+    this.#originalCode = originalCode;
 
     const code =
       this.loadedAndParsed.evaluator === 'ignored'
@@ -313,7 +139,7 @@ export class Entrypoint extends BaseEntrypoint {
   }
 
   public get originalCode() {
-    return this.loadedAndParsed.code;
+    return this.#originalCode;
   }
 
   public get supersededWith(): Entrypoint | null {
@@ -349,13 +175,28 @@ export class Entrypoint extends BaseEntrypoint {
   }
 
   public get cacheLifecycleVersion(): number {
-    return this.cacheEpoch.version;
+    return this.#cacheLifecycleVersion;
   }
 
   public get graphTraversalToken(): object {
     return this.unknownGraphTraversalToken;
   }
 
+  /** @internal Translate traversal ownership for services overrides. */
+  public getGraphTraversalTokenForServices(services: Services): object {
+    this.assertCurrentCacheEpoch();
+    this.assertNotSuperseded();
+    const targetEpoch = services.cacheEpoch ?? services.cache.getCurrentEpoch();
+    services.cache.assertEpoch(targetEpoch);
+    return targetEpoch.owner === this.cacheEpoch.owner
+      ? this.unknownGraphTraversalToken
+      : services.cache.createGraphTraversalToken(
+          targetEpoch,
+          services.cacheRecoveryOwner
+        );
+  }
+
+  /** @internal Action execution fences are owned by the transform pipeline. */
   public assertCurrentCacheEpoch(): void {
     this.cacheEpoch.owner.assertEpoch(this.cacheEpoch);
     const traversalError = this.services.cache.getGraphTraversalTokenError(
@@ -386,6 +227,65 @@ export class Entrypoint extends BaseEntrypoint {
     return created;
   }
 
+  private static readonly creationFactory: EntrypointFactory = {
+    deferOnlySupersede: (entrypoint, only) =>
+      entrypoint.deferOnlySupersede(only),
+    failInvalidation: (entrypoint, error) => entrypoint.failInvalidation(error),
+    instantiate: (init: EntrypointInit) => {
+      const {
+        dependencies = new Map(),
+        evaluatedOnly,
+        exports,
+        generation = 1,
+        graphTraversalToken,
+        initialCode,
+        invalidateOnDependencyChange = new Set(),
+        invalidationDependencies = new Map(),
+        loadedAndParsed,
+        name,
+        only,
+        originalCode,
+        parents,
+        resolveTasks = new Map(),
+        services,
+      } = init;
+
+      return new Entrypoint(
+        services,
+        parents,
+        initialCode,
+        name,
+        only,
+        exports,
+        evaluatedOnly,
+        loadedAndParsed,
+        originalCode,
+        resolveTasks,
+        dependencies,
+        invalidationDependencies,
+        invalidateOnDependencyChange,
+        generation,
+        graphTraversalToken
+      );
+    },
+    isEntrypoint: (parent): parent is Entrypoint =>
+      parent instanceof Entrypoint,
+    isProcessing: (entrypoint) => entrypoint.#isProcessing,
+    supersede: (
+      entrypoint,
+      newOnlyOrEntrypoint,
+      services,
+      expectedCached,
+      assertExternalEpoch
+    ) =>
+      entrypoint.supersede(
+        newOnlyOrEntrypoint,
+        services,
+        expectedCached,
+        assertExternalEpoch
+      ),
+  };
+
   protected static create(
     services: Services,
     parent: ParentEntrypoint | null,
@@ -394,296 +294,15 @@ export class Entrypoint extends BaseEntrypoint {
     loadedCode: string | undefined,
     options: CreateEntrypointOptions = {}
   ): Entrypoint | 'loop' {
-    const { cache, eventEmitter } = services;
-    return eventEmitter.perf('createEntrypoint', () => {
-      const [status, entrypoint] = Entrypoint.innerCreate(
-        services,
-        parent
-          ? {
-              evaluated: parent.evaluated,
-              log: parent.log,
-              name: parent.name,
-              parents: parent.parents,
-              seqId: parent.seqId,
-            }
-          : null,
-        name,
-        only,
-        loadedCode,
-        options
-      );
-
-      recordPipelineEntrypoint(
-        parent === null,
-        loadedCode !== undefined,
-        status,
-        entrypoint.only
-      );
-
-      if (status !== 'cached') {
-        cache.publish(entrypoint.cacheEpoch, 'entrypoints', name, entrypoint);
-      }
-
-      return status === 'loop' ? 'loop' : entrypoint;
-    });
-  }
-
-  private static innerCreate(
-    services: Services,
-    parent: ParentEntrypoint | null,
-    name: string,
-    only: string[],
-    loadedCode: string | undefined,
-    options: CreateEntrypointOptions
-  ): ['loop' | 'created' | 'cached', Entrypoint] {
-    const { cache } = services;
-    const cacheEpoch = services.cacheEpoch ?? cache.getCurrentEpoch();
-    cache.assertEpoch(cacheEpoch);
-
-    const cached = cache.get('entrypoints', name);
-    const graphTraversalToken =
-      options.graphTraversalToken ?? cache.createGraphTraversalToken();
-    let changed = false;
-    let currentCode = loadedCode;
-    let unknownDependencyGraphs = new Set<string>();
-    if (loadedCode !== undefined) {
-      ({ changed, unknownDependencyGraphs } =
-        cache.invalidateIfChangedWithDetails(
-          name,
-          loadedCode,
-          'loaded',
-          options.graphTraversalToken,
-          cacheEpoch
-        ));
-    } else {
-      try {
-        currentCode = fs.readFileSync(stripQueryAndHash(name), 'utf8');
-      } catch {
-        changed = false;
-      }
-
-      if (currentCode !== undefined) {
-        ({ changed, unknownDependencyGraphs } =
-          cache.invalidateIfChangedWithDetails(
-            name,
-            currentCode,
-            'fs',
-            options.graphTraversalToken,
-            cacheEpoch
-          ));
-      }
-    }
-
-    const blockedError = getBlockedSupersedeError(services, name, currentCode);
-    if (blockedError) {
-      throw blockedError;
-    }
-
-    const recoveredFromUnknownGraph = unknownDependencyGraphs.size > 0;
-    if (recoveredFromUnknownGraph) {
-      const recovery = cache.startUnknownGraphRecovery(
-        name,
-        unknownDependencyGraphs,
-        currentCode!,
-        graphTraversalToken
-      );
-      if (recovery.started) {
-        recovery.complete();
-      }
-
-      throw recovery.abortError;
-    }
-
-    if (!recoveredFromUnknownGraph && !cached?.evaluated && cached?.ignored) {
-      return ['cached', cached];
-    }
-
-    const exports = recoveredFromUnknownGraph ? undefined : cached?.exports;
-    const evaluatedOnly =
-      changed || recoveredFromUnknownGraph ? [] : cached?.evaluatedOnly ?? [];
-    const mergedOnly =
-      !recoveredFromUnknownGraph &&
-      options.mergeCachedOnly !== false &&
-      cached?.only
-        ? mergeOnly(cached.only, only)
-        : [...only];
-    const reusableEvaluatedState =
-      !recoveredFromUnknownGraph &&
-      !changed &&
-      cached?.evaluated &&
-      cached.loadedAndParsed !== undefined;
-    const canReuseEvaluatedTransformResult =
-      reusableEvaluatedState &&
-      isSuperSet(cached.evaluatedOnly, mergedOnly) &&
-      cached.hasTransformResult &&
-      cached.loadedAndParsed !== undefined;
-
-    if (cached?.evaluated) {
-      cached.log('is already evaluated with', cached.evaluatedOnly);
-    }
-
-    if (canReuseEvaluatedTransformResult) {
-      const isLoop = parent && hasLoop(name, parent);
-      const reusedEntrypoint = new Entrypoint(
-        services,
-        parent ? [parent] : [],
-        loadedCode,
-        name,
-        mergedOnly,
-        exports,
-        evaluatedOnly,
-        cached.loadedAndParsed,
-        undefined,
-        cached.dependencies,
-        cached.invalidationDependencies,
-        cached.invalidateOnDependencyChange,
-        cached.generation + 1,
-        true,
-        graphTraversalToken
-      );
-
-      reusedEntrypoint.reuseTransformResult(
-        cached.transformResultCode,
-        cached.hasWywMetadata
-      );
-      if (
-        'preevalResult' in cached &&
-        cached.preevalResult !== null &&
-        cached.preevalResult !== undefined
-      ) {
-        reusedEntrypoint.setPreevalResult(cached.preevalResult);
-      }
-
-      return [isLoop ? 'loop' : 'cached', reusedEntrypoint];
-    }
-
-    if (!recoveredFromUnknownGraph && !changed && cached && !cached.evaluated) {
-      const isLoop = parent && hasLoop(name, parent);
-      if (isLoop) {
-        parent.log('[createEntrypoint] %s is a loop', name);
-      }
-
-      if (parent && !cached.parents.map((p) => p.name).includes(parent.name)) {
-        cached.parents.push(parent);
-      }
-
-      if (isSuperSet(cached.only, mergedOnly)) {
-        cached.log('is cached', name);
-        return [isLoop ? 'loop' : 'cached', cached];
-      }
-
-      cached.log(
-        'is cached, but with different `only` %o (the cached one %o)',
-        only,
-        cached?.only
-      );
-
-      if (cached.#isProcessing) {
-        if (parent === null) {
-          cached.log(
-            'is being processed during root request, supersede immediately (%o -> %o)',
-            cached.only,
-            mergedOnly
-          );
-          return [
-            isLoop ? 'loop' : 'created',
-            cached.supersede(mergedOnly, services),
-          ];
-        }
-
-        cached.deferOnlySupersede(mergedOnly);
-        cached.log(
-          'is being processed, defer supersede (%o -> %o)',
-          cached.only,
-          mergedOnly
-        );
-        return [isLoop ? 'loop' : 'cached', cached];
-      }
-
-      return [
-        isLoop ? 'loop' : 'created',
-        cached.supersede(mergedOnly, services),
-      ];
-    }
-
-    if (cached) {
-      const cachedCode =
-        cached.initialCode === undefined
-          ? cached.loadedAndParsed?.code
-          : cached.initialCode;
-      const requestedCodeIsUnchanged =
-        currentCode !== undefined && currentCode === cachedCode;
-
-      if (!requestedCodeIsUnchanged) {
-        // A real source edit starts a new lineage. It must supersede normally,
-        // regardless of how much invalidation traffic preceded it.
-        resetSupersedeWindow(services, name);
-      } else if (!cached.evaluated && isSuperSet(cached.only, mergedOnly)) {
-        const count = recordNonWideningSupersede(services, name);
-        if (count > SUPERSEDE_STORM_LIMIT) {
-          const error = createSupersedeStormError(name);
-          cached.failInvalidation(error);
-          const recovery = cache.startSupersedeStormRecovery(
-            error,
-            name,
-            cacheEpoch
-          );
-          blockSupersedeWindow(services, name, currentCode!, error);
-          if (recovery.started) {
-            recovery.complete();
-          } else {
-            throw recovery.abortError;
-          }
-          throw error;
-        }
-      }
-    }
-
-    const newEntrypoint = new Entrypoint(
+    return createEntrypoint(
+      Entrypoint.creationFactory,
       services,
-      parent ? [parent] : [],
-      loadedCode,
+      parent,
       name,
-      mergedOnly,
-      exports,
-      evaluatedOnly,
-      reusableEvaluatedState ? cached.loadedAndParsed : undefined,
-      !recoveredFromUnknownGraph && cached && 'resolveTasks' in cached
-        ? cached.resolveTasks
-        : undefined,
-      !recoveredFromUnknownGraph && cached && 'dependencies' in cached
-        ? cached.dependencies
-        : undefined,
-      !recoveredFromUnknownGraph &&
-      cached &&
-      'invalidationDependencies' in cached
-        ? cached.invalidationDependencies
-        : undefined,
-      !recoveredFromUnknownGraph &&
-      cached &&
-      'invalidateOnDependencyChange' in cached
-        ? cached.invalidateOnDependencyChange
-        : undefined,
-      cached ? cached.generation + 1 : 1,
-      false,
-      graphTraversalToken
+      only,
+      loadedCode,
+      options
     );
-
-    if (
-      reusableEvaluatedState &&
-      'preevalResult' in cached &&
-      cached.preevalResult !== null &&
-      cached.preevalResult !== undefined
-    ) {
-      newEntrypoint.setPreevalResult(cached.preevalResult);
-    }
-
-    if (cached && !cached.evaluated) {
-      cached.log('is cached, but with different code');
-      cached.supersede(newEntrypoint, services);
-    }
-
-    return ['created', newEntrypoint];
   }
 
   public addDependency(dependency: IEntrypointDependency): void {
@@ -701,7 +320,7 @@ export class Entrypoint extends BaseEntrypoint {
   public addResolveTask(
     name: string,
     dependency: Promise<IEntrypointDependency>
-  ): Promise<IEntrypointDependency> {
+  ): void {
     this.assertCurrentCacheEpoch();
     // Bounded retry of transient null resolutions. The first time a
     // resolveTask settles to null, evict it from the cache so the next
@@ -726,31 +345,66 @@ export class Entrypoint extends BaseEntrypoint {
       return resolved;
     });
     this.resolveTasks.set(name, tracked);
-    return tracked;
   }
 
   public applyDeferredSupersede(services: Services = this.services) {
     this.assertCurrentCacheEpoch();
+    this.assertNotSuperseded();
     if (this.#supersededWith || this.#pendingOnly === null) {
       return null;
     }
 
     const mergedOnly = mergeOnly(this.only, this.#pendingOnly);
-    this.#pendingOnly = null;
 
     if (isSuperSet(this.only, mergedOnly)) {
+      this.#pendingOnly = null;
       return null;
     }
 
     this.log('apply deferred supersede (%o -> %o)', this.only, mergedOnly);
 
-    const nextEntrypoint = this.supersede(mergedOnly, services);
-    services.cache.publish(
-      this.cacheEpoch,
-      'entrypoints',
-      this.name,
-      nextEntrypoint
-    );
+    const targetEpoch = services.cacheEpoch ?? services.cache.getCurrentEpoch();
+    services.cache.assertEpoch(targetEpoch);
+    const expectedCached = services.cache.get('entrypoints', this.name);
+    if (targetEpoch.owner !== this.cacheEpoch.owner) {
+      // A successor cannot safely belong to two cache owners: superseding this
+      // source-owned object while publishing only to the target leaves the
+      // source cache pointing at a poisoned entrypoint. Materialize a detached
+      // target retry and keep the source lineage valid instead.
+      if (expectedCached !== undefined) {
+        throw new AbortError('superseded');
+      }
+
+      const pendingOnly = this.#pendingOnly;
+      const detached = Entrypoint.create(
+        services,
+        this.parents[0] ?? null,
+        this.name,
+        mergedOnly,
+        this.initialCode,
+        {
+          externalEntrypoint: this,
+          graphTraversalToken: this.getGraphTraversalTokenForServices(services),
+          mergeCachedOnly: false,
+        }
+      );
+      invariant(detached !== 'loop', 'loop detected');
+      services.cache.assertEpoch(targetEpoch);
+      this.assertCurrentCacheEpoch();
+      this.assertNotSuperseded();
+      detached.assertCurrentCacheEpoch();
+      detached.assertNotSuperseded();
+      if (this.#pendingOnly === pendingOnly) {
+        this.#pendingOnly = null;
+      }
+      return detached;
+    }
+
+    if (expectedCached !== this) {
+      throw new AbortError('superseded');
+    }
+
+    const nextEntrypoint = this.supersede(mergedOnly, services, expectedCached);
 
     return nextEntrypoint;
   }
@@ -798,6 +452,8 @@ export class Entrypoint extends BaseEntrypoint {
     actionContext: unknown = DEFAULT_ACTION_CONTEXT,
     services: Services = this.services
   ): BaseAction<TAction> {
+    this.assertCurrentCacheEpoch();
+    this.assertNotSuperseded();
     const actionContextOwners = getActionContextOwners(actionContext);
     if (actionContextOwners && !actionContextOwners.has(this)) {
       actionContextOwners.set(this, () => this.clearActions(actionContext));
@@ -820,6 +476,8 @@ export class Entrypoint extends BaseEntrypoint {
     const serviceScopes = cache.get(data)!;
     const cached = serviceScopes.get(services);
     if (cached && !cached.abortSignal?.aborted) {
+      cached.assertCurrentCacheEpoch();
+      this.assertNotSuperseded();
       return cached as BaseAction<TAction>;
     }
 
@@ -833,12 +491,20 @@ export class Entrypoint extends BaseEntrypoint {
     );
 
     serviceScopes.set(services, newAction);
-
-    services.eventEmitter.entrypointEvent(this.seqId, {
-      type: 'actionCreated',
-      actionType,
-      actionIdx: newAction.idx,
-    });
+    try {
+      services.eventEmitter.entrypointEvent(this.seqId, {
+        type: 'actionCreated',
+        actionType,
+        actionIdx: newAction.idx,
+      });
+      newAction.assertCurrentCacheEpoch();
+      this.assertNotSuperseded();
+    } catch (error) {
+      if (serviceScopes.get(services) === newAction) {
+        serviceScopes.delete(services);
+      }
+      throw error;
+    }
 
     return newAction;
   }
@@ -861,8 +527,11 @@ export class Entrypoint extends BaseEntrypoint {
     this.assertCurrentCacheEpoch();
     this.assertNotSuperseded();
 
+    const graphTraversalToken =
+      this.getGraphTraversalTokenForServices(services);
+
     return Entrypoint.create(services, this, name, only, loadedCode, {
-      graphTraversalToken: this.unknownGraphTraversalToken,
+      graphTraversalToken,
     });
   }
 
@@ -890,6 +559,13 @@ export class Entrypoint extends BaseEntrypoint {
     evaluated.loadedAndParsed = this.loadedAndParsed;
     evaluated.preevalResult = this.#preevalResult;
     evaluated.transformResultCode = this.#transformResultCode;
+
+    // EvaluatedEntrypoint construction emits a public `created` event through
+    // the target services. That callback may retire either owner, so fence the
+    // target and the copied source state before a caller can publish the clone.
+    services.cache.assertEpoch(evaluated.cacheEpoch);
+    this.assertCurrentCacheEpoch();
+    this.assertNotSuperseded();
 
     return evaluated;
   }
@@ -967,16 +643,39 @@ export class Entrypoint extends BaseEntrypoint {
     services: Services = this.services
   ) {
     this.assertCurrentCacheEpoch();
+    this.assertNotSuperseded();
+    const targetEpoch = services.cacheEpoch ?? services.cache.getCurrentEpoch();
+    services.cache.assertEpoch(targetEpoch);
+    const previousHasTransformResult = this.#hasTransformResult;
+    const previousHasWywMetadata = this.#hasWywMetadata;
+    const previousTransformResultCode = this.#transformResultCode;
+    const previousTransformResultMutation = this.#transformResultMutation;
+    const transformResultMutation = {};
+    this.#transformResultMutation = transformResultMutation;
     this.#hasTransformResult = true;
     this.#hasWywMetadata = Boolean(res?.metadata);
     this.#transformResultCode = res?.code ?? null;
 
-    resetSupersedeWindow(services, this.name);
-
-    services.eventEmitter.entrypointEvent(this.seqId, {
-      isNull: res === null,
-      type: 'setTransformResult',
-    });
+    try {
+      services.eventEmitter.entrypointEvent(this.seqId, {
+        isNull: res === null,
+        type: 'setTransformResult',
+      });
+      services.cache.assertEpoch(targetEpoch);
+      this.assertCurrentCacheEpoch();
+      this.assertNotSuperseded();
+      resetSupersedeWindow(services, this.name);
+    } catch (error) {
+      // A lifecycle callback may have committed a newer transform result on
+      // the same object. Roll back only while this write still owns the state.
+      if (this.#transformResultMutation === transformResultMutation) {
+        this.#hasTransformResult = previousHasTransformResult;
+        this.#hasWywMetadata = previousHasWywMetadata;
+        this.#transformResultCode = previousTransformResultCode;
+        this.#transformResultMutation = previousTransformResultMutation;
+      }
+      throw error;
+    }
   }
 
   public setPreevalResult(result: IPreevalResult): void {
@@ -999,11 +698,54 @@ export class Entrypoint extends BaseEntrypoint {
 
   private supersede(
     newOnlyOrEntrypoint: string[] | Entrypoint,
-    services: Services = this.services
+    services: Services,
+    expectedCached: Entrypoint | IEvaluatedEntrypoint | undefined,
+    assertExternalEpoch?: () => void
   ): Entrypoint {
     this.assertCurrentCacheEpoch();
-    this.#pendingOnly = null;
+    this.assertNotSuperseded();
+    const targetEpoch = services.cacheEpoch ?? services.cache.getCurrentEpoch();
+    services.cache.assertEpoch(targetEpoch);
     const widensOnly = !(newOnlyOrEntrypoint instanceof Entrypoint);
+    const graphTraversalToken =
+      targetEpoch.owner === this.cacheEpoch.owner
+        ? this.unknownGraphTraversalToken
+        : services.cache.createGraphTraversalToken(
+            targetEpoch,
+            services.cacheRecoveryOwner
+          );
+    let publicationExpected = expectedCached;
+    if (widensOnly && this.#originalCode !== undefined) {
+      if (
+        services.cache.get('entrypoints', this.name) !== publicationExpected
+      ) {
+        throw new AbortError('superseded');
+      }
+      const parsedInvalidation = services.cache.invalidateIfChangedWithDetails(
+        this.name,
+        this.#originalCode,
+        this.initialCode === undefined ? 'fs' : 'loaded',
+        graphTraversalToken,
+        targetEpoch
+      );
+      publicationExpected = services.cache.get('entrypoints', this.name);
+      this.assertCurrentCacheEpoch();
+      this.assertNotSuperseded();
+      assertExternalEpoch?.();
+
+      if (parsedInvalidation.unknownDependencyGraphs.size > 0) {
+        const recovery = services.cache.startUnknownGraphRecovery(
+          this.name,
+          parsedInvalidation.unknownDependencyGraphs,
+          this.#originalCode,
+          graphTraversalToken
+        );
+        if (recovery.started) {
+          recovery.complete();
+        }
+        throw recovery.abortError;
+      }
+    }
     const newEntrypoint = widensOnly
       ? new Entrypoint(
           services,
@@ -1014,20 +756,31 @@ export class Entrypoint extends BaseEntrypoint {
           this.exports,
           this.evaluatedOnly,
           this.loadedAndParsed,
+          this.#originalCode,
           this.resolveTasks,
           this.dependencies,
           this.invalidationDependencies,
           this.invalidateOnDependencyChange,
           this.generation + 1,
-          false,
-          this.unknownGraphTraversalToken
+          graphTraversalToken
         )
       : newOnlyOrEntrypoint;
+
+    this.assertCurrentCacheEpoch();
+    this.assertNotSuperseded();
+    newEntrypoint.assertCurrentCacheEpoch();
+    newEntrypoint.assertNotSuperseded();
+    assertExternalEpoch?.();
 
     services.eventEmitter.entrypointEvent(this.seqId, {
       type: 'superseded',
       with: newEntrypoint.seqId,
     });
+    this.assertCurrentCacheEpoch();
+    this.assertNotSuperseded();
+    newEntrypoint.assertCurrentCacheEpoch();
+    newEntrypoint.assertNotSuperseded();
+    assertExternalEpoch?.();
     this.log(
       'superseded by %s (%o -> %o)',
       newEntrypoint.name,
@@ -1038,8 +791,47 @@ export class Entrypoint extends BaseEntrypoint {
       newEntrypoint.#preevalResult = this.#preevalResult;
     }
 
+    const previousPendingOnly = this.#pendingOnly;
+    const previousSupersededWith = this.#supersededWith;
+    this.#pendingOnly = null;
     this.#supersededWith = newEntrypoint;
-    this.onSupersedeHandlers.forEach((handler) => handler(newEntrypoint));
+    try {
+      this.onSupersedeHandlers.forEach((handler) => {
+        handler(newEntrypoint);
+        this.assertCurrentCacheEpoch();
+        newEntrypoint.assertCurrentCacheEpoch();
+        newEntrypoint.assertNotSuperseded();
+        if (this.#supersededWith !== newEntrypoint) {
+          throw new AbortError('superseded');
+        }
+        assertExternalEpoch?.();
+      });
+
+      if (
+        !services.cache.replacePublished(
+          newEntrypoint.cacheEpoch,
+          'entrypoints',
+          this.name,
+          publicationExpected,
+          newEntrypoint
+        )
+      ) {
+        throw new AbortError('superseded');
+      }
+    } catch (error) {
+      this.#pendingOnly = previousPendingOnly;
+      this.#supersededWith = previousSupersededWith;
+      if (services.cache.get('entrypoints', this.name) === newEntrypoint) {
+        services.cache.replacePublished(
+          newEntrypoint.cacheEpoch,
+          'entrypoints',
+          this.name,
+          newEntrypoint,
+          publicationExpected
+        );
+      }
+      throw error;
+    }
 
     return newEntrypoint;
   }

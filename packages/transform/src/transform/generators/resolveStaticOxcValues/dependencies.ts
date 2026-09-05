@@ -38,7 +38,13 @@ export function* resolveDependency(
           importer,
           [imported],
           undefined,
-          { graphTraversalToken: action.entrypoint.graphTraversalToken }
+          {
+            externalEntrypoint: action.entrypoint,
+            graphTraversalToken:
+              action.entrypoint.getGraphTraversalTokenForServices(
+                action.services
+              ),
+          }
         );
   const imports = new Map([[source, [imported]]]);
   const [resolved] = yield* action.getNext('resolveImports', entrypoint, {

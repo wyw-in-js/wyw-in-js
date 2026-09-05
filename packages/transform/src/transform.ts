@@ -103,6 +103,7 @@ const executeTransformAttempt = async (
 
   if (entrypoint.ignored) {
     entrypoint.assertCurrentCacheEpoch();
+    entrypoint.assertNotSuperseded();
     markPipelineRootStatus('ignored');
     return {
       code: originalCode,
@@ -175,6 +176,7 @@ const executeTransform = async (
   );
   let releaseKeySalt: (() => void) | undefined;
   let activeLease: ActiveCacheKeySaltLease | undefined;
+  const cacheRecoveryOwner = {};
 
   try {
     if (parentLease) {
@@ -207,12 +209,15 @@ const executeTransform = async (
       const retriedEpochs = new Set<number>();
 
       for (;;) {
+        let cacheEpoch: TransformCacheEpoch | undefined;
+
         try {
-          const cacheEpoch = await cache.acquireReadyEpoch();
+          cacheEpoch = await cache.acquireReadyEpoch();
           const services = withDefaultServices({
             ...partialServices,
             cache,
             cacheEpoch,
+            cacheRecoveryOwner,
             options,
           });
           const resolveImports = configureEvalSession(
@@ -229,20 +234,35 @@ const executeTransform = async (
             customHandlers
           );
         } catch (error) {
-          if (
+          const ownedEpochAbort =
+            cacheEpoch !== undefined &&
             isCacheEpochAbortedError(error) &&
-            !retriedEpochs.has(error.toEpoch) &&
-            retriedEpochs.size < MAX_CACHE_RECOVERY_RETRIES
+            cacheEpoch.owner.getEpochError(cacheEpoch) === error
+              ? error
+              : null;
+
+          const consumesRetryBudget =
+            ownedEpochAbort !== null &&
+            (ownedEpochAbort.recoveryOwner === undefined ||
+              ownedEpochAbort.recoveryOwner === cacheRecoveryOwner);
+
+          if (
+            ownedEpochAbort &&
+            (!consumesRetryBudget ||
+              (!retriedEpochs.has(ownedEpochAbort.toEpoch) &&
+                retriedEpochs.size < MAX_CACHE_RECOVERY_RETRIES))
           ) {
-            retriedEpochs.add(error.toEpoch);
+            if (consumesRetryBudget) {
+              retriedEpochs.add(ownedEpochAbort.toEpoch);
+            }
             continue;
           }
 
-          throw isCacheEpochAbortedError(error)
+          throw ownedEpochAbort
             ? new CacheRecoveryConvergenceError(
                 options.filename,
                 retriedEpochs.size,
-                error
+                ownedEpochAbort
               )
             : error;
         }

@@ -142,6 +142,55 @@ describe('TransformCacheCollection', () => {
       expect(cache.has('entrypoints', filename)).toBe(true);
     });
 
+    it('invalidates a real edit that returns one channel to the other channel hash', () => {
+      const filename = 'fs.tsx';
+      const loadedContent = 'export const value = "loaded";';
+      const fsContent = 'export const value = "filesystem";';
+      const { cache } = setupCacheWithEntrypoint(filename, loadedContent);
+
+      expect(
+        cache.invalidateIfChanged(filename, fsContent, undefined, 'fs')
+      ).toBe(true);
+
+      cache.add('entrypoints', filename, {
+        dependencies: new Map(),
+        generation: 2,
+        initialCode: undefined,
+        invalidationDependencies: new Map(),
+        name: filename,
+        originalCode: fsContent,
+      } as any);
+
+      expect(
+        cache.invalidateIfChanged(filename, loadedContent, undefined, 'fs')
+      ).toBe(true);
+      expect(cache.has('entrypoints', filename)).toBe(false);
+    });
+
+    it('invalidates a delayed channel update after stale content was republished', () => {
+      const filename = 'fs.tsx';
+      const oldContent = 'export const value = "old";';
+      const newContent = 'export const value = "new";';
+      const { cache } = setupCacheWithEntrypoint(filename, oldContent);
+
+      expect(
+        cache.invalidateIfChanged(filename, newContent, undefined, 'fs')
+      ).toBe(true);
+
+      cache.add('entrypoints', filename, {
+        dependencies: new Map(),
+        generation: 2,
+        initialCode: oldContent,
+        invalidationDependencies: new Map(),
+        name: filename,
+      } as any);
+
+      expect(
+        cache.invalidateIfChanged(filename, newContent, undefined, 'loaded')
+      ).toBe(true);
+      expect(cache.has('entrypoints', filename)).toBe(false);
+    });
+
     it('should invalidate if content has changed', () => {
       const filename = 'test.js';
       const content = 'console.log("hello")';

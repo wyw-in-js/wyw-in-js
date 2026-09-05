@@ -18,9 +18,7 @@ import type {
   Services,
   SyncScenarioForAction,
 } from '../types';
-import { isCacheEpochAbortedError } from '../actions/CacheEpochAbortedError';
-import { isCacheKeySaltBusyError } from '../actions/CacheKeySaltBusyError';
-import { isCacheRecoveryConvergenceError } from '../actions/CacheRecoveryConvergenceError';
+import { isCacheRecoveryControlError } from '../actions/isCacheRecoveryControlError';
 
 type AsyncResolve = (
   what: string,
@@ -40,16 +38,6 @@ const getEvalOptions = (services: Services): EvalOptionsV2 => ({
   ...DEFAULT_EVAL_OPTIONS,
   ...(services.options.pluginOptions.eval ?? {}),
 });
-
-const isCacheRecoveryControlError = (error: unknown): boolean =>
-  isCacheEpochAbortedError(error) ||
-  isCacheKeySaltBusyError(error) ||
-  isCacheRecoveryConvergenceError(error) ||
-  (error !== null &&
-    typeof error === 'object' &&
-    ['WYW_SUPERSEDE_STORM', 'WYW_UNKNOWN_DEPENDENCY_GRAPH_RESET'].includes(
-      String((error as { code?: unknown }).code)
-    ));
 
 const resolveWithConfiguredEvalResolver = async (
   services: Services,
@@ -420,12 +408,14 @@ export async function* asyncResolveImports(
         });
 
         // … and update the cache
-        return entrypoint.addResolveTask(source, newTask);
+        entrypoint.addResolveTask(source, newTask);
+        return entrypoint.getResolveTask(source)!;
       }
 
       const resolveTask = getResolveTask(source, importsOnly);
 
-      return entrypoint.addResolveTask(source, resolveTask);
+      entrypoint.addResolveTask(source, resolveTask);
+      return entrypoint.getResolveTask(source)!;
     })
   );
   entrypoint.assertNotSuperseded();

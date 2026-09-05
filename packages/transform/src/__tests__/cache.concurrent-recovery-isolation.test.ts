@@ -10,6 +10,7 @@ type MockEntrypoint = {
   dependencies: Map<string, { resolved: string | null }>;
   generation: number;
   initialCode?: string;
+  isProcessing?: boolean;
   invalidateOnDependencyChange?: Set<string>;
   invalidationDependencies?: Map<string, { resolved: string | null }>;
   name: string;
@@ -35,7 +36,7 @@ const recover = (
     filename,
     new Set(unknown),
     'export const a = 1;',
-    cache.createGraphTraversalToken()
+    cache.createGraphTraversalToken(cache.getCurrentEpoch())
   );
 
 // The eval broker owns one VM generation for the whole transform cache. Cache
@@ -44,8 +45,9 @@ const recover = (
 describe('TransformCacheCollection: transactional recovery', () => {
   it('retires every traversal with one typed error that retains the cause', () => {
     const cache = new TransformCacheCollection<MockEntrypoint>();
-    const first = cache.createGraphTraversalToken();
-    const unrelated = cache.createGraphTraversalToken();
+    const oldEpoch = cache.getCurrentEpoch();
+    const first = cache.createGraphTraversalToken(oldEpoch);
+    const unrelated = cache.createGraphTraversalToken(oldEpoch);
     const transition = recover(cache, 'recovering.tsx');
 
     expect(transition.abortError).toMatchObject({
@@ -58,6 +60,8 @@ describe('TransformCacheCollection: transactional recovery', () => {
       code: 'WYW_UNKNOWN_DEPENDENCY_GRAPH_RESET',
       name: 'UnknownDependencyGraphResetError',
     });
+    expect(cache.getEpochError(oldEpoch)).toBe(transition.abortError);
+    expect(cache.getLifecycleError(0)).toBeNull();
     expect(cache.getGraphTraversalTokenError(first)).toBe(
       transition.abortError
     );
@@ -69,8 +73,9 @@ describe('TransformCacheCollection: transactional recovery', () => {
 
   it('coalesces recovery requests from the same old epoch', () => {
     const cache = new TransformCacheCollection<MockEntrypoint>();
-    const firstToken = cache.createGraphTraversalToken();
-    const secondToken = cache.createGraphTraversalToken();
+    const epoch = cache.getCurrentEpoch();
+    const firstToken = cache.createGraphTraversalToken(epoch);
+    const secondToken = cache.createGraphTraversalToken(epoch);
     const first = cache.startUnknownGraphRecovery(
       'a.tsx',
       new Set(['a-dependency.ts']),
@@ -94,31 +99,234 @@ describe('TransformCacheCollection: transactional recovery', () => {
   it('keeps the released unknown-graph recovery API synchronous', async () => {
     const cache = new TransformCacheCollection<MockEntrypoint>();
     const recoveryToken = {};
+    const lifecycleVersion = cache.getLifecycleVersion();
+    const sourceCode = 'export const value = 1;';
 
     const recoveryError = cache.beginUnknownGraphRecovery(
       'recovering.tsx',
       new Set(['missing.ts']),
-      'export const value = 1;',
+      sourceCode,
       recoveryToken
     );
+    const unrelatedToken = cache.createGraphTraversalToken();
 
     expect(recoveryError).toMatchObject({
       code: 'WYW_UNKNOWN_DEPENDENCY_GRAPH_RESET',
       name: 'UnknownDependencyGraphResetError',
     });
+    expect(cache.getLifecycleError(lifecycleVersion)).toBeNull();
     expect(cache.getGraphTraversalTokenError(recoveryToken)).toBeNull();
+    expect(
+      cache.invalidateIfChangedWithDetails(
+        'recovering.tsx',
+        sourceCode,
+        'loaded',
+        recoveryToken
+      ).unknownDependencyGraphs
+    ).toEqual(new Set());
+    expect(
+      cache.invalidateIfChangedWithDetails(
+        'recovering.tsx',
+        sourceCode,
+        'loaded',
+        unrelatedToken
+      ).unknownDependencyGraphs
+    ).toEqual(new Set(['missing.ts']));
+
+    // Legacy pending bookkeeping must not hold the transactional epoch barrier.
     await expect(cache.acquireReadyEpoch()).resolves.toBe(
       cache.getCurrentEpoch()
     );
 
-    // This method was part of the released two-call API. Recovery is now
-    // already complete, so it remains as an idempotent compatibility shim.
     cache.completeUnknownGraphRecovery('recovering.tsx');
+    expect(
+      cache.invalidateIfChangedWithDetails(
+        'recovering.tsx',
+        sourceCode,
+        'loaded',
+        unrelatedToken
+      ).unknownDependencyGraphs
+    ).toEqual(new Set());
+  });
+
+  it('keeps pending recovery until the published entrypoint completes', () => {
+    const cache = new TransformCacheCollection<MockEntrypoint>();
+    const filename = 'recovering.tsx';
+    const sourceCode = 'export const value = 1;';
+    const recoveryToken = {};
+    const recoveryError = cache.beginUnknownGraphRecovery(
+      filename,
+      new Set(['missing.ts']),
+      sourceCode,
+      recoveryToken
+    );
+    const published = entrypoint(filename, {
+      initialCode: sourceCode,
+      isProcessing: true,
+    });
+    const detached = entrypoint(filename, { initialCode: sourceCode });
+    cache.add('entrypoints', filename, published);
+
+    cache.completeUnknownGraphRecovery(filename, detached);
+    expect(
+      cache.getRecoveryError(
+        filename,
+        cache.getLifecycleVersion(),
+        cache.createGraphTraversalToken()
+      )
+    ).toBe(recoveryError);
+
+    published.isProcessing = false;
+    cache.completeUnknownGraphRecovery(filename, published);
+    expect(
+      cache.getRecoveryError(
+        filename,
+        cache.getLifecycleVersion(),
+        cache.createGraphTraversalToken()
+      )
+    ).toBeNull();
+
+    cache.beginUnknownGraphRecovery(
+      filename,
+      new Set(['another-missing.ts']),
+      sourceCode,
+      {}
+    );
+    cache.add('entrypoints', filename, entrypoint(filename));
+    expect(
+      cache.getRecoveryError(
+        filename,
+        cache.getLifecycleVersion(),
+        cache.createGraphTraversalToken()
+      )
+    ).toBeNull();
+  });
+
+  it('preserves pending evidence across recovery and clears it explicitly', () => {
+    const cache = new TransformCacheCollection<MockEntrypoint>();
+    const firstError = cache.beginUnknownGraphRecovery(
+      'first.tsx',
+      new Set(['first-missing.ts']),
+      'export const first = 1;',
+      {}
+    );
+    cache.beginUnknownGraphRecovery(
+      'second.tsx',
+      new Set(['second-missing.ts']),
+      'export const second = 1;',
+      {}
+    );
+
+    expect(
+      cache.getRecoveryError(
+        'first.tsx',
+        cache.getLifecycleVersion(),
+        cache.createGraphTraversalToken()
+      )
+    ).toBe(firstError);
+
+    cache.clear('entrypoints');
+    expect(
+      cache.getRecoveryError(
+        'first.tsx',
+        cache.getLifecycleVersion(),
+        cache.createGraphTraversalToken()
+      )
+    ).toBeNull();
+    // An explicit entrypoint-cache clear ends pending recovery but retains
+    // historical file recovery queries, as in the published cache contract.
+    expect(cache.getRecoveryError('first.tsx', 0)).toBe(firstError);
+
+    cache.setKeySalt('first');
+    expect(cache.getRecoveryError('first.tsx', 0)).toBe(firstError);
+    cache.setKeySalt('second');
+    expect(cache.getRecoveryError('first.tsx', 0)).toBeNull();
+  });
+
+  it('restores the file-scoped recovery query API as compatibility metadata', () => {
+    const cache = new TransformCacheCollection<MockEntrypoint>();
+    const versionBefore = cache.getLifecycleVersion();
+    const recoveryError = cache.beginUnknownGraphRecovery(
+      'recovering.tsx',
+      new Set(['missing.ts']),
+      'export const value = 1;',
+      {}
+    );
+
+    expect(cache.getRecoveryError('recovering.tsx', versionBefore)).toBe(
+      recoveryError
+    );
+    expect(cache.getRecoveryError('unrelated.tsx', versionBefore)).toBeNull();
+    expect(
+      cache.getScopedRecoveryError(versionBefore, new Set(['recovering.tsx']))
+    ).toBe(recoveryError);
+    expect(
+      cache.getScopedRecoveryError(versionBefore, new Set(['unrelated.tsx']))
+    ).toBeUndefined();
+  });
+
+  it('keeps released traversal tokens scoped to files they visited', () => {
+    const cache = new TransformCacheCollection<MockEntrypoint>();
+    const sourceCode = 'export const value = 1;';
+    const visitedToken = cache.createGraphTraversalToken();
+    const unrelatedToken = cache.createGraphTraversalToken();
+
+    cache.invalidateIfChangedWithDetails(
+      'recovering.tsx',
+      sourceCode,
+      'loaded',
+      visitedToken
+    );
+    const recoveryError = cache.beginUnknownGraphRecovery(
+      'recovering.tsx',
+      new Set(['missing.ts']),
+      sourceCode,
+      {}
+    );
+
+    expect(cache.getGraphTraversalTokenError(visitedToken)).toBe(recoveryError);
+    expect(cache.getGraphTraversalTokenError(unrelatedToken)).toBeNull();
+  });
+
+  it('reports a pending file recovery before an older legacy token error', () => {
+    const cache = new TransformCacheCollection<MockEntrypoint>();
+    const sourceCode = 'export const value = 1;';
+    const staleToken = cache.createGraphTraversalToken();
+
+    cache.invalidateIfChangedWithDetails(
+      'first.tsx',
+      sourceCode,
+      'loaded',
+      staleToken
+    );
+    const firstError = cache.beginUnknownGraphRecovery(
+      'first.tsx',
+      new Set(['first-missing.ts']),
+      sourceCode,
+      {}
+    );
+    const pendingError = cache.beginUnknownGraphRecovery(
+      'pending.tsx',
+      new Set(['pending-missing.ts']),
+      sourceCode,
+      {}
+    );
+
+    expect(cache.getGraphTraversalTokenError(staleToken)).toBe(firstError);
+    expect(() =>
+      cache.invalidateIfChangedWithDetails(
+        'pending.tsx',
+        sourceCode,
+        'loaded',
+        staleToken
+      )
+    ).toThrow(pendingError);
   });
 
   it('keeps the released supersede recovery API synchronous', async () => {
     const cache = new TransformCacheCollection<MockEntrypoint>();
     const oldEpoch = cache.getCurrentEpoch();
+    const lifecycleVersion = cache.getLifecycleVersion();
     const recoveryError = new Error('supersede storm');
 
     expect(cache.beginSupersedeStormRecovery(recoveryError)).toBeUndefined();
@@ -127,9 +335,60 @@ describe('TransformCacheCollection: transactional recovery', () => {
       cause: recoveryError,
       reason: 'supersede-storm',
     });
+    expect(cache.getLifecycleError(lifecycleVersion)).toBe(recoveryError);
+    expect(cache.getScopedRecoveryError(lifecycleVersion, new Set())).toBe(
+      recoveryError
+    );
+    expect(
+      cache.getScopedRecoveryError(cache.getLifecycleVersion(), new Set())
+    ).toBe(recoveryError);
     await expect(cache.acquireReadyEpoch()).resolves.toBe(
       cache.getCurrentEpoch()
     );
+  });
+
+  it('keeps key-salt rotations out of the released lifecycle counters', () => {
+    const cache = new TransformCacheCollection<MockEntrypoint>();
+    const recoveryError = new Error('global recovery');
+    cache.beginSupersedeStormRecovery(recoveryError);
+    const lifecycleVersion = cache.getLifecycleVersion();
+
+    cache.setKeySalt('first');
+    cache.setKeySalt('second');
+
+    expect(cache.getLifecycleVersion()).toBe(lifecycleVersion);
+    expect(cache.getLifecycleError(lifecycleVersion)).toBeNull();
+    expect(cache.getLifecycleError(lifecycleVersion - 1)).toBe(recoveryError);
+  });
+
+  it('keeps Entrypoint cacheLifecycleVersion on the released counter', () => {
+    const cache = new TransformCacheCollection();
+    cache.setKeySalt('first');
+    cache.setKeySalt('second');
+    const services = withDefaultServices({
+      cache,
+      options: {
+        filename: '/abs/entry.ts',
+        root: '/abs',
+        pluginOptions: loadWywOptions({ configFile: false }),
+      },
+    });
+    const createdEntrypoint = Entrypoint.createRoot(
+      services,
+      '/abs/entry.ts',
+      ['__wywPreval'],
+      'export const value = 1;'
+    );
+
+    expect(createdEntrypoint.cacheEpoch.version).toBeGreaterThan(
+      createdEntrypoint.cacheLifecycleVersion
+    );
+
+    const recoveryError = new Error('global recovery');
+    cache.beginSupersedeStormRecovery(recoveryError);
+    expect(
+      cache.getLifecycleError(createdEntrypoint.cacheLifecycleVersion)
+    ).toBe(recoveryError);
   });
 
   it('does not pin reusable default services to one cache epoch', () => {
@@ -153,6 +412,53 @@ describe('TransformCacheCollection: transactional recovery', () => {
       'export const value = 1;'
     );
     expect(createdEntrypoint.cacheEpoch).toBe(cache.getCurrentEpoch());
+  });
+
+  it('accepts a released traversal token in public Entrypoint.createRoot', () => {
+    const cache = new TransformCacheCollection();
+    const services = withDefaultServices({
+      cache,
+      options: {
+        filename: '/abs/entry.ts',
+        root: '/abs',
+        pluginOptions: loadWywOptions({ configFile: false }),
+      },
+    });
+    const sourceCode = 'export const value = 1;';
+    cache.beginUnknownGraphRecovery(
+      '/abs/entry.ts',
+      new Set(['/abs/missing.ts']),
+      sourceCode,
+      {}
+    );
+    const traversalToken = cache.createGraphTraversalToken();
+
+    let recoveryError: unknown;
+    try {
+      Entrypoint.createRoot(
+        services,
+        '/abs/entry.ts',
+        ['__wywPreval'],
+        sourceCode,
+        { graphTraversalToken: traversalToken }
+      );
+    } catch (error) {
+      recoveryError = error;
+    }
+
+    expect(recoveryError).toMatchObject({
+      code: 'WYW_CACHE_EPOCH_ABORTED',
+      reason: 'unknown-dependency-graph',
+    });
+    expect(() =>
+      Entrypoint.createRoot(
+        services,
+        '/abs/entry.ts',
+        ['__wywPreval'],
+        sourceCode,
+        { graphTraversalToken: traversalToken }
+      )
+    ).not.toThrow();
   });
 
   it('does not expose a replacement epoch before recovery completes', async () => {
@@ -207,6 +513,16 @@ describe('TransformCacheCollection: transactional recovery', () => {
         entrypoint('after-failure.ts')
       )
     ).toThrow(resetFailure);
+    expect(() =>
+      cache.beginUnknownGraphRecovery(
+        'second-recovery.ts',
+        new Set(['still-missing.ts']),
+        'export const value = 2;',
+        {}
+      )
+    ).toThrow(resetFailure);
+    expect(participant.resetAfterCacheInvalidation).toHaveBeenCalledTimes(1);
+    expect(cache.getCurrentEpoch()).toBe(replacementEpoch);
     expect(cache.get('entrypoints', 'too-early.ts')).toBeUndefined();
     expect(cache.get('entrypoints', 'after-failure.ts')).toBeUndefined();
   });
@@ -502,7 +818,7 @@ describe('TransformCacheCollection: loader content at unchanged mtime', () => {
       'unrelated.tsx',
       new Set(['missing.linaria.ts']),
       'export const a = 1;',
-      cache.createGraphTraversalToken()
+      cache.createGraphTraversalToken(cache.getCurrentEpoch())
     );
     transition.complete();
 

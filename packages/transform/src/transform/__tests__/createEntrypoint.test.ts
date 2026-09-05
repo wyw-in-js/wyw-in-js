@@ -1,6 +1,7 @@
 import type { Services } from '../types';
 import { createActionContext, disposeActionContext } from '../ActionContext';
 import { EventEmitter } from '../../utils/EventEmitter';
+import { AbortError } from '../actions/AbortError';
 
 import { createEntrypoint, createServices } from './entrypoint-helpers';
 
@@ -18,6 +19,302 @@ describe('createEntrypoint', () => {
       only: ['default'],
       parents: [],
     });
+  });
+
+  it('rejects construction when an entrypoint event retires its epoch', () => {
+    const cacheEpoch = services.cache.getCurrentEpoch();
+    const recoveryError = new Error('reentrant event recovery');
+    services.eventEmitter = new EventEmitter(
+      () => {},
+      () => 0,
+      () => services.cache.beginSupersedeStormRecovery(recoveryError)
+    );
+
+    let thrown: unknown;
+    try {
+      createEntrypoint(services, '/foo/reentrant-event.js', ['default']);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBe(services.cache.getEpochError(cacheEpoch));
+    expect(services.cache.get('entrypoints', '/foo/reentrant-event.js')).toBe(
+      undefined
+    );
+  });
+
+  it('rejects construction when loadAndParseFn retires its epoch', () => {
+    const cacheEpoch = services.cache.getCurrentEpoch();
+    const recoveryError = new Error('reentrant loader recovery');
+    const { loadAndParseFn } = services;
+    services.loadAndParseFn = (...args) => {
+      const result = loadAndParseFn(...args);
+      services.cache.beginSupersedeStormRecovery(recoveryError);
+      return result;
+    };
+
+    let thrown: unknown;
+    try {
+      createEntrypoint(services, '/foo/reentrant-loader.js', ['default']);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBe(services.cache.getEpochError(cacheEpoch));
+    expect(services.cache.get('entrypoints', '/foo/reentrant-loader.js')).toBe(
+      undefined
+    );
+  });
+
+  it('preserves a same-key replacement created from the created callback', () => {
+    const name = '/foo/reentrant-same-key.js';
+    let replacement: ReturnType<typeof createEntrypoint> | undefined;
+    let reentered = false;
+    services.eventEmitter = new EventEmitter(
+      () => {},
+      () => 0,
+      (_sequenceId, _timestamp, event) => {
+        if (event.type === 'created' && !reentered) {
+          reentered = true;
+          replacement = createEntrypoint(
+            services,
+            name,
+            ['replacement'],
+            'export const replacement = true;'
+          );
+        }
+      }
+    );
+
+    expect(() =>
+      createEntrypoint(services, name, ['stale'], 'export const stale = true;')
+    ).toThrow(AbortError);
+    expect(services.cache.get('entrypoints', name)).toBe(replacement);
+    expect(replacement?.initialCode).toBe('export const replacement = true;');
+  });
+
+  it('preserves a same-key replacement created from the perf finish callback', () => {
+    const name = '/foo/reentrant-perf-same-key.js';
+    let replacement: ReturnType<typeof createEntrypoint> | undefined;
+    let reentered = false;
+    services.eventEmitter = new EventEmitter(
+      (_labels, phase) => {
+        if (phase === 'finish' && !reentered) {
+          reentered = true;
+          replacement = createEntrypoint(services, name, ['replacement'], '');
+        }
+      },
+      () => 0,
+      () => {}
+    );
+
+    expect(() => createEntrypoint(services, name, ['stale'], '')).toThrow(
+      AbortError
+    );
+    expect(services.cache.get('entrypoints', name)).toBe(replacement);
+    expect(replacement?.only).toEqual(['replacement', 'stale']);
+  });
+
+  it('rejects an evaluated clone when its source epoch retires during the target event', () => {
+    const source = createEntrypoint(services, '/foo/reentrant-evaluated.js', [
+      'default',
+    ]);
+    const sourceEpoch = services.cache.getCurrentEpoch();
+    const targetServices = createServices();
+    const recoveryError = new Error('reentrant evaluated recovery');
+    targetServices.eventEmitter = new EventEmitter(
+      () => {},
+      () => 0,
+      () => services.cache.beginSupersedeStormRecovery(recoveryError)
+    );
+
+    let thrown: unknown;
+    try {
+      source.createEvaluated(targetServices);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBe(services.cache.getEpochError(sourceEpoch));
+    expect(
+      targetServices.cache.get('entrypoints', '/foo/reentrant-evaluated.js')
+    ).toBeUndefined();
+  });
+
+  it('rejects an evaluated clone when its target epoch retires during the created event', () => {
+    const source = createEntrypoint(
+      services,
+      '/foo/reentrant-evaluated-target.js',
+      ['default']
+    );
+    const targetServices = createServices();
+    const targetEpoch = targetServices.cache.getCurrentEpoch();
+    const recoveryError = new Error('reentrant evaluated target recovery');
+    targetServices.eventEmitter = new EventEmitter(
+      () => {},
+      () => 0,
+      () => targetServices.cache.beginSupersedeStormRecovery(recoveryError)
+    );
+
+    let thrown: unknown;
+    try {
+      source.createEvaluated(targetServices);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBe(targetServices.cache.getEpochError(targetEpoch));
+    expect(services.cache.getEpochError(source.cacheEpoch)).toBeNull();
+  });
+
+  it('rejects an evaluated clone when its source is superseded in the same epoch', () => {
+    const name = '/foo/reentrant-evaluated-same-epoch.js';
+    const source = createEntrypoint(services, name, ['default'], '');
+    let replacement: ReturnType<typeof createEntrypoint> | undefined;
+    let reentered = false;
+    services.eventEmitter = new EventEmitter(
+      () => {},
+      () => 0,
+      (_sequenceId, _timestamp, event) => {
+        if (event.type === 'created' && !reentered) {
+          reentered = true;
+          replacement = createEntrypoint(services, name, ['replacement'], '');
+        }
+      }
+    );
+
+    expect(() => source.createEvaluated(services)).toThrow(AbortError);
+    expect(source.supersededWith).toBe(replacement);
+    expect(services.cache.get('entrypoints', name)).toBe(replacement);
+  });
+
+  it('does not publish a cross-cache child when its parent epoch retires during the target event', () => {
+    const parent = createEntrypoint(services, '/foo/parent.js', ['default']);
+    const parentEpoch = services.cache.getCurrentEpoch();
+    const targetServices = createServices();
+    const recoveryError = new Error('reentrant child recovery');
+    targetServices.eventEmitter = new EventEmitter(
+      () => {},
+      () => 0,
+      () => services.cache.beginSupersedeStormRecovery(recoveryError)
+    );
+
+    let thrown: unknown;
+    try {
+      parent.createChild(
+        '/foo/reentrant-child.js',
+        ['default'],
+        undefined,
+        targetServices
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBe(services.cache.getEpochError(parentEpoch));
+    expect(
+      targetServices.cache.get('entrypoints', '/foo/reentrant-child.js')
+    ).toBeUndefined();
+  });
+
+  it('does not publish a cross-cache child when the target perf callback retires its parent', () => {
+    const parent = createEntrypoint(services, '/foo/parent-perf.js', [
+      'default',
+    ]);
+    const parentEpoch = services.cache.getCurrentEpoch();
+    const targetServices = createServices();
+    const recoveryError = new Error('reentrant child perf recovery');
+    targetServices.eventEmitter = new EventEmitter(
+      (_labels, phase) => {
+        if (phase === 'finish') {
+          services.cache.beginSupersedeStormRecovery(recoveryError);
+        }
+      },
+      () => 0,
+      () => {}
+    );
+
+    let thrown: unknown;
+    try {
+      parent.createChild(
+        '/foo/reentrant-perf-child.js',
+        ['default'],
+        undefined,
+        targetServices
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBe(services.cache.getEpochError(parentEpoch));
+    expect(
+      targetServices.cache.get('entrypoints', '/foo/reentrant-perf-child.js')
+    ).toBeUndefined();
+  });
+
+  it('does not mutate a cached cross-cache child when its parent retires during replacement', () => {
+    const parent = createEntrypoint(services, '/foo/parent-cached.js', [
+      'default',
+    ]);
+    const parentEpoch = services.cache.getCurrentEpoch();
+    const targetServices = createServices();
+    const childName = '/foo/reentrant-cached-child.js';
+    const childCode = '';
+    const cachedChild = createEntrypoint(
+      targetServices,
+      childName,
+      ['value'],
+      childCode
+    );
+    const recoveryError = new Error('reentrant cached-child recovery');
+    targetServices.eventEmitter = new EventEmitter(
+      () => {},
+      () => 0,
+      () => services.cache.beginSupersedeStormRecovery(recoveryError)
+    );
+
+    let thrown: unknown;
+    try {
+      parent.createChild(childName, ['other'], childCode, targetServices);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBe(services.cache.getEpochError(parentEpoch));
+    expect(targetServices.cache.get('entrypoints', childName)).toBe(
+      cachedChild
+    );
+    expect(cachedChild.supersededWith).toBeNull();
+    expect(cachedChild.parents).toEqual([]);
+    expect(cachedChild.only).toEqual(['value']);
+  });
+
+  it('publishes a detached deferred retry through a distinct cache owner', () => {
+    const sourceServices = createServices();
+    const parent = createEntrypoint(services, '/foo/deferred-parent.js', [
+      'default',
+    ]);
+    const childName = '/foo/deferred-cross-owner.js';
+    const child = parent.createChild(childName, ['first'], '', services);
+    expect(child).not.toBe('loop');
+    if (child === 'loop') return;
+
+    child.beginProcessing();
+    try {
+      expect(parent.createChild(childName, ['second'], '', services)).toBe(
+        child
+      );
+      const next = child.applyDeferredSupersede(sourceServices);
+
+      expect(next).not.toBeNull();
+      expect(child.supersededWith).toBeNull();
+      expect(sourceServices.cache.get('entrypoints', childName)).toBe(next);
+      expect(services.cache.get('entrypoints', childName)).toBe(child);
+      expect(next?.only).toEqual(['first', 'second']);
+      expect(createEntrypoint(services, childName, ['first'], '')).toBe(child);
+    } finally {
+      child.endProcessing();
+    }
   });
 
   it('should take from cache', () => {

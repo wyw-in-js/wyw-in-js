@@ -871,7 +871,9 @@ describe('barrel optimization', () => {
       fs.writeFileSync(consumerFile, consumerCode);
 
       const cache = new TransformCacheCollection();
-      const recoveryToken = cache.createGraphTraversalToken();
+      const recoveryToken = cache.createGraphTraversalToken(
+        cache.getCurrentEpoch()
+      );
       const started = createDeferred();
       const unblock = createDeferred();
       const resolve = createResolver(root);

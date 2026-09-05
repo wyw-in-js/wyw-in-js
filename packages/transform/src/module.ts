@@ -30,7 +30,12 @@ import type {
 } from '@wyw-in-js/shared';
 
 import './utils/dispose-polyfill';
-import type { TransformCacheCollection } from './cache';
+import type { TransformCacheCollection, TransformCacheEpoch } from './cache';
+import {
+  buildModulePreamble,
+  ensureVmModules,
+  ModuleEvaluation,
+} from './module-evaluation';
 import { Entrypoint } from './transform/Entrypoint';
 import {
   getStack,
@@ -39,8 +44,6 @@ import {
 } from './transform/Entrypoint.helpers';
 import type { IEvaluatedEntrypoint } from './transform/EvaluatedEntrypoint';
 import type { IEntrypointDependency } from './transform/Entrypoint.types';
-import { isCacheEpochAbortedError } from './transform/actions/CacheEpochAbortedError';
-import { isUnprocessedEntrypointError } from './transform/actions/UnprocessedEntrypointError';
 import type { Services } from './transform/types';
 import {
   applyImportOverrideToOnly,
@@ -175,34 +178,6 @@ const defaultEvalOptions: Required<
   resolver: 'bundler',
 };
 
-const browserOnlyEvalHintTriggers = [
-  'window is not defined',
-  "evaluating 'window",
-  'document is not defined',
-  "evaluating 'document",
-  'navigator is not defined',
-  "evaluating 'navigator",
-  'self is not defined',
-  "evaluating 'self",
-];
-
-const getBrowserOnlyEvalHint = (error: unknown): string | null => {
-  const message = error instanceof Error ? error.message : String(error);
-  const looksLikeBrowserOnly = browserOnlyEvalHintTriggers.some((trigger) =>
-    message.includes(trigger)
-  );
-  if (!looksLikeBrowserOnly) return null;
-
-  return [
-    '',
-    '[wyw-in-js] Evaluation hint:',
-    'This usually means browser-only code ran during build-time evaluation.',
-    'Move browser-only initialization out of evaluated modules, or mock the import via `importOverrides`.',
-    "Example: importOverrides: { 'msw/browser': { mock: './src/__mocks__/msw-browser.js' } }",
-    `Docs: ${TROUBLESHOOTING_URL}`,
-  ].join('\n');
-};
-
 const warnedUnknownImportsByServices = new WeakMap<Services, Set<string>>();
 
 const getEvalOptions = (services: Services): EvalOptionsV2 => ({
@@ -252,49 +227,6 @@ function getUncached(cached: string | string[], test: string[]): string[] {
 const defaultImportLoaders: ImportLoaders = {
   raw: 'raw',
   url: 'url',
-};
-
-const buildModulePreamble = (id: string): string => {
-  const payload = JSON.stringify(id);
-  return [
-    `const __wyw_module = __wyw_getModule(${payload});`,
-    `let exports = __wyw_module.exports;`,
-    `const module = __wyw_module.module;`,
-    `const require = __wyw_module.require;`,
-    `const __filename = __wyw_module.filename;`,
-    `const __dirname = __wyw_module.dirname;`,
-    `const __wyw_dynamic_import = __wyw_module.dynamicImport;`,
-    ``,
-  ].join('\n');
-};
-
-const applyModuleNamespace = (
-  entrypointExports: Record<string | symbol, unknown>,
-  module: vm.Module,
-  moduleData: ModuleData
-): Record<string | symbol, unknown> => {
-  const { namespace } = module;
-  const keys = Object.keys(namespace);
-
-  if (keys.length === 0 && moduleData.module.exports !== moduleData.exports) {
-    return moduleData.module.exports as Record<string | symbol, unknown>;
-  }
-
-  const nextExports = entrypointExports;
-  keys.forEach((key) => {
-    nextExports[key] = (namespace as Record<string, unknown>)[key];
-  });
-
-  return nextExports;
-};
-
-const ensureVmModules = (): void => {
-  if (!vm.SourceTextModule || !vm.SyntheticModule) {
-    throw new EvalError(
-      '[wyw-in-js] vm.SourceTextModule is not available in this runtime. ' +
-        'WyW v2 uses a separate eval runner process for ESM evaluation.'
-    );
-  }
 };
 
 const getImporterDependency = (
@@ -348,6 +280,10 @@ export class Module {
 
   private cache: TransformCacheCollection;
 
+  private readonly cacheEpoch: TransformCacheEpoch;
+
+  private readonly evaluation: ModuleEvaluation;
+
   private context: vm.Context | null = null;
 
   private teardown: (() => void) | null = null;
@@ -372,6 +308,12 @@ export class Module {
     private moduleImpl: HiddenModuleMembers = DefaultModuleImplementation
   ) {
     this.cache = services.cache;
+    this.cacheEpoch = services.cacheEpoch ?? services.cache.getCurrentEpoch();
+    this.cache.assertEpoch(this.cacheEpoch);
+    const expectedEntrypointPublication = this.cache.get(
+      'entrypoints',
+      entrypoint.name
+    );
     this.#entrypointRef = isFeatureEnabled(
       services.options.pluginOptions.features,
       'useWeakRefInEval',
@@ -395,7 +337,37 @@ export class Module {
 
     this.extensions = services.options.pluginOptions.extensions;
 
+    this.evaluation = new ModuleEvaluation({
+      cache: this.cache,
+      cacheEpoch: this.cacheEpoch,
+      callstack: this.callstack,
+      debug: this.debug,
+      dependencies: this.dependencies,
+      expectedEntrypointPublication,
+      filename: this.filename,
+      ignored: this.ignored,
+      moduleImplIdentity: this.moduleImpl,
+      parentModuleIdentity: parentModule,
+      services: this.services,
+      assertCurrent: () => this.assertModuleCurrent(),
+      ensureContext: (filename) => this.ensureContext(filename),
+      getEntrypoint: () => this.entrypoint,
+      getExports: () => this.exports as Record<string | symbol, unknown>,
+      getIsEvaluated: () => this.isEvaluated,
+      getModuleData: (id) => this.getModuleData(id),
+      getModuleForEntrypoint: (targetEntrypoint) =>
+        this.getModuleForEntrypoint(targetEntrypoint),
+      linkModule: (module) => this.linkModule(module),
+      setExports: (value) => {
+        this.exports = value;
+      },
+      setIsEvaluated: (value) => {
+        this.isEvaluated = value;
+      },
+    });
+
     this.debug('init', entrypoint.name);
+    this.assertModuleCurrent();
   }
 
   public get exports() {
@@ -417,93 +389,8 @@ export class Module {
     return entrypoint;
   }
 
-  async evaluate(): Promise<void> {
-    const { entrypoint } = this;
-    entrypoint.assertTransformed();
-    const cacheEpoch =
-      this.services.cacheEpoch ?? this.services.cache.getCurrentEpoch();
-    this.cache.assertEpoch(cacheEpoch);
-
-    const cached = this.cache.get('entrypoints', entrypoint.name)!;
-    let evaluatedCreated = false;
-    if (!entrypoint.supersededWith) {
-      this.cache.publish(
-        cacheEpoch,
-        'entrypoints',
-        entrypoint.name,
-        entrypoint.createEvaluated(this.services)
-      );
-      evaluatedCreated = true;
-    }
-
-    const { transformedCode: source } = entrypoint;
-    if (!source) {
-      this.debug(`evaluate`, 'there is nothing to evaluate');
-      return;
-    }
-
-    if (this.isEvaluated) {
-      this.debug('evaluate', `is already evaluated`);
-      return;
-    }
-
-    this.debug('evaluate');
-    this.debug.extend('source')('%s', source);
-
-    this.isEvaluated = true;
-
-    const filename = stripQueryAndHash(this.filename);
-
-    if (/\.json$/.test(filename)) {
-      // For JSON files, parse it to a JS object similar to Node
-      this.exports = JSON.parse(source);
-      return;
-    }
-
-    const { teardown } = await this.ensureContext(filename);
-    try {
-      const module = await this.getModuleForEntrypoint(entrypoint);
-      await this.linkModule(module);
-      await module.evaluate();
-      const exports = applyModuleNamespace(
-        entrypoint.exports as Record<string | symbol, unknown>,
-        module,
-        this.getModuleData(entrypoint.name)
-      );
-      if (exports !== entrypoint.exports) {
-        entrypoint.exports = exports;
-      }
-    } catch (e) {
-      this.isEvaluated = false;
-      if (evaluatedCreated) {
-        this.cache.publish(cacheEpoch, 'entrypoints', entrypoint.name, cached);
-      }
-
-      if (isUnprocessedEntrypointError(e)) {
-        // It will be handled by evalFile scenario
-        throw e;
-      }
-
-      if (e instanceof EvalError) {
-        this.debug('%O', e);
-
-        throw e;
-      }
-
-      if (isCacheEpochAbortedError(e)) {
-        throw e;
-      }
-
-      this.debug('%O\n%O', e, this.callstack);
-      const baseMessage = `${(e as Error).message} in${this.callstack.join(
-        '\n| '
-      )}\n`;
-      const hint = getBrowserOnlyEvalHint(e);
-
-      throw new EvalError(hint ? `${baseMessage}${hint}\n` : baseMessage);
-    } finally {
-      teardown();
-    }
+  evaluate(): Promise<void> {
+    return this.evaluation.evaluate();
   }
 
   getEntrypoint(
@@ -511,9 +398,11 @@ export class Module {
     only: string[],
     log: Debugger
   ): Entrypoint | IEvaluatedEntrypoint | null {
+    this.assertModuleCurrent();
     const strippedFilename = stripQueryAndHash(filename);
     const extension = path.extname(strippedFilename);
     if (extension !== '.json' && !this.extensions.includes(extension)) {
+      this.assertModuleCurrent();
       return null;
     }
 
@@ -525,6 +414,7 @@ export class Module {
 
       if (entrypoint) {
         log('✅ file has been already evaluated');
+        this.assertModuleCurrent();
         return entrypoint;
       }
     }
@@ -533,6 +423,7 @@ export class Module {
       log(
         '✅ file has been ignored during prepare stage. Original code will be used'
       );
+      this.assertModuleCurrent();
       return entrypoint;
     }
 
@@ -555,6 +446,7 @@ export class Module {
         );
       }
 
+      this.assertModuleCurrent();
       return newEntrypoint;
     }
 
@@ -571,6 +463,7 @@ export class Module {
       uncachedExports = getUncached(evaluatedExports, only);
       if (uncachedExports.length === 0) {
         log('✅ ready for evaluation');
+        this.assertModuleCurrent();
         return entrypoint;
       }
 
@@ -606,11 +499,17 @@ export class Module {
       filename,
       reprocessOnly,
       code,
-      { graphTraversalToken: this.entrypoint.graphTraversalToken }
+      {
+        externalEntrypoint: this.entrypoint,
+        graphTraversalToken: this.entrypoint.getGraphTraversalTokenForServices(
+          this.services
+        ),
+      }
     );
 
     if (newEntrypoint.evaluated) {
       log('✅ file has been already evaluated');
+      this.assertModuleCurrent();
       return newEntrypoint;
     }
 
@@ -618,10 +517,20 @@ export class Module {
       log(
         '✅ file has been ignored during prepare stage. Original code will be used'
       );
+      this.assertModuleCurrent();
       return newEntrypoint;
     }
 
+    this.assertModuleCurrent();
     return newEntrypoint;
+  }
+
+  private assertModuleCurrent(): void {
+    // The Module belongs to the services/cache attempt. Fence it first so a
+    // foreign source owner cannot mask the exact retry control error.
+    this.cacheEpoch.owner.assertEpoch(this.cacheEpoch);
+    this.entrypoint.assertCurrentCacheEpoch();
+    this.entrypoint.assertNotSuperseded();
   }
 
   private async ensureContext(filename: string) {
@@ -639,6 +548,12 @@ export class Module {
       },
       this.services.options.pluginOptions.overrideContext
     );
+    try {
+      this.assertModuleCurrent();
+    } catch (error) {
+      teardown();
+      throw error;
+    }
 
     this.context = context;
     this.teardown = () => {
@@ -699,9 +614,12 @@ export class Module {
     code: string,
     entrypoint?: Entrypoint | IEvaluatedEntrypoint
   ): Promise<vm.SourceTextModule> {
+    this.assertModuleCurrent();
     ensureVmModules();
     const { context } = await this.ensureContext(stripQueryAndHash(id));
+    this.assertModuleCurrent();
     this.createModuleData(id, entrypoint);
+    this.assertModuleCurrent();
 
     const module = new vm.SourceTextModule(
       `${buildModulePreamble(id)}${code}`,
@@ -730,6 +648,7 @@ export class Module {
       this.moduleEntrypoints.set(module, entrypoint);
     }
 
+    this.assertModuleCurrent();
     return module;
   }
 
@@ -737,8 +656,10 @@ export class Module {
     id: string,
     exportsValue: Record<string, unknown>
   ): Promise<vm.SyntheticModule> {
+    this.assertModuleCurrent();
     ensureVmModules();
     const { context } = await this.ensureContext(stripQueryAndHash(id));
+    this.assertModuleCurrent();
     const exportNames = new Set(Object.keys(exportsValue));
     const hasDefault = Object.prototype.hasOwnProperty.call(
       exportsValue,
@@ -761,6 +682,7 @@ export class Module {
     );
 
     this.moduleCache.set(id, module);
+    this.assertModuleCurrent();
     return module;
   }
 
@@ -786,23 +708,41 @@ export class Module {
   private async getModuleForEntrypoint(
     entrypoint: Entrypoint | IEvaluatedEntrypoint
   ): Promise<vm.Module> {
-    const cached = this.moduleCache.get(entrypoint.name);
+    this.assertModuleCurrent();
+    if (!(entrypoint instanceof Entrypoint)) {
+      // Structural implementations may expose name/cacheEpoch/exports through
+      // arbitrary accessors or proxy traps.
+      this.evaluation.markEntrypointMayHaveSideEffects();
+    }
+    const entrypointName = this.evaluation.getEntrypointName(entrypoint);
+    const cached = this.moduleCache.get(entrypointName);
     if (cached) return cached;
 
     if (!(entrypoint instanceof Entrypoint)) {
-      return this.createSyntheticModule(entrypoint.name, entrypoint.exports);
+      this.evaluation.trackEntrypoint(entrypoint, entrypointName);
+      return this.createSyntheticModule(entrypointName, entrypoint.exports);
     }
 
     entrypoint.assertTransformed();
+    if (entrypoint !== this.entrypoint) {
+      this.evaluation.trackEntrypoint(entrypoint, entrypointName);
+    }
     const source = entrypoint.transformedCode ?? '';
 
-    return this.createSourceTextModule(entrypoint.name, source, entrypoint);
+    const created = await this.createSourceTextModule(
+      entrypointName,
+      source,
+      entrypoint
+    );
+    this.assertModuleCurrent();
+    return created;
   }
 
   private async linkModule(module: vm.Module): Promise<void> {
     const cached = this.moduleLinkPromises.get(module);
     if (cached) {
       await cached;
+      this.assertModuleCurrent();
       return;
     }
 
@@ -815,20 +755,27 @@ export class Module {
     );
     this.moduleLinkPromises.set(module, linking);
     await linking;
+    this.assertModuleCurrent();
   }
 
   private async importModuleDynamically(
     specifier: string,
     referencingModule: vm.Module
   ): Promise<vm.Module> {
+    const transaction = this.evaluation.requireTransaction();
+    this.evaluation.assertTransaction(transaction);
     const module = await this.getModuleForSpecifier(
       specifier,
       referencingModule,
-      'dynamic-import'
+      'dynamic-import',
+      transaction
     );
+    this.evaluation.assertTransaction(transaction);
     await this.linkModule(module);
+    this.evaluation.assertTransaction(transaction);
     if (module.status === 'linked') {
       await module.evaluate();
+      this.evaluation.assertTransaction(transaction);
     }
     return module;
   }
@@ -837,15 +784,25 @@ export class Module {
     importer: Entrypoint | IEvaluatedEntrypoint,
     id: unknown
   ): Promise<unknown> {
+    const transaction = this.evaluation.requireTransaction();
+    this.evaluation.assertTransaction(transaction);
+    this.evaluation.assertImporterCurrent(importer);
     const specifier = String(id);
     const module = await this.getModuleForSpecifierFromEntrypoint(
       specifier,
       importer,
-      'dynamic-import'
+      'dynamic-import',
+      transaction
     );
+    this.evaluation.assertTransaction(transaction);
+    this.evaluation.assertImporterCurrent(importer);
     await this.linkModule(module);
+    this.evaluation.assertTransaction(transaction);
+    this.evaluation.assertImporterCurrent(importer);
     if (module.status === 'linked') {
       await module.evaluate();
+      this.evaluation.assertTransaction(transaction);
+      this.evaluation.assertImporterCurrent(importer);
     }
     return module.namespace;
   }
@@ -853,26 +810,45 @@ export class Module {
   private async getModuleForSpecifier(
     specifier: string,
     referencingModule: vm.Module,
-    kind: EvalResolverKind
+    kind: EvalResolverKind,
+    transaction = this.evaluation.getTransaction() ?? undefined
   ): Promise<vm.Module> {
+    if (transaction) this.evaluation.assertTransaction(transaction);
+    else this.assertModuleCurrent();
     const importer =
       this.moduleEntrypoints.get(referencingModule) ?? this.entrypoint;
-    return this.getModuleForSpecifierFromEntrypoint(specifier, importer, kind);
+    const module = await this.getModuleForSpecifierFromEntrypoint(
+      specifier,
+      importer,
+      kind,
+      transaction
+    );
+    this.evaluation.assertImportCurrent(importer, transaction);
+    return module;
   }
 
   private async getModuleForSpecifierFromEntrypoint(
     specifier: string,
     importer: Entrypoint | IEvaluatedEntrypoint,
-    kind: EvalResolverKind
+    kind: EvalResolverKind,
+    transaction = this.evaluation.getTransaction() ?? undefined
   ): Promise<vm.Module> {
+    this.evaluation.assertImportCurrent(importer, transaction);
     const virtualModule = await this.getVirtualModule(specifier);
+    this.evaluation.assertImportCurrent(importer, transaction);
     if (virtualModule) {
       return virtualModule;
     }
 
     this.dependencies.push(specifier);
 
-    const resolved = await this.resolveImport(specifier, importer, kind);
+    const resolved = await this.resolveImport(
+      specifier,
+      importer,
+      kind,
+      transaction
+    );
+    this.evaluation.assertImportCurrent(importer, transaction);
     const evalOptions = getEvalOptions(this.services);
 
     if (!resolved) {
@@ -897,22 +873,28 @@ export class Module {
       });
     }
 
-    return this.getModuleForResolved(resolved, importer);
+    const module = await this.getModuleForResolved(
+      resolved,
+      importer,
+      transaction
+    );
+    this.evaluation.assertImportCurrent(importer, transaction);
+    return module;
   }
 
   private async resolveImport(
     specifier: string,
     importer: Entrypoint | IEvaluatedEntrypoint,
-    kind: EvalResolverKind
+    kind: EvalResolverKind,
+    transaction?: object
   ): Promise<ResolvedImport | null> {
     const evalOptions = getEvalOptions(this.services);
 
     if (evalOptions.customResolver) {
-      const customResolved = await evalOptions.customResolver(
-        specifier,
-        importer.name,
-        kind
+      const customResolved = await this.evaluation.runInLeaseContext(() =>
+        evalOptions.customResolver!(specifier, importer.name, kind)
       );
+      this.evaluation.assertImportCurrent(importer, transaction);
       if (customResolved) {
         return this.applyImportOverrides(
           {
@@ -1036,15 +1018,20 @@ export class Module {
 
   private async getModuleForResolved(
     resolved: ResolvedImport,
-    importer: Entrypoint | IEvaluatedEntrypoint
+    importer: Entrypoint | IEvaluatedEntrypoint,
+    transaction?: object
   ): Promise<vm.Module> {
+    this.evaluation.assertImportCurrent(importer, transaction);
     const cached = this.moduleCache.get(resolved.resolved);
     if (cached) return cached;
 
     const evalOptions = getEvalOptions(this.services);
 
     if (evalOptions.customLoader) {
-      const loaded = await evalOptions.customLoader(resolved.resolved);
+      const loaded = await this.evaluation.runInLeaseContext(() =>
+        evalOptions.customLoader!(resolved.resolved)
+      );
+      this.evaluation.assertImportCurrent(importer, transaction);
       if (loaded) {
         if (loaded.loader === 'json') {
           const jsonValue = JSON.parse(loaded.code);
@@ -1099,7 +1086,7 @@ export class Module {
     }
 
     if ('evaluated' in entrypoint && entrypoint.evaluated) {
-      return this.createSyntheticModule(entrypoint.name, entrypoint.exports);
+      return this.getModuleForEntrypoint(entrypoint);
     }
 
     return this.getModuleForEntrypoint(entrypoint);

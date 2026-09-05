@@ -14,10 +14,15 @@ import {
   loadWywOptions,
   type PartialOptions,
 } from '../transform/helpers/loadWywOptions';
-import { shaker } from '../shaker';
+import { oxcShaker, shaker } from '../shaker';
 import { withDefaultServices } from '../transform/helpers/withDefaultServices';
 import { Entrypoint } from '../transform/Entrypoint';
+import { AbortError } from '../transform/actions/AbortError';
 import { isCacheEpochAbortedError } from '../transform/actions/CacheEpochAbortedError';
+import {
+  CACHE_KEY_SALT_BUSY,
+  isCacheKeySaltBusyError,
+} from '../transform/actions/CacheKeySaltBusyError';
 import {
   disposeEvalBroker,
   EvalBroker,
@@ -27,7 +32,11 @@ import {
 import { prepareModuleOnDemand } from '../eval/prepareModuleOnDemand';
 import { serializeValue } from '../eval/serialize';
 import { EventEmitter } from '../utils/EventEmitter';
-import { TransformCacheCollection, type TransformCacheEpoch } from '../cache';
+import {
+  CacheKeySaltBusyError,
+  TransformCacheCollection,
+  type TransformCacheEpoch,
+} from '../cache';
 
 const createPluginOptions = (overrides: PartialOptions = {}) =>
   loadWywOptions({
@@ -108,6 +117,16 @@ const getPrivateBroker = (broker: EvalBroker) =>
     loadMirror: { get: (id: string) => { only: string[] } | undefined };
     onlyByModule: Map<string, string[]>;
     sessionLinkGraph: Set<string>;
+    applyModuleExports: (
+      modules: Record<
+        string,
+        Record<string, ReturnType<typeof serializeValue>>
+      >,
+      expectedEntrypoints: ReadonlyMap<string, unknown>,
+      cacheOwner: TransformCacheEpoch['owner'],
+      cacheGeneration: object,
+      rootEntrypoint: Entrypoint
+    ) => unknown;
     ensureImportsMapping: (
       id: string,
       imports: Map<string, string[]> | null | undefined
@@ -115,6 +134,7 @@ const getPrivateBroker = (broker: EvalBroker) =>
     ensureRunner: () => Promise<void>;
     handleRunnerStderr: (chunk: Buffer) => void;
     handleMessage: (message: unknown, runner?: unknown) => void;
+    getCacheGeneration: (cacheOwner: TransformCacheEpoch['owner']) => object;
     initIsolatedRunner: (
       payload: unknown,
       timeoutMs: number
@@ -2218,6 +2238,114 @@ describe('EvalBroker', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  it('rejects a custom-loader result after its cache publication is replaced', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wyw-eval-broker-'));
+    const importer = join(root, 'entry.js');
+    const dep = join(root, 'dep.js');
+    const source = 'export const value = 1; export const extra = 2;';
+    writeFileSync(importer, 'export {};');
+    writeFileSync(dep, source);
+
+    let releaseLoader!: () => void;
+    let signalLoaderStarted!: () => void;
+    const loaderGate = new Promise<void>((resolveGate) => {
+      releaseLoader = resolveGate;
+    });
+    const loaderStarted = new Promise<void>((resolveStarted) => {
+      signalLoaderStarted = resolveStarted;
+    });
+    const customLoader = jest.fn(async () => {
+      signalLoaderStarted();
+      await loaderGate;
+      return { code: source };
+    });
+    const services = createServices(root, importer, {
+      eval: { customLoader },
+    });
+    const initial = Entrypoint.createRoot(services, dep, ['value'], source);
+    const broker = new EvalBroker(
+      services,
+      jest.fn(async () => dep)
+    );
+    const privateBroker = getPrivateBroker(broker);
+    privateBroker.onlyByModule.set(dep, ['value']);
+
+    const loading = privateBroker.loadModule({
+      id: dep,
+      importerId: importer,
+      request: './dep.js',
+    });
+    await loaderStarted;
+    const replacement = Entrypoint.createRoot(
+      services,
+      dep,
+      ['value', 'extra'],
+      source
+    );
+    expect(replacement).not.toBe(initial);
+    releaseLoader();
+
+    await expect(loading).rejects.toBeInstanceOf(AbortError);
+    expect(services.cache.get('entrypoints', dep)).toBe(replacement);
+
+    broker.dispose();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('rejects prepared code replaced by a transform finish observer', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wyw-eval-broker-'));
+    const importer = join(root, 'entry.js');
+    const dep = join(root, 'dep.js');
+    const source = 'export const value = 1; export const extra = 2;';
+    writeFileSync(importer, 'export {};');
+    writeFileSync(dep, source);
+
+    const services = createServices(root, importer, {
+      rules: [{ action: oxcShaker, test: () => true }],
+    });
+    const initial = Entrypoint.createRoot(services, dep, ['value'], source);
+    let replacement: Entrypoint | undefined;
+    services.eventEmitter = new EventEmitter(
+      (labels, type) => {
+        if (
+          !replacement &&
+          type === 'finish' &&
+          labels.method === 'transform:evaluator'
+        ) {
+          replacement = Entrypoint.createRoot(
+            services,
+            dep,
+            ['value', 'extra'],
+            source
+          );
+        }
+      },
+      createActionIdHandler(),
+      () => {}
+    );
+    const broker = new EvalBroker(
+      services,
+      jest.fn(async () => dep)
+    );
+    const privateBroker = getPrivateBroker(broker);
+    privateBroker.activeEntrypoint = initial;
+    privateBroker.onlyByModule.set(dep, ['value']);
+
+    await expect(
+      privateBroker.loadModule({
+        id: dep,
+        importerId: importer,
+        request: './dep.js',
+      })
+    ).rejects.toBeInstanceOf(AbortError);
+    expect(replacement).toBeDefined();
+    expect(replacement).not.toBe(initial);
+    expect(services.cache.get('entrypoints', dep)).toBe(replacement);
+
+    broker.dispose();
+    rmSync(root, { recursive: true, force: true });
+  });
+
   it('retires a blocked LOAD without sending or clearing replacement-runner state', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wyw-eval-broker-'));
     const importer = join(root, 'entry.js');
@@ -3438,6 +3566,110 @@ describe('EvalBroker', () => {
 
     broker.dispose();
     rmSync(root, { recursive: true, force: true });
+  });
+
+  it('propagates cache-recovery errors from runner resolution', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wyw-eval-broker-'));
+    const entry = join(root, 'entry.js');
+    const dep = join(root, 'dep.js');
+    const nextEntry = join(root, 'next-entry.js');
+
+    writeFileSync(dep, 'export const value = 41;');
+    writeFileSync(
+      entry,
+      [
+        "import { value } from './dep.js';",
+        'export const __wywPreval = { value: () => value };',
+      ].join('\n')
+    );
+    const nextSource = 'export const __wywPreval = { value: () => 42 };';
+    writeFileSync(nextEntry, nextSource);
+
+    const recoveryError = new CacheKeySaltBusyError();
+    const asyncResolve = jest.fn(async () => {
+      throw recoveryError;
+    });
+    const services = createServices(root, entry, {
+      eval: { require: 'warn-and-run', resolver: 'bundler' },
+    });
+    const nextServices = createServices(root, nextEntry);
+    const broker = new EvalBroker(services, asyncResolve);
+    const entrypoint = Entrypoint.createRoot(
+      services,
+      entry,
+      ['__wywPreval'],
+      readFileSync(entry, 'utf-8')
+    );
+    const nextEntrypoint = Entrypoint.createRoot(
+      nextServices,
+      nextEntry,
+      ['__wywPreval'],
+      nextSource
+    );
+
+    try {
+      const evaluation = broker.evaluate(entrypoint);
+      const observedError = evaluation.catch((error: unknown) => error);
+      const nextEvaluation = broker.evaluate(nextEntrypoint, nextServices);
+
+      await expect(evaluation).rejects.toBe(recoveryError);
+      const error = await observedError;
+      expect(isCacheKeySaltBusyError(error)).toBe(true);
+      expect(error).toMatchObject({ code: CACHE_KEY_SALT_BUSY });
+      expect((await nextEvaluation).values?.get('value')).toBe(42);
+      expect(asyncResolve).toHaveBeenCalled();
+    } finally {
+      broker.dispose();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('propagates cache-recovery errors from runner loading', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wyw-eval-broker-'));
+    const entry = join(root, 'entry.js');
+    const dep = join(root, 'dep.js');
+    const source = [
+      "import { value } from './dep.js';",
+      'export const __wywPreval = { value: () => value };',
+    ].join('\n');
+    writeFileSync(entry, source);
+    writeFileSync(dep, 'export const value = 41;');
+
+    const recoveryError = new CacheKeySaltBusyError();
+    const asyncResolve = jest.fn(async (what: string, importer: string) =>
+      what.startsWith('.') ? resolve(dirname(importer), what) : null
+    );
+    const services = createServices(root, entry, {
+      eval: { require: 'warn-and-run', resolver: 'bundler' },
+    });
+    const loadAndParse = services.loadAndParseFn;
+    services.loadAndParseFn = (nextServices, id, ...rest) => {
+      if (id === dep) {
+        throw recoveryError;
+      }
+      return loadAndParse(nextServices, id, ...rest);
+    };
+    const broker = new EvalBroker(services, asyncResolve);
+    const entrypoint = Entrypoint.createRoot(
+      services,
+      entry,
+      ['__wywPreval'],
+      source
+    );
+
+    try {
+      const evaluation = broker.evaluate(entrypoint);
+      const observedError = evaluation.catch((error: unknown) => error);
+
+      await expect(evaluation).rejects.toBe(recoveryError);
+      const error = await observedError;
+      expect(isCacheKeySaltBusyError(error)).toBe(true);
+      expect(error).toMatchObject({ code: CACHE_KEY_SALT_BUSY });
+      expect(asyncResolve).toHaveBeenCalled();
+    } finally {
+      broker.dispose();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('recreates invalidated primary runner modules', async () => {
@@ -7538,6 +7770,84 @@ describe('EvalBroker', () => {
       await expect(broker.evaluate(entrypoint)).rejects.toThrow('superseded');
       expect(replacement).toBeDefined();
       expect(Object.keys(replacement!.exports)).not.toContain('stale');
+
+      broker.dispose();
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it('retires the cache epoch when publishing exports partially mutates a live target', () => {
+      const root = mkdtempSync(join(tmpdir(), 'wyw-eval-broker-'));
+      const entry = join(root, 'entry.js');
+      const dependency = join(root, 'dependency.js');
+      const source = 'export const __wywPreval = {};';
+      writeFileSync(entry, source);
+      writeFileSync(dependency, 'export const first = 1;');
+
+      const services = createServices(root, entry);
+      const broker = new EvalBroker(
+        services,
+        jest.fn(async () => null)
+      );
+      const entrypoint = Entrypoint.createRoot(
+        services,
+        entry,
+        ['__wywPreval'],
+        source
+      );
+      const initialEpoch = services.cacheEpoch;
+      const setterError = new Error('second export setter failed');
+      const storedExports: Record<string, unknown> = {};
+      const writes: string[] = [];
+      const exportsProxy = new Proxy(storedExports, {
+        set(target, key, value, receiver) {
+          writes.push(String(key));
+          if (key === 'second') {
+            throw setterError;
+          }
+          return Reflect.set(target, key, value, receiver);
+        },
+      });
+      const evaluatedTarget = {
+        dependencies: new Map(),
+        evaluated: true as const,
+        evaluatedOnly: [],
+        exports: exportsProxy,
+        ignored: false as const,
+      };
+      services.cache.add('exports', dependency, ['first', 'second']);
+      services.cache.add('entrypoints', dependency, evaluatedTarget as never);
+
+      const privateBroker = getPrivateBroker(broker);
+      let thrown: unknown;
+      try {
+        privateBroker.applyModuleExports(
+          {
+            [dependency]: {
+              first: serializeValue(1, { allowFunctions: true }),
+              second: serializeValue(2, { allowFunctions: true }),
+            },
+          },
+          new Map([[dependency, evaluatedTarget]]),
+          initialEpoch.owner,
+          privateBroker.getCacheGeneration(initialEpoch.owner),
+          entrypoint
+        );
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(writes).toEqual(['first', 'second']);
+      expect(storedExports).toEqual({ first: 1 });
+      expect(thrown).toBe(services.cache.getEpochError(initialEpoch));
+      expect(thrown).toEqual(
+        expect.objectContaining({
+          cause: setterError,
+          code: 'WYW_CACHE_EPOCH_ABORTED',
+          reason: 'evaluation-side-effect',
+        })
+      );
+      expect(services.cache.getCurrentEpoch()).not.toBe(initialEpoch);
+      expect(services.cache.get('entrypoints', dependency)).toBeUndefined();
 
       broker.dispose();
       rmSync(root, { recursive: true, force: true });

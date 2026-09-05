@@ -1,12 +1,9 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "outDir": "./types"
+    "outDir": "./types",
+    "stripInternal": true
   },
-  "exclude": [
-    "**/__tests__/**",
-    "**/*.test.ts",
-    "**/*.test.tsx"
-  ],
+  "exclude": ["**/__tests__/**", "**/*.test.ts", "**/*.test.tsx"],
   "include": ["./src/**/*.ts"]
 }

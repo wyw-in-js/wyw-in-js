@@ -149,6 +149,7 @@ export abstract class BaseEntrypoint {
 
   public readonly log: Debugger;
 
+  /** @internal Entrypoint publications are fenced by their captured epoch. */
   public readonly cacheEpoch: TransformCacheEpoch;
 
   // eslint-disable-next-line no-plusplus
@@ -192,6 +193,7 @@ export abstract class BaseEntrypoint {
       this.#exports = BaseEntrypoint.createExports(this.log);
     }
 
+    services.cache.assertEpoch(this.cacheEpoch);
     services.eventEmitter.entrypointEvent(this.seqId, {
       class: this.constructor.name,
       evaluatedOnly: this.evaluatedOnly,
@@ -203,6 +205,7 @@ export abstract class BaseEntrypoint {
       parentId: parents[0]?.seqId ?? null,
       type: 'created',
     });
+    services.cache.assertEpoch(this.cacheEpoch);
   }
 
   public get exports(): Record<string | symbol, unknown> {

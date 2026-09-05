@@ -393,7 +393,7 @@ describe('supersede storm guard', () => {
       victimName,
       new Set([victimDependency]),
       victimCode,
-      services.cache.createGraphTraversalToken()
+      services.cache.createGraphTraversalToken(services.cache.getCurrentEpoch())
     );
     recovery.complete();
 
@@ -425,7 +425,7 @@ describe('supersede storm guard', () => {
       name,
       new Set([depName]),
       rootCode,
-      services.cache.createGraphTraversalToken()
+      services.cache.createGraphTraversalToken(services.cache.getCurrentEpoch())
     );
     firstRecovery.complete();
     services.cacheEpoch = services.cache.getCurrentEpoch();
@@ -435,7 +435,7 @@ describe('supersede storm guard', () => {
       otherName,
       new Set([otherDependency]),
       otherCode,
-      services.cache.createGraphTraversalToken()
+      services.cache.createGraphTraversalToken(services.cache.getCurrentEpoch())
     );
     secondRecovery.complete();
 

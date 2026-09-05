@@ -39,7 +39,8 @@
   "scripts": {
     "build:esm": "node ../../scripts/build-esm-oxc.mjs --out-file-extension .mjs",
     "build:types": "tsc --project ./tsconfig.lib.json --baseUrl . --rootDir ./src",
-    "lint": "eslint --ext .js,.ts ."
+    "lint": "eslint --ext .js,.ts .",
+    "test": "bun test src"
   },
   "types": "types/index.d.ts"
 }

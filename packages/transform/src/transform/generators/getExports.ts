@@ -117,9 +117,9 @@ export function* getExports(
     }
 
     entrypoint.assertNotSuperseded();
-    cache.publish(entrypoint.cacheEpoch, 'exports', entrypoint.name, result);
+    cache.publish(this.cacheEpoch, 'exports', entrypoint.name, result);
     cache.publishCacheDependencies(
-      entrypoint.cacheEpoch,
+      this.cacheEpoch,
       'exports',
       entrypoint.name,
       dependencyFilenames
@@ -132,7 +132,7 @@ export function* getExports(
 
   entrypoint.log('exports: %o', result);
   entrypoint.assertNotSuperseded();
-  cache.publish(entrypoint.cacheEpoch, 'exports', entrypoint.name, result);
+  cache.publish(this.cacheEpoch, 'exports', entrypoint.name, result);
 
   return result;
 }

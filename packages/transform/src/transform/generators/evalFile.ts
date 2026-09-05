@@ -1,4 +1,5 @@
 import evaluate, { type IEvaluateResult } from '../../evaluators';
+import { AbortError } from '../actions/AbortError';
 import { isUnprocessedEntrypointError } from '../actions/UnprocessedEntrypointError';
 import { createPrevalPayload } from '../prevalPayload';
 import type { AsyncScenarioForAction, IEvalAction } from '../types';
@@ -22,6 +23,13 @@ export async function* evalFile(
     this.services.options.pluginOptions.eval?.strategy ?? 'hybrid';
 
   if (preevalResult && (preevalResult.dependencyNames?.length ?? 0) === 0) {
+    const expectedPublication = this.services.cache.get(
+      'entrypoints',
+      entrypoint.name
+    );
+    if (expectedPublication !== entrypoint) {
+      throw new AbortError('superseded');
+    }
     const prevalPayload = createPrevalPayload({
       emitWarning: this.services.emitWarning,
       evalDependencies: preevalResult.executeSideEffectDependencies,
@@ -33,6 +41,7 @@ export async function* evalFile(
       staticValues: preevalResult.staticValueCache,
     });
     log(`<< skipped evaluate __wywPreval %O`, prevalPayload.values);
+    this.recordCachePublication(expectedPublication);
 
     return prevalPayload;
   }
@@ -61,6 +70,7 @@ export async function* evalFile(
   }
 
   if (!evaluated.values) {
+    this.recordCachePublication(evaluated.publication);
     return null;
   }
 
@@ -80,6 +90,7 @@ export async function* evalFile(
   });
 
   log(`<< evaluated __wywPreval %O`, prevalPayload.values);
+  this.recordCachePublication(evaluated.publication);
 
   return prevalPayload;
 }

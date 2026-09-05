@@ -7,6 +7,7 @@ import type { EventEmitter } from '../utils/EventEmitter';
 import type { WYWTransformMetadata } from '../utils/TransformMetadata';
 
 import type { Entrypoint } from './Entrypoint';
+import type { IEvaluatedEntrypoint } from './EvaluatedEntrypoint';
 import type { LoadAndParseFn, IEntrypointDependency } from './Entrypoint.types';
 import type { PrevalPayload } from './prevalPayload';
 import type { BaseAction } from './actions/BaseAction';
@@ -25,7 +26,10 @@ export type LoadDependencyCodeFn = (
 
 export type Services = {
   cache: TransformCacheCollection;
+  /** @internal Transform attempts capture cache epochs themselves. */
   cacheEpoch?: TransformCacheEpoch;
+  /** @internal Stable identity for recoveries initiated by one transform. */
+  cacheRecoveryOwner?: object;
   emitWarning?: (message: string) => void;
   eventEmitter: EventEmitter;
   loadDependencyCode?: LoadDependencyCodeFn;
@@ -78,12 +82,22 @@ export interface IBaseAction<TAction extends ActionQueueItem, TResult, TData>
   extends IBaseNode {
   actionContext: unknown;
   abortSignal: AbortSignal | null;
+  /** @internal Actions publish through their services owner's captured epoch. */
+  cacheEpoch: TransformCacheEpoch;
   createAbortSignal: () => AbortSignal & Disposable;
   data: TData;
   entrypoint: Entrypoint;
   getNext: GetNext;
   idx: string;
   result: TResult | typeof Pending;
+  /** @internal Exact cache identity produced by an action result. */
+  recordCachePublication: (
+    publication: Entrypoint | IEvaluatedEntrypoint | undefined
+  ) => void;
+  /** @internal Consume the cache identity recorded by an action result. */
+  takeCachePublication: () => {
+    publication: Entrypoint | IEvaluatedEntrypoint | undefined;
+  } | null;
   run: <TMode extends 'async' | 'sync'>(
     handler: Handler<TMode, TAction>
   ) => {

@@ -349,7 +349,7 @@ describe('TransformCacheCollection: unknown dependency graph', () => {
 
   it('opens a cold replacement epoch and rejects the retired epoch', () => {
     const oldEpoch = cache.getCurrentEpoch();
-    const recoveryToken = cache.createGraphTraversalToken();
+    const recoveryToken = cache.createGraphTraversalToken(oldEpoch);
     const transition = cache.startUnknownGraphRecovery(
       parentName,
       new Set([depName]),
@@ -378,13 +378,29 @@ describe('TransformCacheCollection: unknown dependency graph', () => {
     ).toThrow(transition.abortError);
   });
 
+  it('rejects an epoch traversal token from another cache', () => {
+    const otherCache = new TransformCacheCollection<MockEntrypoint>();
+    const foreignToken = otherCache.createGraphTraversalToken(
+      otherCache.getCurrentEpoch()
+    );
+
+    expect(() =>
+      cache.invalidateIfChangedWithDetails(
+        parentName,
+        parentContent,
+        'loaded',
+        foreignToken
+      )
+    ).toThrow(/wrong owner/);
+  });
+
   it('rejects stale freshness checks before they mutate replacement state', () => {
     const oldEpoch = cache.getCurrentEpoch();
     const transition = cache.startUnknownGraphRecovery(
       parentName,
       new Set([depName]),
       parentContent,
-      cache.createGraphTraversalToken()
+      cache.createGraphTraversalToken(oldEpoch)
     );
     transition.complete();
 

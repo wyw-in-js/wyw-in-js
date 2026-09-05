@@ -2,6 +2,7 @@ export const CACHE_EPOCH_ABORTED = 'WYW_CACHE_EPOCH_ABORTED';
 
 export type CacheRecoveryReason =
   | 'cache-key-salt-change'
+  | 'evaluation-side-effect'
   | 'supersede-storm'
   | 'unknown-dependency-graph';
 
@@ -14,7 +15,9 @@ export class CacheEpochAbortedError extends Error {
     public readonly fromEpoch: number,
     public readonly toEpoch: number,
     public readonly reason: CacheRecoveryReason,
-    cause: Error
+    cause: Error,
+    /** @internal Stable transform lineage that initiated this recovery. */
+    public readonly recoveryOwner?: object
   ) {
     super(
       `[wyw-in-js] Transform cache epoch ${fromEpoch} was replaced by ${toEpoch}; the attempt must restart.`,

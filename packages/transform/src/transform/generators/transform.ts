@@ -29,6 +29,7 @@ import {
   recordPipelineLateNoMetadata,
 } from '../../debug/pipelineTelemetry';
 import type { EvalPreparationToken } from '../../debug/evalTelemetry.types';
+import { AbortError } from '../actions/AbortError';
 
 const EMPTY_FILE = '=== empty file ===';
 
@@ -117,6 +118,7 @@ const ensureOxcPreevalResult = (
   const { eventEmitter } = services;
   const { pluginOptions } = services.options;
   const root = services.options.root ?? process.cwd();
+  const servicesEpoch = services.cacheEpoch ?? services.cache.getCurrentEpoch();
 
   const preevalStageResult = eventEmitter.perf('transform:preeval', () => {
     const result = runOxcPreevalStage(
@@ -177,6 +179,12 @@ const ensureOxcPreevalResult = (
     return preevalResult;
   });
 
+  services.cache.assertEpoch(servicesEpoch);
+  item.assertCurrentCacheEpoch();
+  item.assertNotSuperseded();
+  if (item.getPreevalResult() !== cached) {
+    throw new AbortError('superseded');
+  }
   item.setPreevalResult(preevalStageResult);
   return preevalStageResult;
 };

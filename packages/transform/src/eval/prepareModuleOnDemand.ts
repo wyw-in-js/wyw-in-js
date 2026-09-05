@@ -5,11 +5,18 @@ import { isSuperSet } from '../transform/Entrypoint.helpers';
 import { collectOxcImportMap } from '../utils/oxcImportMap';
 import { prepareCodeForEvalRuntime } from '../transform/generators/transform';
 import type { EvalPreparationToken } from '../debug/evalTelemetry.types';
+import { AbortError } from '../transform/actions/AbortError';
+
+export const PREPARED_MODULE_PUBLICATION = Symbol('preparedModulePublication');
 
 export type PreparedModule = {
   code: string;
   imports: Map<string, string[]> | null;
   only: string[];
+};
+
+type PreparedModuleWithPublication = PreparedModule & {
+  [PREPARED_MODULE_PUBLICATION]: unknown;
 };
 
 export function prepareModuleOnDemand(
@@ -19,7 +26,7 @@ export function prepareModuleOnDemand(
   telemetry?: EvalPreparationToken,
   graphTraversalToken?: object,
   activeEntrypoint?: Entrypoint
-): PreparedModule {
+): PreparedModuleWithPublication {
   const entrypoint =
     activeEntrypoint?.name === id && isSuperSet(activeEntrypoint.only, only)
       ? activeEntrypoint
@@ -27,6 +34,19 @@ export function prepareModuleOnDemand(
           mergeCachedOnly: !only.includes('__wywPreval'),
           graphTraversalToken,
         });
+  const expectedPublication = services.cache.get('entrypoints', id);
+  const finish = (prepared: PreparedModule): PreparedModuleWithPublication => {
+    entrypoint.assertCurrentCacheEpoch();
+    entrypoint.assertNotSuperseded();
+    if (services.cache.get('entrypoints', id) !== expectedPublication) {
+      throw new AbortError('superseded');
+    }
+
+    Object.defineProperty(prepared, PREPARED_MODULE_PUBLICATION, {
+      value: expectedPublication,
+    });
+    return prepared as PreparedModuleWithPublication;
+  };
 
   if (entrypoint.ignored) {
     const code = entrypoint.loadedAndParsed.code ?? '';
@@ -46,11 +66,11 @@ export function prepareModuleOnDemand(
       }
     }
 
-    return {
+    return finish({
       code,
       imports,
       only: entrypoint.only,
-    };
+    });
   }
 
   const ast =
@@ -66,9 +86,9 @@ export function prepareModuleOnDemand(
     telemetry
   );
 
-  return {
+  return finish({
     code,
     imports,
     only: entrypoint.only,
-  };
+  });
 }
