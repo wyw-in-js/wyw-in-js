@@ -55,8 +55,6 @@ const stripQueryAndHash = (request: string) => {
 const hashText = (text: string): string =>
   crypto.createHash('sha256').update(text).digest('hex');
 
-const shortHashText = (text: string): string => hashText(text).slice(0, 12);
-
 export type LoaderOptions = {
   cacheProvider?: string | ICache;
   cssImport?: 'require' | 'import';
@@ -112,34 +110,6 @@ const hasCompilerHooks = (
       [hooks.done, hooks.failed, hooks.shutdown, hooks.watchClose].some(
         (hook) => typeof hook?.tap === 'function'
       )
-  );
-};
-
-const shouldSerializeOutputCssPayload = (
-  compiler: CompilerLike | undefined
-): boolean => {
-  if (!compiler || typeof compiler.getCache !== 'function') {
-    return true;
-  }
-
-  const webpackCache = compiler.options?.cache;
-  if (
-    webpackCache &&
-    typeof webpackCache === 'object' &&
-    webpackCache.type === 'filesystem'
-  ) {
-    return true;
-  }
-
-  const experiments = compiler.options?.experiments as
-    | { cache?: unknown }
-    | undefined;
-  const rspackCache = experiments?.cache;
-  return Boolean(
-    rspackCache &&
-      typeof rspackCache === 'object' &&
-      'type' in rspackCache &&
-      rspackCache.type === 'persistent'
   );
 };
 
@@ -494,10 +464,6 @@ const webpack5Loader: Loader = function webpack5LoaderPlugin(
               `wyw=${encodeURIComponent(extension.replace(/^\./, ''))}`,
             ];
 
-            if (this.hot) {
-              wywQuery.push(`v=${encodeURIComponent(shortHashText(cssText))}`);
-            }
-
             const resourcePathWithQuery = `${toWebpackRequestPath(
               this.resourcePath
             )}?${wywQuery.join('&')}`;
@@ -509,17 +475,10 @@ const webpack5Loader: Loader = function webpack5LoaderPlugin(
             if (cacheProviderToken) {
               outputLoaderQuery.set('cacheProviderToken', cacheProviderToken);
             }
-            if (
-              shouldSerializeOutputCssPayload(loaderCompiler) ||
-              (cacheProvider &&
-                typeof cacheProvider === 'object' &&
-                !cacheProviderToken)
-            ) {
-              outputLoaderQuery.set(
-                'outputCssPayload',
-                encodeOutputCssPayload({ cssText })
-              );
-            }
+            outputLoaderQuery.set(
+              'outputCssPayload',
+              encodeOutputCssPayload({ cssText })
+            );
             const outputLoaderOptions = outputLoaderQuery.toString();
             const outputLoaderRequest = outputLoaderOptions
               ? `${outputCssLoader}?${outputLoaderOptions}`

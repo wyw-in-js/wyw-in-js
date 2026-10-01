@@ -18,12 +18,12 @@ jest.mock('@wyw-in-js/transform', () => ({
   disposeEvalBroker: jest.fn(),
 }));
 
-describe('webpack-loader HMR CSS versioning', () => {
+describe('webpack-loader CSS request identity', () => {
   beforeEach(() => {
     transformMock.mockReset();
   });
 
-  it('adds a CSS version param to wyw query when hot', async () => {
+  it('changes requests with CSS content in both hot and cold builds', async () => {
     const { default: webpackLoader } = await import('../index');
     const resourcePath = '/abs/entry.jsx';
 
@@ -87,11 +87,14 @@ describe('webpack-loader HMR CSS versioning', () => {
 
     const hotReq1 = await run('.title{color:red}', true);
     const hotReq2 = await run('.title{color:blue}', true);
-    const coldReq = await run('.title{color:green}', false);
+    const coldReq1 = await run('.title{color:red}', false);
+    const coldReq2 = await run('.title{color:blue}', false);
 
-    expect(hotReq1).toMatch(/[?&]v=/);
-    expect(hotReq2).toMatch(/[?&]v=/);
+    expect(hotReq1).toContain('outputCssPayload=');
+    expect(hotReq1).not.toMatch(/[?&]v=/);
     expect(hotReq1).not.toEqual(hotReq2);
-    expect(coldReq).not.toMatch(/[?&]v=/);
+    expect(coldReq1).not.toEqual(coldReq2);
+    expect(coldReq1).toEqual(hotReq1);
+    expect(coldReq2).toEqual(hotReq2);
   });
 });

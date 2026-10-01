@@ -1,6 +1,6 @@
 {
   "name": "@wyw-in-js/babel-preset",
-  "version": "2.5.0",
+  "version": "2.5.1",
   "type": "module",
   "dependencies": {
     "@babel/core": "^7.23.5",

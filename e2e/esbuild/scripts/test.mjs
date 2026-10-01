@@ -15,24 +15,27 @@ const PKG_DIR = path.resolve(__dirname, '..');
 const normalizeLineEndings = (value) =>
   value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 
-const runBuild = async () => {
+const runBuild = async (entrypoint, strategy) => {
   const outDir = path.resolve(PKG_DIR, 'dist');
   await fs.rm(outDir, { recursive: true, force: true });
 
   await build({
-    entryPoints: [path.resolve(PKG_DIR, 'src', 'index.js')],
+    entryPoints: [path.resolve(PKG_DIR, entrypoint)],
     bundle: true,
     format: 'esm',
     outdir: outDir,
     write: true,
-    plugins: [wyw({ configFile: false })],
+    plugins: [
+      wyw({
+        configFile: false,
+        ...(strategy ? { eval: { strategy } } : {}),
+      }),
+    ],
   });
 };
 
-const main = async () => {
-  console.log(colors.blue('Package directory:'), PKG_DIR);
-
-  await runBuild();
+const runFixture = async (entrypoint, fixture, strategy) => {
+  await runBuild(entrypoint, strategy);
 
   const outDir = path.resolve(PKG_DIR, 'dist');
   const entries = await fs.readdir(outDir);
@@ -54,14 +57,11 @@ const main = async () => {
     )
   ).join('\n');
 
-  const cssOutput = await prettier.format(
-    normalizeLineEndings(cssOutputRaw),
-    {
-      parser: 'css',
-    }
-  );
+  const cssOutput = await prettier.format(normalizeLineEndings(cssOutputRaw), {
+    parser: 'css',
+  });
   const cssFixture = normalizeLineEndings(
-    await fs.readFile(path.resolve(PKG_DIR, 'fixture.css'), 'utf8')
+    await fs.readFile(path.resolve(PKG_DIR, fixture), 'utf8')
   );
 
   if (cssOutput !== cssFixture) {
@@ -71,6 +71,16 @@ const main = async () => {
     console.log(cssFixture);
     throw new Error('CSS output does not match fixture');
   }
+};
+
+const main = async () => {
+  console.log(colors.blue('Package directory:'), PKG_DIR);
+  await runFixture('src/index.js', 'fixture.css');
+  await runFixture(
+    'fixtures/dangerous-controls/index.js',
+    'fixtures/dangerous-controls/expected.css',
+    'execute'
+  );
 };
 
 main().then(

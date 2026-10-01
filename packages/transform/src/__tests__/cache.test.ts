@@ -251,6 +251,8 @@ describe('TransformCacheCollection', () => {
 
       cache.invalidateIfChanged(depName, depContent, undefined, 'fs');
 
+      // Publication may read a raw baseline; count only freshness probes.
+      mockedReadFileSync.mockClear();
       const invalidated = cache.invalidateIfChanged(parentName, parentContent);
 
       expect(invalidated).toBe(false);
@@ -891,6 +893,7 @@ describe('TransformCacheCollection', () => {
         throw new Error(`Unexpected readFileSync call: ${path}`);
       });
 
+      mockedReadFileSync.mockClear();
       const invalidated = cache.invalidateIfChanged(fileA, contentA);
 
       expect(invalidated).toBe(false);
@@ -1030,6 +1033,7 @@ describe('TransformCacheCollection', () => {
         throw new Error(`Unexpected readFileSync call: ${path}`);
       });
 
+      mockedReadFileSync.mockClear();
       const invalidated = cache.invalidateIfChanged(fileB, newContentB);
 
       expect(invalidated).toBe(true);

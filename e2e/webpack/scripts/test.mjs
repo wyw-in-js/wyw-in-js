@@ -280,6 +280,103 @@ const assertRspackParallelLoader = async () => {
   await assertFixture();
 };
 
+const assertWatchUpdates = async () => {
+  const tempDir = await fs.mkdtemp(path.join(PKG_DIR, 'watch-'));
+  const entry = path.join(tempDir, 'entry.js');
+  const outputPath = path.join(tempDir, 'dist');
+  const source = (color) =>
+    `import { css } from '@wyw-in-js/template-tag-syntax';\nexport const title = css\`color: ${color};\`;\n`;
+  await fs.writeFile(entry, source('red'));
+  const compiler = bundler({
+    mode: 'development',
+    context: PKG_DIR,
+    entry,
+    devtool: false,
+    output: { path: outputPath, filename: 'bundle.js' },
+    cache: true,
+    module: {
+      rules: [
+        { test: /\.js$/, use: ['@wyw-in-js/webpack-loader'] },
+        {
+          test: /\.wyw-in-js\.css$/,
+          type: 'asset/resource',
+          generator: { filename: 'styles.css' },
+        },
+      ],
+    },
+  });
+  const builds = [];
+  let notify;
+  const watching = compiler.watch({ aggregateTimeout: 50 }, (error, stats) => {
+    builds.push(
+      error ??
+        (stats.hasErrors()
+          ? new Error(stats.toString({ all: false, errors: true }))
+          : null)
+    );
+    notify?.();
+  });
+  const waitForBuild = (index) =>
+    new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        notify = undefined;
+        reject(new Error(`${bundlerName} watch rebuild timed out`));
+      }, 30000);
+      notify = () => {
+        if (builds.length <= index) {
+          return;
+        }
+        clearTimeout(timer);
+        notify = undefined;
+        const error = builds[index];
+        if (error) {
+          reject(error);
+        } else {
+          resolve();
+        }
+      };
+      notify();
+    });
+  const assertColor = async (color) => {
+    const css = await fs.readFile(path.join(outputPath, 'styles.css'), 'utf8');
+    if (!css.replace(/\s/g, '').includes(`color:${color}`)) {
+      throw new Error(`${bundlerName} watch expected ${color}, emitted ${css}`);
+    }
+  };
+  try {
+    await waitForBuild(0);
+    await assertColor('red');
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    for (const color of ['teal', 'orange', 'purple']) {
+      const previousBuilds = builds.length;
+      const pending = waitForBuild(previousBuilds);
+      await fs.writeFile(entry, source(color));
+      await pending;
+      await assertColor(color);
+    }
+  } finally {
+    await new Promise((resolve, reject) =>
+      watching.close((error) => {
+        if (error) {
+          reject(error);
+        } else {
+          resolve();
+        }
+      })
+    );
+    await new Promise((resolve, reject) =>
+      compiler.close((error) => {
+        if (error) {
+          reject(error);
+        } else {
+          resolve();
+        }
+      })
+    );
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+};
+
 const main = async () => {
   console.log(colors.blue('Package directory:'), PKG_DIR);
 
@@ -290,10 +387,13 @@ const main = async () => {
   await assertPosixBackslashPath();
   await assertPersistentCache();
   await assertRspackParallelLoader();
+  await assertWatchUpdates();
 };
 
 const run = process.argv.includes('--persistent-cache-child')
   ? runPersistentCacheChild
+  : process.argv.includes('--watch-only')
+  ? assertWatchUpdates
   : main;
 
 run().then(

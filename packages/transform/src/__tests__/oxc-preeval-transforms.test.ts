@@ -1,13 +1,26 @@
 /* eslint-env jest */
-import { stripTypesAndJsxWithOxc } from '../utils/oxcEmit';
+import { runInNewContext } from 'vm';
+
+import { emitOxcCommonJS, stripTypesAndJsxWithOxc } from '../utils/oxcEmit';
 import { removeDangerousCodeWithOxc } from '../utils/dangerousCodeRemoval';
 import {
   addRequireFallbackWithOxc,
   replaceImportMetaEnvWithOxc,
   rewriteDynamicImportsWithOxc,
 } from '../utils/oxcPreevalTransforms';
+import { shakeOxcToESM } from '../utils/oxcShaker';
 
 const filename = '/test.ts';
+
+const evaluateOut = (code: string): unknown => {
+  const prepared = removeDangerousCodeWithOxc(code, filename);
+  const shaken = shakeOxcToESM(prepared, filename, { onlyExports: ['out'] });
+  const emitted = emitOxcCommonJS(shaken.code, filename);
+  const exports: Record<string, unknown> = {};
+  const module = { exports };
+  runInNewContext(emitted.code, { exports, module }, { timeout: 100 });
+  return module.exports.out;
+};
 
 describe('oxc preeval transforms', () => {
   describe('import.meta.env rewrite', () => {
@@ -152,6 +165,128 @@ describe('oxc preeval transforms', () => {
           filename
         )
       ).toContain('"undefined" !== "undefined"');
+    });
+
+    it('removes control statements whose bodies are stripped', () => {
+      expect(
+        removeDangerousCodeWithOxc(
+          [
+            'let idle = (cb) => setTimeout(cb, 500);',
+            'if (typeof requestIdleCallback != "undefined")',
+            '  idle = (cb) => requestIdleCallback(cb);',
+            'while (a) fetch(a);',
+            'if (b) {} else setTimeout(b);',
+            'const keep = 1;',
+          ].join('\n'),
+          filename
+        )
+      ).toMatchInlineSnapshot(`
+        "let idle = (cb) => setTimeout(cb, 500);
+
+
+
+        const keep = 1;"
+      `);
+    });
+
+    it('removes emptied control statements even when their headers mutate live bindings', () => {
+      const preeval = removeDangerousCodeWithOxc(
+        [
+          'let idle = (cb) => setTimeout(cb, 500);',
+          'let a = 1;',
+          'let i = 0;',
+          'if (typeof requestIdleCallback != "undefined")',
+          '  idle = (cb) => requestIdleCallback(cb);',
+          'while (a) fetch(a);',
+          'do fetch(a); while (a);',
+          'label: fetch(a);',
+          'while (a--) fetch(a);',
+          'for (; i < 3; i++) fetch(i);',
+          'export const out = [a, i];',
+          'export const get = () => idle;',
+        ].join('\n'),
+        filename
+      );
+
+      expect(
+        shakeOxcToESM(preeval, filename, { onlyExports: ['out', 'get'] }).code
+      ).toMatchInlineSnapshot(`
+        "let idle = (cb) => setTimeout(cb, 500);
+        let a = 1;
+        let i = 0;
+
+
+
+
+
+
+        export const out = [a, i];
+        export const get = () => idle;"
+      `);
+    });
+
+    it.each([
+      'if (unknown) fetch();',
+      'if (unknown) { fetch(); setTimeout(work); }',
+      'if (unknown) fetch(); else clearTimeout(timer);',
+      'if (unknown) { fetch(); } else { clearTimeout(timer); }',
+      'while (unknown) fetch();',
+      'while (unknown) { fetch(); clearTimeout(timer); }',
+      'do fetch(); while (unknown);',
+      'do { fetch(); } while (unknown);',
+      'for (; unknown; update()) fetch();',
+      'for (; unknown; update()) { fetch(); }',
+      'for (const key in unknown) fetch(key);',
+      'for (const key in unknown) { fetch(key); }',
+      'for (const [key] of [null]) fetch(key);',
+      'for (const [key] of [null]) { fetch(key); }',
+      'label: fetch();',
+      'label: { fetch(); }',
+      'label: if (unknown) while (unknown) fetch();',
+    ])('does not evaluate a removed control statement: %s', (statement) => {
+      expect(evaluateOut(`${statement}\nexport const out = 1;`)).toBe(1);
+    });
+
+    it.each([
+      'clearTimeout(timers.pop());',
+      '{ clearTimeout(timers.pop()); }',
+      '{ clearTimeout(timers.pop()); fetch("/cleanup"); }',
+      'if (ready) clearTimeout(timers.pop()); else fetch("/cleanup");',
+    ])('does not leave a nonterminating timer cleanup loop: %s', (body) => {
+      expect(
+        evaluateOut(
+          [
+            'const timers = [1, 2];',
+            'let count = 0;',
+            `while (timers.length && ++count) ${body}`,
+            'export const out = count;',
+          ].join('\n')
+        )
+      ).toBe(0);
+    });
+
+    it.each([
+      'if (false) fetch(); else out = 2;',
+      'if (true) out = 2; else fetch();',
+      'if (false) while (++out) fetch(); else out = 2;',
+      'if (false) label: while (++out) fetch(); else out = 2;',
+      'if (false) { while (++out) { fetch(); } } else out = 2;',
+    ])('preserves a surviving conditional branch: %s', (statement) => {
+      expect(evaluateOut(`let out = 1; ${statement} export { out };`)).toBe(2);
+    });
+
+    it('preserves a loop when safe statements remain in its body', () => {
+      expect(
+        evaluateOut(
+          'let out = 0; while (out < 3) { clearTimeout(out); out++; } export { out };'
+        )
+      ).toBe(3);
+    });
+
+    it('preserves an originally empty loop that computes a live value', () => {
+      expect(
+        evaluateOut('let out = 0; for (; out < 3; out++) {} export { out };')
+      ).toBe(3);
     });
 
     it('removes browser-global statements', () => {

@@ -116,11 +116,6 @@ export class TransformCacheCollection<
 
   private fileMtimes = new Map<string, number>();
 
-  // Disk mtime observed when a bundler handed us the `loaded` code of a file.
-  // Lets a later fs read tell "the loader chain transforms this file" (same
-  // mtime, different bytes) apart from "the file changed on disk".
-  private loadedMtimes = new Map<string, number>();
-
   private readonly exportDependencies = new Map<string, Set<string>>();
 
   private readonly entrypointDependencySnapshots = new Map<
@@ -331,7 +326,6 @@ export class TransformCacheCollection<
     });
     this.contentHashes.clear();
     this.fileMtimes.clear();
-    this.loadedMtimes.clear();
     this.invalidatedFiles.clear();
     this.consumedInvalidationVersions.clear();
   }
@@ -357,7 +351,6 @@ export class TransformCacheCollection<
     if (value === undefined) {
       cache.delete(cacheKey);
       this.contentHashes.delete(key);
-      this.loadedMtimes.delete(key);
       if (cacheName === 'entrypoints') {
         this.entrypointDependencySnapshots.delete(cacheKey);
       }
@@ -682,16 +675,7 @@ export class TransformCacheCollection<
     if (previousHash === undefined) {
       const otherSource = source === 'fs' ? 'loaded' : 'fs';
       const otherHash = existing?.[otherSource];
-      // Loaded code routinely differs from the bytes on disk: any transpiling
-      // loader before wyw produces that. When the first fs read of a file finds
-      // the disk untouched since the bundler handed over its code, the mismatch
-      // is representation only; seed the fs hash instead of evicting an
-      // entrypoint the bundler still considers current. A moved mtime, or
-      // loaded code arriving for a disk-built entrypoint, stays a real change.
-      const contentChanged =
-        otherHash !== undefined &&
-        otherHash !== newHash &&
-        !(source === 'fs' && this.isUnchangedOnDiskSinceLoad(filename));
+      const contentChanged = otherHash !== undefined && otherHash !== newHash;
 
       if (contentChanged || anyDepChanged) {
         cacheLogger('content has changed, invalidate all for %s', filename);
@@ -1245,40 +1229,43 @@ export class TransformCacheCollection<
     this.entrypointDependencySnapshots.delete(this.getKey(filename));
   }
 
-  private isUnchangedOnDiskSinceLoad(filename: string): boolean {
-    const loadedMtime = this.loadedMtimes.get(filename);
-    if (loadedMtime === undefined) {
-      return false;
-    }
-
-    try {
-      return fs.statSync(stripQueryAndHash(filename)).mtimeMs === loadedMtime;
-    } catch {
-      return false;
-    }
-  }
-
   private setContentHash(
     filename: string,
     source: 'fs' | 'loaded',
     hash: string
   ) {
     const current = this.contentHashes.get(filename);
+    // Loaded code may be transformed by a previous loader. Capture its raw
+    // disk baseline once, rather than comparing the two representations or
+    // trusting an unchanged timestamp. Republishing must not hide an edit.
+    const captureDiskBaseline =
+      source === 'loaded' && current?.loaded === undefined;
     if (current) {
       current[source] = hash;
     } else {
       this.contentHashes.set(filename, { [source]: hash });
     }
 
-    try {
-      const { mtimeMs } = fs.statSync(stripQueryAndHash(filename));
-      if (source === 'fs') {
-        this.fileMtimes.set(filename, mtimeMs);
-      } else {
-        this.loadedMtimes.set(filename, mtimeMs);
+    if (captureDiskBaseline) {
+      try {
+        const diskCode = fs.readFileSync(stripQueryAndHash(filename), 'utf8');
+        this.contentHashes.get(filename)!.fs = hashContent(diskCode);
+        // A baseline is not a freshness probe. The first probe must still
+        // read bytes even when the file's timestamp did not move.
+        this.fileMtimes.delete(filename);
+      } catch {
+        // Virtual/missing sources have no raw baseline. An unmatched disk
+        // revision remains a change; never infer equivalence from mtime.
       }
-    } catch {
-      // ignore
+    }
+
+    if (source === 'fs') {
+      try {
+        const { mtimeMs } = fs.statSync(stripQueryAndHash(filename));
+        this.fileMtimes.set(filename, mtimeMs);
+      } catch {
+        // ignore
+      }
     }
   }
 }

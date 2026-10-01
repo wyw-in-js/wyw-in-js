@@ -180,7 +180,7 @@ describe('webpack-loader cacheProvider', () => {
     transformMock.mockReset();
   });
 
-  it('reads an object cacheProvider through compiler-scoped state', async () => {
+  it('keeps an exact payload after compiler-scoped state is disposed', async () => {
     const cacheProvider = new TestCache();
     const compiler = createCompiler();
     const resourcePath = '/abs/entry.jsx';
@@ -207,14 +207,15 @@ describe('webpack-loader cacheProvider', () => {
     });
 
     expect(options.cacheProviderToken).toMatch(/^[a-f0-9]{64}$/);
-    expect(options.outputCssPayload).toBeUndefined();
-    expect(getSpy).toHaveBeenCalledWith(resourcePath);
+    expect(options.outputCssPayload).toBeTruthy();
+    expect(request).not.toContain('&v=');
+    expect(getSpy).not.toHaveBeenCalled();
     expect(css).toContain('.title{color:red}');
 
     compiler.hooks.shutdown.call();
     await expect(
       runOutputCssLoader({ compiler, options, resourcePath })
-    ).rejects.toThrow(`CSS cache entry not found for ${resourcePath}`);
+    ).resolves.toContain('.title{color:red}');
   });
 
   it('keeps object providers isolated for the same resource', async () => {
@@ -389,32 +390,35 @@ describe('webpack-loader cacheProvider', () => {
     expect(css).toContain('.title{color:green}');
   });
 
-  it('prefers the exact persistent payload over newer runtime state', async () => {
-    const cacheProvider = new TestCache();
-    const compiler = createCompiler({ type: 'filesystem' });
-    const resourcePath = '/abs/entry.jsx';
+  it.each([false, { type: 'filesystem' }] as const)(
+    'prefers the exact payload over newer runtime state with cache %p',
+    async (cache) => {
+      const cacheProvider = new TestCache();
+      const compiler = createCompiler(cache);
+      const resourcePath = '/abs/entry.jsx';
 
-    transformMock.mockResolvedValue({
-      code: 'module.exports = 1;',
-      sourceMap: null,
-      cssText: '.title{color:green}',
-      cssSourceMapText: '',
-      dependencies: [],
-    });
+      transformMock.mockResolvedValue({
+        code: 'module.exports = 1;',
+        sourceMap: null,
+        cssText: '.title{color:green}',
+        cssSourceMapText: '',
+        dependencies: [],
+      });
 
-    const request = await runWebpackLoader({
-      cacheProvider,
-      compiler,
-      resourcePath,
-    });
-    await cacheProvider.set(resourcePath, '.title{color:wrong}');
-
-    await expect(
-      runOutputCssLoader({
+      const request = await runWebpackLoader({
+        cacheProvider,
         compiler,
-        options: getOutputLoaderOptions(request),
         resourcePath,
-      })
-    ).resolves.toContain('.title{color:green}');
-  });
+      });
+      await cacheProvider.set(resourcePath, '.title{color:wrong}');
+
+      await expect(
+        runOutputCssLoader({
+          compiler,
+          options: getOutputLoaderOptions(request),
+          resourcePath,
+        })
+      ).resolves.toContain('.title{color:green}');
+    }
+  );
 });

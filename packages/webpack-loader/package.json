@@ -1,6 +1,6 @@
 {
   "name": "@wyw-in-js/webpack-loader",
-  "version": "2.5.0",
+  "version": "2.5.1",
   "type": "module",
   "dependencies": {
     "@wyw-in-js/shared": "workspace:*",

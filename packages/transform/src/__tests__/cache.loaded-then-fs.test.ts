@@ -18,13 +18,9 @@ type MockEntrypoint = {
 const mockedReadFileSync = jest.spyOn(fs, 'readFileSync');
 const mockedStatSync = jest.spyOn(fs, 'statSync');
 
-// A bundler loader hands transform() the output of the loaders before it, so
-// the `loaded` code of an entrypoint routinely differs from the bytes on disk.
-// A later fs read of the same file (checkFreshness from a dependency check) is
-// only a freshness probe: while the disk mtime is the one seen at load time it
-// must seed the fs hash, not evict the entrypoint the bundler still considers
-// current. A moved mtime, or a bundler providing code for a file whose
-// entrypoint was built from disk, stays a real change.
+// Loaded bytes and raw disk bytes are different representations. The cache
+// records a raw baseline at publication, so later probes compare raw bytes
+// even when a loader transforms them or an edit preserves the timestamp.
 describe('TransformCacheCollection: loaded code differs from disk', () => {
   const iconName = 'icon.js';
   const iconOnDisk = 'export const Icon = () => null;';
@@ -110,6 +106,33 @@ describe('TransformCacheCollection: loaded code differs from disk', () => {
   it('treats differing disk bytes as a change when the file was modified after it was loaded', () => {
     iconMtime += 1;
     iconContentOnDisk = 'export const Icon = () => "changed";';
+
+    expect(cache.checkFreshness(iconName, iconName)).toBe(true);
+    expect(cache.get('entrypoints', iconName)).toBeUndefined();
+  });
+
+  it('detects changed disk bytes before first fs probe at unchanged mtime', () => {
+    iconContentOnDisk = 'export const Icon = () => "changed";';
+
+    expect(cache.checkFreshness(iconName, iconName)).toBe(true);
+    expect(cache.get('entrypoints', iconName)).toBeUndefined();
+  });
+
+  it('does not refresh the raw baseline when loaded code is republished', () => {
+    iconContentOnDisk = 'export const Icon = () => "changed";';
+    publishIcon(2);
+
+    expect(cache.checkFreshness(iconName, iconName)).toBe(true);
+    expect(cache.get('entrypoints', iconName)).toBeUndefined();
+  });
+
+  it('invalidates a virtual source when its first disk revision differs', () => {
+    mockedReadFileSync.mockImplementation(() => {
+      throw new Error('Virtual source has no disk baseline');
+    });
+    cache = new TransformCacheCollection<MockEntrypoint>();
+    publishIcon(1);
+    mockedReadFileSync.mockImplementation(() => iconContentOnDisk);
 
     expect(cache.checkFreshness(iconName, iconName)).toBe(true);
     expect(cache.get('entrypoints', iconName)).toBeUndefined();

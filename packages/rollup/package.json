@@ -1,6 +1,6 @@
 {
   "name": "@wyw-in-js/rollup",
-  "version": "2.5.0",
+  "version": "2.5.1",
   "type": "module",
   "dependencies": {
     "@rollup/pluginutils": "^5.0.5",
