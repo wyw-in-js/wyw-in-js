@@ -1,5 +1,14 @@
 # @wyw-in-js/webpack-loader
 
+## 2.5.2
+
+### Patch Changes
+
+- be744b7: Pass extracted CSS directly to the output loader for every cache mode. This prevents Rspack watch builds from emitting the previous build's CSS and removes the dependency on loader execution order.
+- 5c8ea4a: Pass extracted CSS source maps through the loader callback when composing CSS loader pipelines. This avoids duplicate inline maps and intermediate source contents when composing extracted stylesheets, while keeping each CSS request tied to its source map. Raw asset modules retain inline CSS maps for source navigation.
+- Updated dependencies
+  - @wyw-in-js/transform@2.5.2
+
 ## 2.5.1
 
 ### Patch Changes
