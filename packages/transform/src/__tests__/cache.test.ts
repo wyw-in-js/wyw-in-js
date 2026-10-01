@@ -142,6 +142,55 @@ describe('TransformCacheCollection', () => {
       expect(cache.has('entrypoints', filename)).toBe(true);
     });
 
+    it('invalidates a real edit that returns one channel to the other channel hash', () => {
+      const filename = 'fs.tsx';
+      const loadedContent = 'export const value = "loaded";';
+      const fsContent = 'export const value = "filesystem";';
+      const { cache } = setupCacheWithEntrypoint(filename, loadedContent);
+
+      expect(
+        cache.invalidateIfChanged(filename, fsContent, undefined, 'fs')
+      ).toBe(true);
+
+      cache.add('entrypoints', filename, {
+        dependencies: new Map(),
+        generation: 2,
+        initialCode: undefined,
+        invalidationDependencies: new Map(),
+        name: filename,
+        originalCode: fsContent,
+      } as any);
+
+      expect(
+        cache.invalidateIfChanged(filename, loadedContent, undefined, 'fs')
+      ).toBe(true);
+      expect(cache.has('entrypoints', filename)).toBe(false);
+    });
+
+    it('invalidates a delayed channel update after stale content was republished', () => {
+      const filename = 'fs.tsx';
+      const oldContent = 'export const value = "old";';
+      const newContent = 'export const value = "new";';
+      const { cache } = setupCacheWithEntrypoint(filename, oldContent);
+
+      expect(
+        cache.invalidateIfChanged(filename, newContent, undefined, 'fs')
+      ).toBe(true);
+
+      cache.add('entrypoints', filename, {
+        dependencies: new Map(),
+        generation: 2,
+        initialCode: oldContent,
+        invalidationDependencies: new Map(),
+        name: filename,
+      } as any);
+
+      expect(
+        cache.invalidateIfChanged(filename, newContent, undefined, 'loaded')
+      ).toBe(true);
+      expect(cache.has('entrypoints', filename)).toBe(false);
+    });
+
     it('should invalidate if content has changed', () => {
       const filename = 'test.js';
       const content = 'console.log("hello")';
@@ -250,16 +299,16 @@ describe('TransformCacheCollection', () => {
       });
 
       cache.invalidateIfChanged(depName, depContent, undefined, 'fs');
-
       // Publication may read a raw baseline; count only freshness probes.
       mockedReadFileSync.mockClear();
+
       const invalidated = cache.invalidateIfChanged(parentName, parentContent);
 
       expect(invalidated).toBe(false);
       expect(cache.has('entrypoints', parentName)).toBe(true);
       expect(cache.has('entrypoints', depName)).toBe(true);
       expect(mockedReadFileSync).not.toHaveBeenCalledWith(depName, 'utf8');
-      expect(mockedStatSync).toHaveBeenCalledWith(depName);
+      expect(mockedStatSync).toHaveBeenCalledWith(depName, { bigint: true });
     });
 
     it('does not invalidate an output-affecting dependency when only its entrypoint was evicted', () => {
@@ -1040,7 +1089,10 @@ describe('TransformCacheCollection', () => {
       expect(cache.has('entrypoints', fileB)).toBe(false);
       expect(cache.has('entrypoints', fileA)).toBe(true);
       expect(mockedReadFileSync).toHaveBeenCalledWith(fileA, 'utf8');
-      expect(mockedReadFileSync).not.toHaveBeenCalledWith(fileB, 'utf8');
+      // Accepting a new loaded revision captures its raw disk baseline once.
+      expect(
+        mockedReadFileSync.mock.calls.filter(([file]) => file === fileB)
+      ).toHaveLength(1);
     });
   });
 

@@ -10,6 +10,7 @@ import {
   hasCachedWywPrevalExport,
   type CachedEntrypointLike,
 } from '../../utils/hasCachedWywPrevalExport';
+import { isAborted } from '../actions/AbortError';
 import { toImportKey } from '../../utils/importOverrides';
 import { stripQueryAndHash } from '../../utils/parseRequest';
 import { isSuperSet, mergeOnly } from '../Entrypoint.helpers';
@@ -161,7 +162,26 @@ export function* processImports(
     }
 
     const startedAt = slowImportWarningsEnabled ? performance.now() : 0;
-    yield* this.getNext('processEntrypoint', nextEntrypoint, undefined, null);
+    let childEntrypoint = nextEntrypoint;
+    for (;;) {
+      try {
+        yield* this.getNext(
+          'processEntrypoint',
+          childEntrypoint,
+          undefined,
+          null
+        );
+        break;
+      } catch (e) {
+        // processEntrypoint reschedules its own supersede, but a fenced
+        // supersede bypasses its catch. Continue on the successor here.
+        const successor = isAborted(e) ? childEntrypoint.supersededWith : null;
+        if (!successor) {
+          throw e;
+        }
+        childEntrypoint = successor;
+      }
+    }
 
     if (
       slowImportWarningsEnabled &&

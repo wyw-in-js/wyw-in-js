@@ -9,6 +9,12 @@ import type {
 } from 'oxc-parser';
 
 import type { CodeRemoverOptions } from '@wyw-in-js/shared';
+import {
+  unwrapExpression,
+  getMemberPropertyName,
+  isStringLikeExpression,
+  dynamicImportArgumentCode,
+} from './oxcPreevalSyntax';
 
 import { collectOxcExportsAndImports } from './collectOxcExportsAndImports';
 import { EventEmitter } from './EventEmitter';
@@ -175,93 +181,6 @@ const getChildren = getOxcNodeChildren;
 
 const parseOxc = (code: string, filename: string): Program => {
   return parseOxcProgramCached(filename, code, 'unambiguous');
-};
-
-const unwrapExpression = (node: Expression): Expression => {
-  if (
-    node.type === 'TSAsExpression' ||
-    node.type === 'TSSatisfiesExpression' ||
-    node.type === 'TSNonNullExpression' ||
-    node.type === 'TSTypeAssertion' ||
-    node.type === 'ParenthesizedExpression'
-  ) {
-    return unwrapExpression(node.expression);
-  }
-
-  return node;
-};
-
-const getMemberPropertyName = (node: Node): string | null => {
-  if (node.type !== 'MemberExpression') {
-    return null;
-  }
-
-  if (node.computed) {
-    return node.property.type === 'Literal' &&
-      typeof node.property.value === 'string'
-      ? node.property.value
-      : null;
-  }
-
-  return node.property.type === 'Identifier' ? node.property.name : null;
-};
-
-const isStringLikeExpression = (node: Expression): boolean => {
-  const expression = unwrapExpression(node);
-
-  if (expression.type === 'Literal' && typeof expression.value === 'string') {
-    return true;
-  }
-
-  if (expression.type === 'TemplateLiteral') {
-    return true;
-  }
-
-  if (expression.type === 'BinaryExpression' && expression.operator === '+') {
-    return (
-      isStringLikeExpression(expression.left) ||
-      isStringLikeExpression(expression.right)
-    );
-  }
-
-  if (
-    expression.type === 'CallExpression' &&
-    expression.callee.type === 'MemberExpression' &&
-    getMemberPropertyName(expression.callee) === 'concat'
-  ) {
-    return isStringLikeExpression(expression.callee.object);
-  }
-
-  return false;
-};
-
-const templateLiteralToConcat = (code: string, node: Expression): string => {
-  if (node.type !== 'TemplateLiteral' || node.expressions.length === 0) {
-    return code.slice(node.start, node.end);
-  }
-
-  const parts: string[] = [];
-  node.quasis.forEach((quasi, index) => {
-    const cooked = quasi.value.cooked ?? quasi.value.raw;
-    if (cooked !== '') {
-      parts.push(JSON.stringify(cooked));
-    }
-
-    const expression = node.expressions[index];
-    if (expression) {
-      parts.push(code.slice(expression.start, expression.end));
-    }
-  });
-
-  return parts.length > 0 ? parts.join(' + ') : '""';
-};
-
-const dynamicImportArgumentCode = (code: string, node: Expression): string => {
-  if (node.type === 'TemplateLiteral') {
-    return templateLiteralToConcat(code, node);
-  }
-
-  return code.slice(node.start, node.end);
 };
 
 const evaluateStaticValue = (

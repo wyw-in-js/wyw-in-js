@@ -10,6 +10,8 @@ import { build } from 'vite';
 
 import wyw from '@wyw-in-js/vite';
 
+import { assertLoadedCode } from './loaded-code.mjs';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -417,6 +419,9 @@ const main = async () => {
 
   console.log(colors.blue('Running case:'), 'staticPureCall');
   await runStaticPureCallCase();
+
+  console.log(colors.blue('Running case:'), 'loadedCode');
+  await assertLoadedCode(PKG_DIR);
 
   const preserveModulesCases = [
     {

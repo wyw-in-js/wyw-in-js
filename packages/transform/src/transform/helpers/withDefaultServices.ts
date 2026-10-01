@@ -8,24 +8,17 @@ type RequiredServices = 'options';
 export type PartialServices = Partial<Omit<Services, RequiredServices>> &
   Pick<Services, RequiredServices>;
 
-export const withDefaultServices = ({
-  cache = new TransformCacheCollection(),
-  emitWarning,
-  eventEmitter = EventEmitter.dummy,
-  loadDependencyCode,
-  loadAndParseFn = loadAndParse,
-  log = rootLog,
-  options,
-  asyncResolveKey,
-  evalBrokerScope,
-}: PartialServices): Services => ({
-  cache,
-  emitWarning,
-  eventEmitter,
-  loadDependencyCode,
-  loadAndParseFn,
-  log,
-  options,
-  asyncResolveKey,
-  evalBrokerScope,
+export const withDefaultServices = (services: PartialServices): Services => ({
+  cache: services.cache ?? new TransformCacheCollection(),
+  cacheEpoch: services.cacheEpoch,
+  cacheRecoveryOwner: services.cacheRecoveryOwner,
+  emitWarning: services.emitWarning,
+  eventEmitter: services.eventEmitter ?? EventEmitter.dummy,
+  loadDependencyCode: services.loadDependencyCode,
+  loadDependencyCodeKey: services.loadDependencyCodeKey,
+  loadAndParseFn: services.loadAndParseFn ?? loadAndParse,
+  log: services.log ?? rootLog,
+  options: services.options,
+  asyncResolveKey: services.asyncResolveKey,
+  evalBrokerScope: services.evalBrokerScope,
 });

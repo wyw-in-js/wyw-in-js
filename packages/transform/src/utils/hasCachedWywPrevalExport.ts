@@ -17,6 +17,8 @@ export const hasCachedWywPrevalExport = (
   resolved: string,
   cached: CachedEntrypointLike | undefined
 ): boolean => {
+  const cacheEpoch = services.cacheEpoch ?? services.cache.getCurrentEpoch();
+  services.cache.assertEpoch(cacheEpoch);
   const knownExports = services.cache.get('exports', resolved) as
     | string[]
     | undefined;
@@ -30,25 +32,27 @@ export const hasCachedWywPrevalExport = (
     cached?.loadedAndParsed?.code ??
     fs.readFileSync(filename, 'utf-8');
 
+  let analyzed: ReturnType<typeof collectOxcExportsAndImports>;
   try {
-    const analyzed = collectOxcExportsAndImports(code, filename);
-    if (analyzed.reexports.some((reexport) => reexport.exported === '*')) {
-      return true;
-    }
-
-    const exportNames = Array.from(
-      new Set([
-        ...Object.keys(analyzed.exports),
-        ...analyzed.reexports
-          .filter((reexport) => reexport.exported !== '*')
-          .map((reexport) => reexport.exported),
-      ])
-    );
-    services.cache.add('exports', resolved, exportNames);
-    return exportNames.includes('__wywPreval');
+    analyzed = collectOxcExportsAndImports(code, filename);
   } catch {
     return true;
   }
+
+  if (analyzed.reexports.some((reexport) => reexport.exported === '*')) {
+    return true;
+  }
+
+  const exportNames = Array.from(
+    new Set([
+      ...Object.keys(analyzed.exports),
+      ...analyzed.reexports
+        .filter((reexport) => reexport.exported !== '*')
+        .map((reexport) => reexport.exported),
+    ])
+  );
+  services.cache.publish(cacheEpoch, 'exports', resolved, exportNames);
+  return exportNames.includes('__wywPreval');
 };
 
 export type { CachedEntrypointLike };

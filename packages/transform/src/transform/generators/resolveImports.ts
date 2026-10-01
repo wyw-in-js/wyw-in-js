@@ -18,6 +18,7 @@ import type {
   Services,
   SyncScenarioForAction,
 } from '../types';
+import { isCacheRecoveryControlError } from '../actions/isCacheRecoveryControlError';
 
 type AsyncResolve = (
   what: string,
@@ -202,6 +203,10 @@ async function loadDependencyCodes(
               loadedCode,
             };
       } catch (err) {
+        if (isCacheRecoveryControlError(err)) {
+          throw err;
+        }
+
         entrypoint.log(
           '[load] ❌ cannot load %s in %s: %O',
           dependency.source,
@@ -266,6 +271,10 @@ export function* syncResolveImports(
       resolved = resolve(source, entrypoint.name, getStack(entrypoint));
       log('[sync-resolve] ✅ %s -> %s (only: %o)', source, resolved, only);
     } catch (err) {
+      if (isCacheRecoveryControlError(err)) {
+        throw err;
+      }
+
       log('[sync-resolve] ❌ cannot resolve %s: %O', source, err);
     }
 
@@ -326,6 +335,10 @@ export async function* asyncResolveImports(
         resolve
       );
     } catch (err) {
+      if (isCacheRecoveryControlError(err)) {
+        throw err;
+      }
+
       log(
         '[async-resolve] ❌ cannot resolve %s in %s: %O',
         source,
@@ -396,14 +409,13 @@ export async function* asyncResolveImports(
 
         // … and update the cache
         entrypoint.addResolveTask(source, newTask);
-        return newTask;
+        return entrypoint.getResolveTask(source)!;
       }
 
       const resolveTask = getResolveTask(source, importsOnly);
 
       entrypoint.addResolveTask(source, resolveTask);
-
-      return resolveTask;
+      return entrypoint.getResolveTask(source)!;
     })
   );
   entrypoint.assertNotSuperseded();
