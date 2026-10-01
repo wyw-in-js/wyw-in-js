@@ -342,6 +342,11 @@ export class Entrypoint extends BaseEntrypoint {
     return (
       this.#invalidationError ??
       this.services.cache.getLifecycleError(this.#cacheLifecycleVersion) ??
+      this.services.cache.getRecoveryError(
+        this.name,
+        this.#cacheLifecycleVersion,
+        this.unknownGraphTraversalToken
+      ) ??
       this.services.cache.getGraphTraversalTokenError(
         this.unknownGraphTraversalToken
       ) ??
@@ -613,7 +618,7 @@ export class Entrypoint extends BaseEntrypoint {
         if (count > SUPERSEDE_STORM_LIMIT) {
           const error = createSupersedeStormError(name);
           cached.failInvalidation(error);
-          cache.beginSupersedeStormRecovery(error);
+          cache.beginSupersedeStormRecovery(error, name);
           blockSupersedeWindow(services, name, currentCode!, error);
           services.evalBroker?.resetAfterCacheInvalidation(
             cache,
@@ -834,6 +839,17 @@ export class Entrypoint extends BaseEntrypoint {
     services: Services = this.services
   ): Entrypoint | 'loop' {
     this.assertNotSuperseded();
+    // The child's own graph may be mid-recovery on another traversal. Publishing
+    // it from this parent would reuse the state that recovery cleared.
+    const childRecoveryError = this.services.cache.getRecoveryError(
+      name,
+      this.#cacheLifecycleVersion,
+      this.unknownGraphTraversalToken
+    );
+    if (childRecoveryError) {
+      throw childRecoveryError;
+    }
+
     return Entrypoint.create(services, this, name, only, loadedCode, {
       graphTraversalToken: this.unknownGraphTraversalToken,
     });

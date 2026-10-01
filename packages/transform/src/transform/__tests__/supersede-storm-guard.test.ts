@@ -373,10 +373,22 @@ describe('supersede storm guard', () => {
       { graphTraversalToken: recoveryToken }
     );
 
+    // A recovery of an unrelated file resets nothing this traversal read, so
+    // it keeps working on the same shared cache.
     services.cache.beginUnknownGraphRecovery(
       otherName,
       new Set([otherDependency]),
       otherCode,
+      {}
+    );
+    expect(() => recoveryEntrypoint.assertNotSuperseded()).not.toThrow();
+
+    // A second recovery of the same file, opened by another request, is what
+    // retires it: the retained marker now belongs to the newer recovery.
+    services.cache.beginUnknownGraphRecovery(
+      name,
+      new Set([depName]),
+      rootCode,
       {}
     );
 
