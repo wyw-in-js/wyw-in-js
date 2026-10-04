@@ -157,11 +157,13 @@ const executeTransformAttempt = async (
 
     return result;
   } catch (error) {
-    // Only eviction of this exact root can restart the top-level input.
-    // Foreign dependency failures and replacement publications stay fenced.
+    // Only eviction of this root can restart the top-level input. The
+    // workflow follows supersede successors, so the evicted entrypoint may be
+    // a later generation of the root. Foreign dependency failures and
+    // replacement publications stay fenced.
     if (
       error instanceof EntrypointEvictedError &&
-      error.entrypoint !== entrypoint
+      !entrypoint.isSelfOrSuccessor(error.entrypoint)
     ) {
       throw new AbortError('superseded');
     }
