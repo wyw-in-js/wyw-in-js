@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import fs, { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { createRequire } from 'module';
 import path from 'path';
@@ -213,5 +213,73 @@ describe('loadWywOptions', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+  describe('config discovery', () => {
+    const withCwd = <T>(callback: (root: string) => T): T => {
+      // Resolve symlinked temp roots (macOS /var -> /private/var) so paths
+      // match what process.cwd() reports after chdir.
+      const root = fs.realpathSync(
+        mkdtempSync(path.join(tmpdir(), 'wyw-cfg-'))
+      );
+      try {
+        process.chdir(root);
+        return callback(root);
+      } finally {
+        process.chdir(initialCwd);
+        rmSync(root, { recursive: true, force: true });
+      }
+    };
+
+    it('probes the search places once per working directory', () => {
+      withCwd((root) => {
+        const configFile = path.join(root, '.wyw-in-jsrc.json');
+        writeFileSync(configFile, JSON.stringify({ displayName: true }));
+        const existsSync = jest.spyOn(fs, 'existsSync');
+
+        try {
+          expect(loadWywOptions({}).displayName).toBe(true);
+          const firstProbes = existsSync.mock.calls.length;
+          expect(firstProbes).toBeGreaterThan(0);
+
+          // A new overrides object misses the identity cache, as it does for
+          // adapters that build options per module.
+          expect(loadWywOptions({}).displayName).toBe(true);
+          const repeatedProbes = existsSync.mock.calls
+            .slice(firstProbes)
+            .map(([probed]) => probed);
+          expect(repeatedProbes).toEqual([configFile]);
+        } finally {
+          existsSync.mockRestore();
+        }
+      });
+    });
+
+    it('remembers that no config file was found', () => {
+      withCwd(() => {
+        const existsSync = jest.spyOn(fs, 'existsSync');
+
+        try {
+          expect(loadWywOptions({}).displayName).toBe(false);
+          const firstProbes = existsSync.mock.calls.length;
+          expect(firstProbes).toBeGreaterThan(0);
+
+          expect(loadWywOptions({}).displayName).toBe(false);
+          expect(existsSync.mock.calls.length).toBe(firstProbes);
+        } finally {
+          existsSync.mockRestore();
+        }
+      });
+    });
+
+    it('searches again when the discovered config file is removed', () => {
+      withCwd((root) => {
+        const configFile = path.join(root, '.wyw-in-jsrc.json');
+        writeFileSync(configFile, JSON.stringify({ displayName: true }));
+
+        expect(loadWywOptions({}).displayName).toBe(true);
+        rmSync(configFile);
+        expect(loadWywOptions({}).displayName).toBe(false);
+      });
+    });
   });
 });

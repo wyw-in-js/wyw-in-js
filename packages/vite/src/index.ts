@@ -524,6 +524,8 @@ export default function wywInJS({
     ssr: Record<string, unknown>;
   } | null = null;
   let nativeResolverAlias: NativeResolverAlias = {};
+  // transform() memoizes normalized options by object identity: [client, ssr]
+  let pluginOptionsByEnv: Partial<PluginOptions>[] = [];
   const buildOverrideContext =
     (getEnv: () => Record<string, unknown> | undefined): OverrideContext =>
     (context: OverrideContextArgs[0], filename: OverrideContextArgs[1]) => {
@@ -847,6 +849,13 @@ export default function wywInJS({
       config = resolvedConfig;
       viteResolver = config.createResolver();
       nativeResolverAlias = toNativeResolverAlias(config.resolve?.alias);
+      const oxcOptions = mergeOxcResolverAlias(
+        rest.oxcOptions,
+        nativeResolverAlias
+      );
+      pluginOptionsByEnv = [overrideContextClient, overrideContextSsr].map(
+        (overrideContext) => ({ ...rest, oxcOptions, overrideContext })
+      );
 
       if (preserveCssPaths && config.command === 'build') {
         const outputs = config.build.rollupOptions.output;
@@ -1067,10 +1076,6 @@ export default function wywInJS({
           ? transformOptions
           : Boolean(transformOptions?.ssr);
 
-      const overrideContext = isSsr
-        ? overrideContextSsr
-        : overrideContextClient;
-
       const transformServices = {
         options: {
           filename: id,
@@ -1078,14 +1083,7 @@ export default function wywInJS({
           prefixer,
           keepComments,
           preprocessor,
-          pluginOptions: {
-            ...rest,
-            oxcOptions: mergeOxcResolverAlias(
-              rest.oxcOptions,
-              nativeResolverAlias
-            ),
-            overrideContext,
-          },
+          pluginOptions: pluginOptionsByEnv[isSsr ? 1 : 0],
         },
         cache: getCache(isSsr),
         emitWarning: (message: string) => this.warn(message),

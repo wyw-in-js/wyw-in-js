@@ -1,4 +1,4 @@
-import { existsSync } from 'fs';
+import fs from 'node:fs';
 import { createRequire } from 'module';
 import path from 'path';
 
@@ -111,14 +111,14 @@ const loadConfigFromFile = (configFile: string): Partial<StrictOptions> => {
     {}) as Partial<StrictOptions>;
 };
 
-const searchConfig = (): Partial<StrictOptions> => {
-  let currentDir: string | null = process.cwd();
+const findConfigFile = (cwd: string): string | null => {
+  let currentDir: string | null = cwd;
 
   while (currentDir) {
     for (const searchPlace of searchPlaces) {
       const candidate = path.join(currentDir, searchPlace);
-      if (existsSync(candidate)) {
-        return loadConfigFromFile(candidate);
+      if (fs.existsSync(candidate)) {
+        return candidate;
       }
     }
 
@@ -126,7 +126,26 @@ const searchConfig = (): Partial<StrictOptions> => {
     currentDir = parentDir === currentDir ? null : parentDir;
   }
 
-  return {};
+  return null;
+};
+
+// Discovery probes every search place in every directory up to the root, and
+// adapters that build fresh option objects per module reach it once per file.
+// Remember the outcome per working directory; loading stays uncached.
+const discoveredConfigFiles = new Map<string, string | null>();
+
+const searchConfig = (): Partial<StrictOptions> => {
+  const cwd = process.cwd();
+  let configFile = discoveredConfigFiles.get(cwd);
+  if (
+    configFile === undefined ||
+    (configFile !== null && !fs.existsSync(configFile))
+  ) {
+    configFile = findConfigFile(cwd);
+    discoveredConfigFiles.set(cwd, configFile);
+  }
+
+  return configFile ? loadConfigFromFile(configFile) : {};
 };
 
 export function loadWywOptions(
