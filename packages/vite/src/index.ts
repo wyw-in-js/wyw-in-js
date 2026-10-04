@@ -27,6 +27,8 @@ import {
 } from '@wyw-in-js/shared';
 import type {
   IFileReporterOptions,
+  ParallelTransforms,
+  ParallelTransformsOption,
   PluginOptions,
   Preprocessor,
   Result as TransformResult,
@@ -54,6 +56,7 @@ import type {
 } from './cssAssets.js';
 
 const {
+  createParallelTransforms,
   createTransformManifest,
   createFileReporter,
   disposeEvalBroker,
@@ -91,6 +94,11 @@ type VitePluginOptions = {
   exclude?: FilterPattern;
   include?: FilterPattern;
   keepComments?: boolean | RegExp;
+  /**
+   * Run transforms in worker threads: `true` uses up to four workers, a number
+   * sets the count. Function options must be defined in a wyw-in-js config file.
+   */
+  parallel?: ParallelTransformsOption;
   prefixer?: boolean;
   preprocessor?: Preprocessor;
   preserveCssPaths?: boolean;
@@ -156,6 +164,7 @@ export default function wywInJS({
   sourceMap,
   preserveCssPaths,
   keepComments,
+  parallel,
   prefixer,
   preprocessor,
   ssrDevCss,
@@ -192,6 +201,9 @@ export default function wywInJS({
   let nativeResolverAlias: NativeResolverAlias = {};
   // transform() memoizes normalized options by object identity: [client, ssr]
   let pluginOptionsByEnv: Partial<PluginOptions>[] = [];
+  // Worker scopes get plain options; import.meta.env goes in contextGlobals.
+  let workerPluginOptions: Partial<PluginOptions> = rest;
+  let parallelTransforms: ParallelTransforms | null = null;
   const buildOverrideContext =
     (getEnv: () => Record<string, unknown> | undefined): OverrideContext =>
     (context: OverrideContextArgs[0], filename: OverrideContextArgs[1]) => {
@@ -327,6 +339,10 @@ export default function wywInJS({
 
   const getCache = (isSsr: boolean): TransformCacheCollectionType =>
     isSsr ? ssrCache : clientCache;
+
+  const disposeParallelTransforms = async () => {
+    await parallelTransforms?.dispose();
+  };
 
   type DepInfoLike = { file: string; processing?: Promise<void> };
   type DepsOptimizerLike = {
@@ -504,12 +520,19 @@ export default function wywInJS({
       Object.keys(metadataLookup).forEach((key) => {
         delete metadataLookup[key];
       });
+      // Workers load the transform pipeline while Vite reads the entries.
+      parallelTransforms?.start();
     },
-    buildEnd() {
+    async buildEnd() {
       onDone(process.cwd());
       if (config.command === 'build') {
         disposeEvalBrokers();
+        if (config.build.watch) parallelTransforms?.disposeEvalBrokers();
+        else await disposeParallelTransforms();
       }
+    },
+    async closeWatcher() {
+      await disposeParallelTransforms();
     },
     configResolved(resolvedConfig: ResolvedConfig) {
       config = resolvedConfig;
@@ -522,6 +545,17 @@ export default function wywInJS({
       pluginOptionsByEnv = [overrideContextClient, overrideContextSsr].map(
         (overrideContext) => ({ ...rest, oxcOptions, overrideContext })
       );
+      workerPluginOptions = { ...rest, oxcOptions };
+      disposeParallelTransforms();
+      parallelTransforms =
+        typeof createParallelTransforms === 'function'
+          ? createParallelTransforms({
+              onFallback: (message: string) =>
+                config.logger.warn(`[wyw-in-js] ${message}`),
+              parallel,
+              unsupported: debug ? 'the `debug` option is set' : null,
+            })
+          : null;
 
       if (preserveCssPaths && config.command === 'build') {
         const outputs = config.build.rollupOptions.output;
@@ -574,7 +608,10 @@ export default function wywInJS({
     },
     configureServer(_server) {
       devServer = _server;
-      devServer.httpServer?.once('close', disposeEvalBrokers);
+      devServer.httpServer?.once('close', () => {
+        disposeEvalBrokers();
+        disposeParallelTransforms();
+      });
 
       if (ssrDevCssEnabled && config.command === 'serve') {
         devServer.middlewares.use(
@@ -651,6 +688,7 @@ export default function wywInJS({
         for (const cache of caches) {
           cache.invalidateForFile(depId);
         }
+        parallelTransforms?.invalidateForFile(depId);
       }
 
       return affected
@@ -757,12 +795,27 @@ export default function wywInJS({
       };
 
       const asyncResolve = isSsr ? asyncResolveSsr : asyncResolveClient;
+      const env = isSsr ? 'ssr' : 'client';
+      const workerScope = parallelTransforms?.scope(env, () => ({
+        asyncResolveKey: `vite:${env}`,
+        contextGlobals: importMetaEnvForEval
+          ? { __wyw_import_meta_env: importMetaEnvForEval[env] }
+          : undefined,
+        keepComments,
+        pluginOptions: workerPluginOptions,
+        prefixer,
+        preprocessor,
+        root: process.cwd(),
+      }));
 
-      const result: TransformResult = await transform(
-        transformServices,
-        code,
-        asyncResolve
-      );
+      const result: TransformResult = workerScope
+        ? await workerScope.transform({
+            asyncResolve,
+            code,
+            emitWarning: transformServices.emitWarning,
+            filename: id,
+          })
+        : await transform(transformServices, code, asyncResolve);
 
       result.diagnostics?.forEach((diagnostic: WYWTransformDiagnostic) => {
         this.warn({
