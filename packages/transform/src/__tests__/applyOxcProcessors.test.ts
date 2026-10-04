@@ -282,6 +282,40 @@ describe('applyOxcProcessors', () => {
     expect(result.processors[0]?.isReferenced).toBe(false);
   });
 
+  it('resolves references separately for each assigned tag', () => {
+    const result = applyOxcProcessors(
+      `
+        import { css } from 'test-package';
+        const used = css\`
+          color: red;
+        \`;
+        const unused = css\`
+          color: blue;
+        \`;
+        const alsoUsed = css\`
+          color: green;
+        \`;
+        const holder = { unused: 1, value: alsoUsed };
+        export const view = holder.unused + used;
+      `,
+      fileContext,
+      options(processorPath),
+      () => {},
+      true
+    );
+
+    expect(
+      result.processors.map((processor) => [
+        processor.displayName,
+        processor.isReferenced,
+      ])
+    ).toEqual([
+      ['used', true],
+      ['unused', false],
+      ['alsoUsed', true],
+    ]);
+  });
+
   it('treats exported assigned tags as referenced', () => {
     const result = applyOxcProcessors(
       `

@@ -94,6 +94,30 @@ export const getTagOwner = (ancestors: Node[]): AnyNode | null => {
   return owner ?? null;
 };
 
+// Collected with one walk per program. Tags used to walk the whole program
+// once per usage, in both the preeval and the collect pass.
+const referencedNamesByProgram = new WeakMap<Program, Set<string>>();
+
+const getReferencedNames = (program: Program): Set<string> => {
+  const cached = referencedNamesByProgram.get(program);
+  if (cached) {
+    return cached;
+  }
+
+  const names = new Set<string>();
+  walkOxc(program, (node, parent) => {
+    if (
+      (node.type === 'Identifier' || node.type === 'JSXIdentifier') &&
+      isNodeReference(node, parent)
+    ) {
+      names.add(node.name);
+    }
+  });
+
+  referencedNamesByProgram.set(program, names);
+  return names;
+};
+
 export const isTagReferenced = (
   program: Program,
   ancestors: Node[]
@@ -112,27 +136,9 @@ export const isTagReferenced = (
     return true;
   }
 
-  let referenced = false;
-  walkOxc(program, (node, parent) => {
-    const referenceName =
-      node.type === 'Identifier' || node.type === 'JSXIdentifier'
-        ? node.name
-        : null;
-
-    if (
-      referenced ||
-      referenceName !== id.name ||
-      (node.type === 'Identifier' &&
-        node.start === id.start &&
-        node.end === id.end)
-    ) {
-      return;
-    }
-
-    referenced = isNodeReference(node, parent);
-  });
-
-  return referenced;
+  // isNodeReference rejects the declarator's own id, so a hit is always
+  // another identifier referring to the tag.
+  return getReferencedNames(program).has(id.name);
 };
 
 export const collectSameFileProcessorStaticValues = (
