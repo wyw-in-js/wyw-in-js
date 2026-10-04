@@ -1388,7 +1388,12 @@ describe('pipeline telemetry boundary', () => {
   it('collects stage counters from a real transform without metadata', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wyw-pipeline-telemetry-'));
     const filename = join(root, 'plain.ts');
-    const code = 'export const answer: number = 42;';
+    // The unused processor import keeps the root on the preeval path; roots
+    // without processor imports skip it (covered below).
+    const code = [
+      "import { css } from 'test-css-processor';",
+      'export const answer: number = 42;',
+    ].join('\n');
     const emitter = createEmitter();
     const summaries: PipelineTelemetrySummary[] = [];
     const unregister = registerPipelineTelemetryReporter(emitter, (summary) =>
@@ -1420,8 +1425,8 @@ describe('pipeline telemetry boundary', () => {
       expect(summaries[0].parse.errors).toBe(0);
       expect(summaries[0].processors.byPhase).toEqual([
         expect.objectContaining({
-          importCandidates: 0,
-          lookupAttempts: 0,
+          importCandidates: 1,
+          lookupAttempts: 1,
           passes: 1,
           phase: 'preeval',
           usages: 0,
@@ -1431,6 +1436,62 @@ describe('pipeline telemetry boundary', () => {
         calls: 1,
         migrations: 1,
       });
+    } finally {
+      unregister();
+      rmSync(root, { force: true, recursive: true });
+    }
+  });
+
+  it('skips the preeval stage for roots without processor imports', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wyw-pipeline-telemetry-'));
+    const filename = join(root, 'plain.ts');
+    const code = 'export const answer: number = 42;';
+    const emitter = createEmitter();
+    const summaries: PipelineTelemetrySummary[] = [];
+    const unregister = registerPipelineTelemetryReporter(emitter, (summary) =>
+      summaries.push(summary)
+    );
+
+    try {
+      const result = await runTransform(root, filename, code, emitter);
+
+      expect(result).toMatchObject({ code });
+      expect(summaries).toHaveLength(1);
+      // One cached parse for the processor-import check; no entrypoint, no
+      // preeval stage. The cache key lease is still taken as for any root.
+      expect(summaries[0]).toMatchObject({
+        entrypoints: { created: 0, disposableRoots: 0, requests: 0 },
+        lateNoMetadata: { count: 0, dangerousCodeCalls: 0 },
+        root: { filename, status: 'success' },
+        shakes: { attempts: 0, errors: 0, successes: 0 },
+      });
+      expect(summaries[0].parse.allRequests).toBe(1);
+      expect(summaries[0].parse.cachedRequests).toBe(1);
+      expect(summaries[0].processors.byPhase).toEqual([]);
+      expect(summaries[0].cache.salt).toMatchObject({ calls: 1 });
+    } finally {
+      unregister();
+      rmSync(root, { force: true, recursive: true });
+    }
+  });
+
+  it('does not parse roots that rules ignore', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wyw-pipeline-telemetry-'));
+    const filename = join(root, 'node_modules', 'library', 'index.js');
+    const code = 'module.exports = 1;';
+    const emitter = createEmitter();
+    const summaries: PipelineTelemetrySummary[] = [];
+    const unregister = registerPipelineTelemetryReporter(emitter, (summary) =>
+      summaries.push(summary)
+    );
+
+    try {
+      const result = await runTransform(root, filename, code, emitter);
+
+      expect(result).toMatchObject({ code });
+      expect(summaries).toHaveLength(1);
+      expect(summaries[0].root.status).toBe('ignored');
+      expect(summaries[0].parse.allRequests).toBe(0);
     } finally {
       unregister();
       rmSync(root, { force: true, recursive: true });
