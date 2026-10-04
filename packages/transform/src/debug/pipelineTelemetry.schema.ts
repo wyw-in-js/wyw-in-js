@@ -8,7 +8,7 @@ const DENOMINATORS = Object.freeze({
   lateNoMetadata:
     'count is late no-metadata short-circuit events; events retain each phase/only occurrence, while dangerousCodeCalls and dangerousCodeMs include each distinct affected filename once',
   parse:
-    'allRequests = cachedRequests + uncachedRequests; cachedRequests = cacheHits + cacheMisses; every miss or uncached request has one primary parse and at most one JSX fallback, so parserAttempts are derived as cacheMisses + jsxFallbackAttempts for cached revisions and requests + jsxFallbackAttempts for uncached revisions; requestedBytes count each logical request input, parsedBytes count input bytes per physical parseSync attempt, errors count failed logical requests, and JSX fallback requests/attempts separate logical need from physical fallback parses; compact revision records store source bytes once',
+    'allRequests = cachedRequests + uncachedRequests; cachedRequests = cacheHits + cacheMisses; parserAttempts = cacheMisses + jsxFallbackAttempts + rawTransferFallbackAttempts for cached revisions and requests + jsxFallbackAttempts + rawTransferFallbackAttempts for uncached revisions; requestedBytes count each logical request input, parsedBytes count input bytes per physical parseSync attempt including failed raw allocations, errors count failed logical requests; rawTransferFallbackAttempts count JSON retries after raw-transfer allocation failures; compact revision records store source bytes once',
   processors:
     'passes are applyOxcProcessors invocations that reach a recorded import/usage analysis result; lookupAttempts exclude side-effect imports and candidates without a local binding; reused plans skip import lookup but still count usages',
   shakes:
@@ -98,6 +98,7 @@ const TUPLE_LAYOUTS = Object.freeze({
     'errors',
     'jsxFallbackRequests',
     'jsxFallbackAttempts',
+    'rawTransferFallbackAttempts',
   ],
   processor: ['phase', 'mask', '...values'],
   shakes: ['attempts', 'successes', 'errors', 'generatedBytes', 'calls'],
@@ -167,6 +168,7 @@ const MASKS = Object.freeze({
     jsxFallbackAttempts: 32,
     jsxFallbackRequests: 16,
     kind: 1,
+    rawTransferFallbackAttempts: 64,
   },
   processor: {
     definedProcessors: 1,
@@ -199,7 +201,7 @@ export const PIPELINE_TELEMETRY_SCHEMA = deepFreeze({
   },
   omittedSections:
     'root summaries omit counter sections whose denominator and totals are zero',
-  schemaVersion: 1 as const,
+  schemaVersion: 2 as const,
   tupleEncoding: {
     defaults:
       'nested filename omission means the root filename; absent parse kind means cached; absent processor passes means 1',

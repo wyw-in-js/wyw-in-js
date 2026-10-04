@@ -9,11 +9,16 @@ const parseSourceType = (
     filename.endsWith('.ts') || filename.endsWith('.tsx') ? 'ts' : 'js';
   let parsed: ReturnType<typeof parseOxcSync>;
   try {
-    parsed = parseOxcSync(filename, code, {
-      astType,
-      range: true,
-      sourceType: 'unambiguous',
-    });
+    parsed = parseOxcSync(
+      filename,
+      code,
+      {
+        astType,
+        range: true,
+        sourceType: 'unambiguous',
+      },
+      'uncached'
+    );
   } catch (error) {
     recordPipelineUncachedParse(filename, code, 'unambiguous', astType, true);
     throw error;

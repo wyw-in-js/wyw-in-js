@@ -1,10 +1,14 @@
 import { parseSync, rawTransferSupported } from 'oxc-parser';
 import type { Comment, Program } from 'oxc-parser';
 
+import { logger } from '@wyw-in-js/shared';
+
 import {
   recordPipelineCachedParseMiss,
   recordPipelineCachedParseHit,
+  recordPipelineRawTransferFallback,
 } from '../debug/pipelineTelemetry';
+import type { ParseKind } from '../debug/pipelineTelemetry.types';
 import {
   getOxcParserLanguage,
   type OxcParserLanguage,
@@ -29,12 +33,16 @@ export const isOxcRawTransferAstTypeCompatible = (
 // Raw transfer deserializes the Program AST from a shared buffer instead of a
 // JSON string. JSON materialization dominated parse cost in large-build
 // profiles.
-const useRawTransfer = rawTransferSupported();
+let useRawTransfer = rawTransferSupported();
+const logRawTransfer = logger.extend('transform:parse:raw-transfer');
 
 export const parseOxcSync = (
   filename: string,
   code: string,
-  options: OxcParseOptions
+  options: OxcParseOptions,
+  telemetryKind?: ParseKind,
+  // A JSX reparse belongs to its original .js logical request.
+  telemetryFilename = filename
 ): ReturnType<typeof parseSync> => {
   const language = options.lang ?? getOxcParserLanguage(filename);
   const optionsWithTransfer: OxcParseOptions = {
@@ -44,9 +52,48 @@ export const parseOxcSync = (
     // the established JSON representation for any mixed language/AST mode.
     experimentalRawTransfer:
       useRawTransfer &&
+      options.experimentalRawTransfer !== false &&
       isOxcRawTransferAstTypeCompatible(language, options.astType),
   };
-  return parseSync(filename, code, optionsWithTransfer);
+  try {
+    return parseSync(filename, code, optionsWithTransfer);
+  } catch (error) {
+    if (
+      !optionsWithTransfer.experimentalRawTransfer ||
+      !(error instanceof RangeError) ||
+      error.message !== 'Array buffer allocation failed'
+    ) {
+      throw error;
+    }
+
+    // Platform support does not guarantee Oxc can allocate its ~6 GiB raw
+    // transfer buffer. Keep using JSON after allocation fails so every file
+    // does not attempt the same oversized allocation again.
+    useRawTransfer = false;
+    if (telemetryKind) {
+      recordPipelineRawTransferFallback(
+        telemetryFilename,
+        code,
+        options.sourceType ?? 'module',
+        options.astType ??
+          (language === 'js' || language === 'jsx' ? 'js' : 'ts'),
+        telemetryKind
+      );
+    }
+    try {
+      logRawTransfer(
+        'Array buffer allocation failed for %s; using JSON for this and subsequent parses',
+        filename
+      );
+    } catch {
+      // A failing debug sink must not prevent recovery through JSON.
+    }
+    const jsonOptions: OxcParseOptions = {
+      ...optionsWithTransfer,
+      experimentalRawTransfer: false,
+    };
+    return parseSync(filename, code, jsonOptions);
+  }
 };
 
 type ParsedOxc = {
@@ -159,11 +206,16 @@ export const parseOxcCached = (
   const astType = getAstType(filename);
   let parsed: ReturnType<typeof parseOxcSync>;
   try {
-    parsed = parseOxcSync(filename, code, {
-      astType,
-      range: true,
-      sourceType,
-    });
+    parsed = parseOxcSync(
+      filename,
+      code,
+      {
+        astType,
+        range: true,
+        sourceType,
+      },
+      'cached'
+    );
   } catch (error) {
     recordPipelineCachedParseMiss(
       filename,
@@ -182,11 +234,17 @@ export const parseOxcCached = (
     // Some bundlers pass .js files with JSX to WyW before a later JSX transform.
     jsxFallback = true;
     try {
-      parsed = parseOxcSync(jsxFallbackFilename, code, {
-        astType: getAstType(jsxFallbackFilename),
-        range: true,
-        sourceType,
-      });
+      parsed = parseOxcSync(
+        jsxFallbackFilename,
+        code,
+        {
+          astType: getAstType(jsxFallbackFilename),
+          range: true,
+          sourceType,
+        },
+        'cached',
+        filename
+      );
     } catch (error) {
       recordPipelineCachedParseMiss(
         filename,

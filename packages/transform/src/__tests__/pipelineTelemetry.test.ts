@@ -480,7 +480,7 @@ describe('pipeline telemetry boundary', () => {
 
     expect(summaries[0]).toEqual({
       root: { filename: '/project/empty.ts', status: 'success' },
-      schemaVersion: 1,
+      schemaVersion: 2,
       type: 'pipeline-telemetry',
     });
     expect(summaries[1]).toEqual(
@@ -533,6 +533,7 @@ describe('pipeline telemetry boundary', () => {
         errors: 0,
         jsxFallbackAttempts: 0,
         jsxFallbackRequests: 0,
+        rawTransferFallbackAttempts: 0,
         kind: 'cached',
         parserAttempts: 1,
         parserKey: 'oxc:module:ts:ts:r1:j0',
@@ -660,6 +661,7 @@ describe('pipeline telemetry boundary', () => {
       errors: 0,
       jsxFallbackAttempts: 1,
       jsxFallbackRequests: 2,
+      rawTransferFallbackAttempts: 0,
       parserAttempts: 4,
       requestedBytes: plainBytes * 2 + jsxBytes * 2 + uncachedBytes,
       uncachedRequests: 1,
@@ -676,6 +678,7 @@ describe('pipeline telemetry boundary', () => {
       errors: 0,
       jsxFallbackAttempts: 0,
       jsxFallbackRequests: 0,
+      rawTransferFallbackAttempts: 0,
       kind: 'cached',
       parsedBytes: plainBytes,
       parserAttempts: 1,
@@ -690,6 +693,7 @@ describe('pipeline telemetry boundary', () => {
       errors: 0,
       jsxFallbackAttempts: 1,
       jsxFallbackRequests: 2,
+      rawTransferFallbackAttempts: 0,
       kind: 'cached',
       parsedBytes: jsxBytes * 2,
       parserAttempts: 2,
@@ -704,6 +708,7 @@ describe('pipeline telemetry boundary', () => {
       errors: 0,
       jsxFallbackAttempts: 0,
       jsxFallbackRequests: 0,
+      rawTransferFallbackAttempts: 0,
       kind: 'uncached',
       parsedBytes: uncachedBytes,
       parserAttempts: 1,
@@ -791,6 +796,7 @@ describe('pipeline telemetry boundary', () => {
       cacheMisses: 0,
       jsxFallbackAttempts: 0,
       jsxFallbackRequests: 1,
+      rawTransferFallbackAttempts: 0,
       parsedBytes: 0,
       parserAttempts: 0,
     });
@@ -800,6 +806,7 @@ describe('pipeline telemetry boundary', () => {
         cacheMisses: 0,
         jsxFallbackAttempts: 0,
         jsxFallbackRequests: 1,
+        rawTransferFallbackAttempts: 0,
         parsedBytes: 0,
         parserAttempts: 0,
         requests: 1,
@@ -842,6 +849,7 @@ describe('pipeline telemetry boundary', () => {
       errors: 2,
       jsxFallbackAttempts: 1,
       jsxFallbackRequests: 1,
+      rawTransferFallbackAttempts: 0,
       parserAttempts: 3,
       uncachedRequests: 1,
     });
@@ -1169,7 +1177,7 @@ describe('pipeline telemetry boundary', () => {
       lateNoMetadata:
         'count is late no-metadata short-circuit events; events retain each phase/only occurrence, while dangerousCodeCalls and dangerousCodeMs include each distinct affected filename once',
       parse:
-        'allRequests = cachedRequests + uncachedRequests; cachedRequests = cacheHits + cacheMisses; every miss or uncached request has one primary parse and at most one JSX fallback, so parserAttempts are derived as cacheMisses + jsxFallbackAttempts for cached revisions and requests + jsxFallbackAttempts for uncached revisions; requestedBytes count each logical request input, parsedBytes count input bytes per physical parseSync attempt, errors count failed logical requests, and JSX fallback requests/attempts separate logical need from physical fallback parses; compact revision records store source bytes once',
+        'allRequests = cachedRequests + uncachedRequests; cachedRequests = cacheHits + cacheMisses; parserAttempts = cacheMisses + jsxFallbackAttempts + rawTransferFallbackAttempts for cached revisions and requests + jsxFallbackAttempts + rawTransferFallbackAttempts for uncached revisions; requestedBytes count each logical request input, parsedBytes count input bytes per physical parseSync attempt including failed raw allocations, errors count failed logical requests; rawTransferFallbackAttempts count JSON retries after raw-transfer allocation failures; compact revision records store source bytes once',
       processors:
         'passes are applyOxcProcessors invocations that reach a recorded import/usage analysis result; lookupAttempts exclude side-effect imports and candidates without a local binding; reused plans skip import lookup but still count usages',
       shakes:

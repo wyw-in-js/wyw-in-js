@@ -331,6 +331,14 @@ async function assertCjsModuleLoads(filePath) {
 const main = async () => {
   console.log(colors.blue('Package directory:'), PKG_DIR);
 
+  console.log(colors.blue('Running case:'), 'rawTransferAllocationFallback');
+  const fallback = await execFileAsync(
+    process.execPath,
+    [...process.execArgv, path.join(__dirname, 'raw-transfer-allocation.mjs')],
+    { cwd: PKG_DIR }
+  );
+  console.log(fallback.stdout.trim());
+
   const outDir = path.resolve(PKG_DIR, 'dist');
   const testCases = [
     {

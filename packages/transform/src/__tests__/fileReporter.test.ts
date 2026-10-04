@@ -202,7 +202,7 @@ describe('createFileReporter', () => {
       expect(events[0]).toEqual(
         expect.objectContaining({
           denominators: expect.any(Object),
-          schemaVersion: 1,
+          schemaVersion: 2,
           tupleEncoding: expect.objectContaining({
             layouts: expect.objectContaining({
               parseRevision: [
@@ -222,6 +222,7 @@ describe('createFileReporter', () => {
                 jsxFallbackAttempts: 32,
                 jsxFallbackRequests: 16,
                 kind: 1,
+                rawTransferFallbackAttempts: 64,
               },
               processor: {
                 definedProcessors: 1,
@@ -245,12 +246,12 @@ describe('createFileReporter', () => {
             filename: expect.stringContaining('root.ts'),
             status: 'success',
           }),
-          schemaVersion: 1,
+          schemaVersion: 2,
           type: 'pipeline-telemetry',
         })
       );
       expect(events[1].parse).toEqual([
-        [2, 2, 0, 1, 1, 1, 62, 31, 0, 0, 0],
+        [2, 2, 0, 1, 1, 1, 62, 31, 0, 0, 0, 0],
         [[expect.any(String), 10, 31, 2, 6, 1, 1]],
       ]);
       expect(events[1].processors).toEqual([['preeval', 6, 1, 1]]);

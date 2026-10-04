@@ -487,6 +487,7 @@ const getPipelineParseRevision = (
     jsxFallbackRequests: 0,
     kind,
     parserKey,
+    rawTransferFallbackAttempts: 0,
     requests: 0,
     revision: revisionKey,
   };
@@ -499,6 +500,36 @@ const getPipelineParseRevision = (
   }
   accumulator.parse.revisions.push(revision);
   return revision;
+};
+
+export const recordPipelineRawTransferFallback = (
+  filename: string,
+  code: string,
+  sourceType: string,
+  astType: string,
+  kind: ParseKind
+): void => {
+  const accumulator = getAccumulator();
+  if (!accumulator) return;
+
+  try {
+    const revision = getPipelineParseRevision(
+      accumulator,
+      createPipelineParserKey(
+        sourceType,
+        filename,
+        astType,
+        kind === 'cached' && filename.endsWith('.js')
+      ),
+      kind,
+      measureCode(accumulator, code)
+    );
+    // The logical request is recorded by the caller after parsing completes,
+    // including if the JSON retry throws. Do not add a request or error here.
+    revision.rawTransferFallbackAttempts += 1;
+  } catch {
+    // Diagnostics must never change parsing or recovery behavior.
+  }
 };
 
 export const recordPipelineCachedParseHit = (

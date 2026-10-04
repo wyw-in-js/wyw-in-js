@@ -277,6 +277,7 @@ const decodePipelineTelemetryJSONl = (line: string): JSONRecord => {
       errors,
       jsxFallbackRequests,
       jsxFallbackAttempts,
+      rawTransferFallbackAttempts,
     ] = rawTotals;
     result.parse = {
       allRequests,
@@ -289,6 +290,7 @@ const decodePipelineTelemetryJSONl = (line: string): JSONRecord => {
       parsedBytes,
       parserAttempts,
       requestedBytes,
+      rawTransferFallbackAttempts,
       uncachedRequests,
       revisions: rawRevisions.map(
         ([revision, rawParserKey, bytes, requests, rawMask, ...values]) => {
@@ -301,6 +303,7 @@ const decodePipelineTelemetryJSONl = (line: string): JSONRecord => {
             errors: 0,
             jsxFallbackAttempts: 0,
             jsxFallbackRequests: 0,
+            rawTransferFallbackAttempts: 0,
             kind: 'cached',
             parserKey:
               typeof rawParserKey === 'number'
@@ -319,6 +322,7 @@ const decodePipelineTelemetryJSONl = (line: string): JSONRecord => {
             [8, 'errors'],
             [16, 'jsxFallbackRequests'],
             [32, 'jsxFallbackAttempts'],
+            [64, 'rawTransferFallbackAttempts'],
           ] as const;
           maskedCounters.forEach(([bit, key]) => {
             if (mask & bit) {
@@ -328,7 +332,8 @@ const decodePipelineTelemetryJSONl = (line: string): JSONRecord => {
           });
           counter.parserAttempts =
             Number(counter.kind === 'cached' ? counter.cacheMisses : requests) +
-            Number(counter.jsxFallbackAttempts);
+            Number(counter.jsxFallbackAttempts) +
+            Number(counter.rawTransferFallbackAttempts);
           return counter;
         }
       ),
@@ -577,6 +582,7 @@ const createFullAccumulator = (): PipelineAccumulator => {
       errors: 0,
       jsxFallbackAttempts: 0,
       jsxFallbackRequests: 1,
+      rawTransferFallbackAttempts: 0,
       kind: 'cached',
       parserKey: 'z-parser\n🔥',
       requests: 2,
@@ -589,6 +595,7 @@ const createFullAccumulator = (): PipelineAccumulator => {
       errors: 1,
       jsxFallbackAttempts: 1,
       jsxFallbackRequests: 1,
+      rawTransferFallbackAttempts: 0,
       kind: 'uncached',
       parserKey: 'a-parser',
       requests: 2,
@@ -667,6 +674,7 @@ describe('serializePipelineTelemetryJSONl', () => {
         errors: 0,
         jsxFallbackAttempts,
         jsxFallbackRequests: jsxFallbackAttempts,
+        rawTransferFallbackAttempts: 0,
         kind,
         parserKey: 'test',
         requests,
@@ -683,10 +691,50 @@ describe('serializePipelineTelemetryJSONl', () => {
     expect(line.endsWith('\n')).toBe(true);
     expect(JSON.parse(line)).toEqual({
       root: { filename: path.join('src', 'root.ts'), status: 'success' },
-      schemaVersion: 1,
+      schemaVersion: 2,
       type: 'pipeline-telemetry',
     });
   });
+
+  it.each(['cached', 'uncached'] as const)(
+    'preserves raw-transfer retries in %s JSONL revision and totals',
+    (kind) => {
+      const accumulator = createAccumulator();
+      const counter: ParseRevisionCounter = {
+        bytes: 31,
+        cacheHits: kind === 'cached' ? 1 : 0,
+        cacheMisses: kind === 'cached' ? 1 : 0,
+        errors: 1,
+        jsxFallbackAttempts: 1,
+        jsxFallbackRequests: 1,
+        kind,
+        parserKey: 'oxc:module:js:js:r1:j1',
+        rawTransferFallbackAttempts: 1,
+        requests: 2,
+        revision: 'allocation-fallback',
+      };
+      accumulator.parse.revisions.push(counter);
+      const line = expectDifferentialMatch(accumulator);
+      const wire = JSON.parse(line) as JSONRecord;
+      const [totals, revisions] = wire.parse as unknown[][];
+      const attempts = kind === 'cached' ? 3 : 4;
+      expect(wire.schemaVersion).toBe(2);
+      expect(totals[5]).toBe(attempts);
+      expect(totals[7]).toBe(31 * attempts);
+      expect(totals[11]).toBe(1);
+      expect((revisions[0] as unknown[])[4]).toBe(
+        kind === 'cached' ? 126 : 121
+      );
+      expect(decodePipelineTelemetryJSONl(line).parse).toEqual(
+        expect.objectContaining({
+          allRequests: 2,
+          errors: 1,
+          parserAttempts: attempts,
+          rawTransferFallbackAttempts: 1,
+        })
+      );
+    }
+  );
 
   it.each([
     ['/work/project/src/root.ts', '/work/project', 'src/root.ts'],
@@ -810,6 +858,7 @@ describe('serializePipelineTelemetryJSONl', () => {
           errors: 0,
           jsxFallbackAttempts: 0,
           jsxFallbackRequests: 0,
+          rawTransferFallbackAttempts: 0,
           kind: 'uncached',
           parserKey: 'custom',
           requests: 1,
@@ -934,7 +983,7 @@ describe('serializePipelineTelemetryJSONl', () => {
       ],
     ]);
     expect(wire.parse).toEqual([
-      [4, 2, 2, 1, 1, 4, 156, 172, 1, 2, 1],
+      [4, 2, 2, 1, 1, 4, 156, 172, 1, 2, 1, 0],
       [
         ['z-revision\ud800', 'z-parser\n🔥', 31, 2, 22, 1, 1, 1],
         ['a-revision', 'a-parser', 47, 2, 57, 'uncached', 1, 1, 1],
@@ -1007,6 +1056,7 @@ describe('serializePipelineTelemetryJSONl', () => {
         errors: 8,
         jsxFallbackAttempts: 32,
         jsxFallbackRequests: 16,
+        rawTransferFallbackAttempts: 64,
         kind: 1,
       },
       processor: {
@@ -1067,6 +1117,7 @@ describe('serializePipelineTelemetryJSONl', () => {
         errors: 0,
         jsxFallbackAttempts: 0,
         jsxFallbackRequests: 0,
+        rawTransferFallbackAttempts: 0,
         kind: 'cached',
         parserKey,
         requests: 1,

@@ -4,4 +4,5 @@ export const getPipelineParserAttempts = (
   counter: ParseRevisionCounter
 ): number =>
   (counter.kind === 'cached' ? counter.cacheMisses : counter.requests) +
-  counter.jsxFallbackAttempts;
+  counter.jsxFallbackAttempts +
+  counter.rawTransferFallbackAttempts;
