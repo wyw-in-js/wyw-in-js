@@ -48,6 +48,21 @@ plugins and non-string aliases remain webpack-specific and are resolved only by 
 - `native`: uses only `oxc-resolver`; webpack's resolver is not called. Mirror webpack-only aliases in
   `oxcOptions.resolver.alias` or keep using `hybrid`.
 
+### Running transforms in worker threads
+
+Transforms run on webpack's main thread by default. Set the `parallel` loader option to run them in worker threads:
+
+```js
+use: [{ loader: '@wyw-in-js/webpack-loader', options: { parallel: true } }],
+```
+
+`true` starts up to four workers, leaving at least one CPU core free; a number sets the count. All compilers in one
+process, such as the client and server builds of Next.js, share the workers.
+
+Options are sent to the workers as data, so they cannot contain functions. Define function options, such as
+`tagResolver` or a `classNameSlug` function, in a [config file](/configuration): every worker loads it. If an option
+cannot be sent, or `WYWinJSDebugPlugin` is used, the loader warns and runs transforms on the main thread.
+
 ### Resource queries (`?raw`, `?url`, etc.)
 
 If you import assets with resource queries (e.g. `./arrow.svg?svgUse`), WyW-in-JS ignores `?query/#hash` for file reads and extension checks.
