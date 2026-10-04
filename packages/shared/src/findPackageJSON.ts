@@ -20,10 +20,10 @@ function findSelfPackageJSON(pkgName: string, filename: string) {
   }
 }
 
-export function findPackageJSON(
+function findPackageJSONUncached(
   pkgName: string,
   filename: string | null | undefined
-) {
+): string | undefined {
   // Jest's resolver does not work properly with `moduleNameMapper` when `paths` are defined
   const isJest = Boolean(globalThis.process?.env?.JEST_WORKER_ID);
   const skipPathsOptions = isJest && !pkgName.startsWith('.');
@@ -83,7 +83,7 @@ export function findPackageJSON(
       }
 
       if (skipPathsOptions && filename) {
-        return findPackageJSON(pkgName, null);
+        return findPackageJSONUncached(pkgName, null);
       }
 
       return undefined;
@@ -101,4 +101,23 @@ export function findPackageJSON(
 
     throw er;
   }
+}
+
+// Processors look up the same packages from every module in a directory, and
+// a failed `require.resolve` (e.g. a bundler alias) walks every node_modules
+// level before falling back to reading the nearest package.json.
+const lookupCache = new Map<string, string | undefined>();
+
+export function findPackageJSON(
+  pkgName: string,
+  filename: string | null | undefined
+): string | undefined {
+  const lookupKey = `${pkgName}\0${filename ? dirname(filename) : ''}`;
+  if (lookupCache.has(lookupKey)) {
+    return lookupCache.get(lookupKey);
+  }
+
+  const result = findPackageJSONUncached(pkgName, filename);
+  lookupCache.set(lookupKey, result);
+  return result;
 }
