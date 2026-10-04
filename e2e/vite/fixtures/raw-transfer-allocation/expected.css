@@ -1,0 +1,6 @@
+.raw-transfer {
+  padding: 12px;
+}
+.raw-transfer::before {
+  content: 'Привет 👋';
+}

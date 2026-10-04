@@ -203,6 +203,7 @@ const buildParseTotals = (accumulator: PipelineAccumulator) => {
   let parsedBytes = 0;
   let parserAttempts = 0;
   let requestedBytes = 0;
+  let rawTransferFallbackAttempts = 0;
   let uncachedRequests = 0;
   accumulator.parse.revisions.forEach((counter) => {
     const revisionParserAttempts = getPipelineParserAttempts(counter);
@@ -215,6 +216,7 @@ const buildParseTotals = (accumulator: PipelineAccumulator) => {
     parsedBytes += counter.bytes * revisionParserAttempts;
     parserAttempts += revisionParserAttempts;
     requestedBytes += counter.bytes * counter.requests;
+    rawTransferFallbackAttempts += counter.rawTransferFallbackAttempts;
     if (counter.kind === 'uncached') uncachedRequests += counter.requests;
   });
   return {
@@ -228,6 +230,7 @@ const buildParseTotals = (accumulator: PipelineAccumulator) => {
     parsedBytes,
     parserAttempts,
     requestedBytes,
+    rawTransferFallbackAttempts,
     uncachedRequests,
   };
 };
@@ -252,6 +255,7 @@ const buildParse = (accumulator: PipelineAccumulator) => ({
         parsedBytes: counter.bytes * parserAttempts,
         parserAttempts,
         parserKey: getParserKey(counter),
+        rawTransferFallbackAttempts: counter.rawTransferFallbackAttempts,
         requestedBytes: counter.bytes * counter.requests,
         requests: counter.requests,
         revision: counter.revision,
@@ -313,7 +317,7 @@ export const buildPipelineTelemetrySummary = (
   parse: buildParse(accumulator),
   processors: buildProcessors(accumulator),
   root: { ...accumulator.root },
-  schemaVersion: 1 as const,
+  schemaVersion: PIPELINE_TELEMETRY_SCHEMA.schemaVersion,
   shakes: buildShakes(accumulator),
   type: 'pipeline-telemetry' as const,
 });
@@ -373,7 +377,7 @@ export const buildCompactPipelineTelemetrySummary = (
 ): PipelineTelemetryCompactSummary => {
   const summary: PipelineTelemetryCompactSummary = {
     root: { ...accumulator.root },
-    schemaVersion: 1,
+    schemaVersion: PIPELINE_TELEMETRY_SCHEMA.schemaVersion,
     type: 'pipeline-telemetry',
   };
   const { cleanup, entrypoints, parse, processors, shakes } = accumulator;

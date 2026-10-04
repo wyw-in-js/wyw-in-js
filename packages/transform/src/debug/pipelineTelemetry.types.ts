@@ -19,6 +19,7 @@ export type ParseRevisionCounter = {
   jsxFallbackRequests: number;
   kind: ParseKind;
   parserKey: number | string;
+  rawTransferFallbackAttempts: number;
   requests: number;
   revision: string;
 };

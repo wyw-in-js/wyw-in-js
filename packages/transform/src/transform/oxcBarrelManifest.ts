@@ -429,11 +429,16 @@ const parseProgram = (code: string, filename: string): Program => {
     filename.endsWith('.ts') || filename.endsWith('.tsx') ? 'ts' : 'js';
   let parsed: ReturnType<typeof parseOxcSync>;
   try {
-    parsed = parseOxcSync(filename, code, {
-      astType,
-      range: true,
-      sourceType: 'module',
-    });
+    parsed = parseOxcSync(
+      filename,
+      code,
+      {
+        astType,
+        range: true,
+        sourceType: 'module',
+      },
+      'uncached'
+    );
   } catch (error) {
     recordPipelineUncachedParse(filename, code, 'module', astType, true);
     throw error;

@@ -249,11 +249,16 @@ const applyReplacements = (
 const parseJsModule = (code: string, filename: string): Program => {
   let parsed: ReturnType<typeof parseOxcSync>;
   try {
-    parsed = parseOxcSync(filename, code, {
-      astType: 'js',
-      range: true,
-      sourceType: 'module',
-    });
+    parsed = parseOxcSync(
+      filename,
+      code,
+      {
+        astType: 'js',
+        range: true,
+        sourceType: 'module',
+      },
+      'uncached'
+    );
   } catch (error) {
     recordPipelineUncachedParse(filename, code, 'module', 'js', true);
     throw error;

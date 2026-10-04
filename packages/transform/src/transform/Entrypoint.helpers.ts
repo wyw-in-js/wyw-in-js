@@ -54,11 +54,16 @@ export function parseFile(
     filename.endsWith('.ts') || filename.endsWith('.tsx') ? 'ts' : 'js';
   let parseResult: ReturnType<typeof parseOxcSync>;
   try {
-    parseResult = parseOxcSync(filename, originalCode, {
-      astType,
-      range: true,
-      sourceType: 'module',
-    });
+    parseResult = parseOxcSync(
+      filename,
+      originalCode,
+      {
+        astType,
+        range: true,
+        sourceType: 'module',
+      },
+      'uncached'
+    );
   } catch (error) {
     recordPipelineUncachedParse(
       filename,

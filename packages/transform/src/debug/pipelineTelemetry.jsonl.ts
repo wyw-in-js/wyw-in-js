@@ -232,6 +232,7 @@ const buildParse = (accumulator: PipelineAccumulator): unknown[] => {
   let parsedBytes = 0;
   let parserAttempts = 0;
   let requestedBytes = 0;
+  let rawTransferFallbackAttempts = 0;
   let uncachedRequests = 0;
   const revisions = parse.revisions.map((counter) => {
     const revisionParserAttempts = getPipelineParserAttempts(counter);
@@ -244,6 +245,7 @@ const buildParse = (accumulator: PipelineAccumulator): unknown[] => {
     parsedBytes += counter.bytes * revisionParserAttempts;
     parserAttempts += revisionParserAttempts;
     requestedBytes += counter.bytes * counter.requests;
+    rawTransferFallbackAttempts += counter.rawTransferFallbackAttempts;
     if (counter.kind === 'uncached') uncachedRequests += counter.requests;
 
     let mask = 0;
@@ -272,6 +274,10 @@ const buildParse = (accumulator: PipelineAccumulator): unknown[] => {
       mask |= 32;
       values.push(counter.jsxFallbackAttempts);
     }
+    if (counter.rawTransferFallbackAttempts !== 0) {
+      mask |= 64;
+      values.push(counter.rawTransferFallbackAttempts);
+    }
     return [
       counter.revision,
       typeof counter.parserKey === 'number'
@@ -295,6 +301,7 @@ const buildParse = (accumulator: PipelineAccumulator): unknown[] => {
     errors,
     jsxFallbackRequests,
     jsxFallbackAttempts,
+    rawTransferFallbackAttempts,
   ];
   return [totals, revisions];
 };
@@ -376,7 +383,7 @@ export const serializePipelineTelemetryJSONl = (
       filename: relativeFilename(root.filename, workingDir),
       status: root.status,
     },
-    schemaVersion: 1,
+    schemaVersion: PIPELINE_TELEMETRY_SCHEMA.schemaVersion,
     type: 'pipeline-telemetry',
   };
   const { cleanup, entrypoints, parse, processors, shakes } = accumulator;
