@@ -3,6 +3,7 @@ import type { Debugger } from '@wyw-in-js/shared';
 
 import type { ParentEntrypoint } from '../types';
 import { getFileIdx } from '../utils/getFileIdx';
+import type { TransformCacheEpoch } from '../cache';
 
 import type { Services } from './types';
 import type { IEntrypointDependency } from './Entrypoint.types';
@@ -148,6 +149,9 @@ export abstract class BaseEntrypoint {
 
   public readonly log: Debugger;
 
+  /** @internal Entrypoint publications are fenced by their captured epoch. */
+  public readonly cacheEpoch: TransformCacheEpoch;
+
   // eslint-disable-next-line no-plusplus
   public readonly seqId = entrypointSeqId++;
 
@@ -168,6 +172,7 @@ export abstract class BaseEntrypoint {
     >,
     public readonly invalidateOnDependencyChange: Set<string>
   ) {
+    this.cacheEpoch = services.cacheEpoch ?? services.cache.getCurrentEpoch();
     this.idx = getFileIdx(name);
     this.log =
       parents[0]?.log.extend(this.ref, '->') ?? services.log.extend(this.ref);
@@ -188,6 +193,7 @@ export abstract class BaseEntrypoint {
       this.#exports = BaseEntrypoint.createExports(this.log);
     }
 
+    services.cache.assertEpoch(this.cacheEpoch);
     services.eventEmitter.entrypointEvent(this.seqId, {
       class: this.constructor.name,
       evaluatedOnly: this.evaluatedOnly,
@@ -199,6 +205,7 @@ export abstract class BaseEntrypoint {
       parentId: parents[0]?.seqId ?? null,
       type: 'created',
     });
+    services.cache.assertEpoch(this.cacheEpoch);
   }
 
   public get exports(): Record<string | symbol, unknown> {

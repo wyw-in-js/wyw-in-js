@@ -1,7 +1,14 @@
 import evaluate, { type IEvaluateResult } from '../../evaluators';
+import { AbortError, isAborted } from '../actions/AbortError';
+import { EntrypointEvictedError } from '../actions/EntrypointEvictedError';
 import { isUnprocessedEntrypointError } from '../actions/UnprocessedEntrypointError';
+import { isCacheRecoveryFenceError } from '../actions/isCacheRecoveryControlError';
 import { createPrevalPayload } from '../prevalPayload';
 import type { AsyncScenarioForAction, IEvalAction } from '../types';
+
+// A dependency replaced between LOAD and publish aborts the evaluation of a
+// root that is itself still current. Nothing above `workflow` restarts it.
+const DEPENDENCY_ABORT_RETRIES = 3;
 
 /**
  * Executes the code prepared in previous steps within the current `Entrypoint`.
@@ -22,6 +29,16 @@ export async function* evalFile(
     this.services.options.pluginOptions.eval?.strategy ?? 'hybrid';
 
   if (preevalResult && (preevalResult.dependencyNames?.length ?? 0) === 0) {
+    const expectedPublication = this.services.cache.get(
+      'entrypoints',
+      entrypoint.name
+    );
+    if (!entrypoint.isPublishedAs(expectedPublication)) {
+      if (expectedPublication === undefined) {
+        throw new EntrypointEvictedError(entrypoint);
+      }
+      throw new AbortError('superseded');
+    }
     const prevalPayload = createPrevalPayload({
       emitWarning: this.services.emitWarning,
       evalDependencies: preevalResult.executeSideEffectDependencies,
@@ -33,6 +50,7 @@ export async function* evalFile(
       staticValues: preevalResult.staticValueCache,
     });
     log(`<< skipped evaluate __wywPreval %O`, prevalPayload.values);
+    this.recordCachePublication(expectedPublication);
 
     return prevalPayload;
   }
@@ -40,6 +58,16 @@ export async function* evalFile(
   log(`>> evaluate __wywPreval`);
 
   let evaluated: IEvaluateResult | undefined;
+  let dependencyAborts = 0;
+
+  const isRetriableDependencyAbort = (e: unknown) =>
+    isAborted(e) &&
+    !isCacheRecoveryFenceError(e) &&
+    entrypoint.supersededWith === null &&
+    entrypoint.isPublishedAs(
+      this.services.cache.get('entrypoints', entrypoint.name)
+    ) &&
+    dependencyAborts < DEPENDENCY_ABORT_RETRIES;
 
   while (evaluated === undefined) {
     try {
@@ -54,6 +82,13 @@ export async function* evalFile(
           'Evaluation has been aborted because one if the required files is not processed. Schedule reprocessing and repeat evaluation.'
         );
         yield ['processEntrypoint', e.entrypoint, undefined];
+      } else if (isRetriableDependencyAbort(e)) {
+        dependencyAborts += 1;
+        entrypoint.log(
+          'Evaluation has been aborted by a replaced dependency. Repeat evaluation (%d/%d).',
+          dependencyAborts,
+          DEPENDENCY_ABORT_RETRIES
+        );
       } else {
         throw e;
       }
@@ -61,6 +96,7 @@ export async function* evalFile(
   }
 
   if (!evaluated.values) {
+    this.recordCachePublication(evaluated.publication);
     return null;
   }
 
@@ -80,6 +116,7 @@ export async function* evalFile(
   });
 
   log(`<< evaluated __wywPreval %O`, prevalPayload.values);
+  this.recordCachePublication(evaluated.publication);
 
   return prevalPayload;
 }

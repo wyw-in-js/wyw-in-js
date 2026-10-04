@@ -1,4 +1,5 @@
-import { isAborted } from '../actions/AbortError';
+import { AbortError, isAborted } from '../actions/AbortError';
+import { EntrypointEvictedError } from '../actions/EntrypointEvictedError';
 import type { IWorkflowAction, SyncScenarioForAction } from '../types';
 import { collectTransformDiagnostics } from '../../utils/TransformDiagnostics';
 import { toTransformResultMetadata } from '../../utils/TransformMetadata';
@@ -33,16 +34,54 @@ export function* workflow(
   const { cache, options } = this.services;
   const { entrypoint } = this;
 
+  const assertPublication = (expected: unknown) => {
+    this.cacheEpoch.owner.assertEpoch(this.cacheEpoch);
+    entrypoint.assertCurrentCacheEpoch();
+    entrypoint.assertNotSuperseded();
+    const current = cache.get('entrypoints', entrypoint.name);
+    if (
+      current !== expected &&
+      !(expected === entrypoint && entrypoint.isPublishedAs(current))
+    ) {
+      if (current === undefined) throw new EntrypointEvictedError(entrypoint);
+      throw new AbortError('superseded');
+    }
+  };
+
+  // A root without artifacts must not pin its publication, unless another
+  // consumer already replaced it with an evaluated copy it relies on.
+  const releasePublication = (expected: typeof expectedBeforeProcess) => {
+    if (cache.get('entrypoints', entrypoint.name) !== expected) {
+      assertPublication(expected);
+      return;
+    }
+    if (
+      !cache.invalidatePublished(
+        this.cacheEpoch,
+        'entrypoints',
+        entrypoint.name,
+        expected
+      )
+    ) {
+      entrypoint.assertNotSuperseded();
+      throw new AbortError('superseded');
+    }
+  };
+
   if (entrypoint.ignored) {
+    const expectedPublished = cache.get('entrypoints', entrypoint.name);
+    const code = entrypoint.loadedAndParsed.code ?? '';
+    assertPublication(expectedPublished);
     return {
-      code: entrypoint.loadedAndParsed.code ?? '',
+      code,
       sourceMap: options.inputSourceMap,
     };
   }
 
+  const expectedBeforeProcess = cache.get('entrypoints', entrypoint.name);
   try {
     yield* this.getNext('processEntrypoint', entrypoint, undefined, null);
-    entrypoint.assertNotSuperseded();
+    assertPublication(expectedBeforeProcess);
   } catch (e) {
     if (isAborted(e) && entrypoint.supersededWith) {
       entrypoint.log('workflow aborted, schedule the next attempt');
@@ -57,7 +96,9 @@ export function* workflow(
     throw e;
   }
 
+  const expectedAfterProcess = expectedBeforeProcess;
   const originalCode = entrypoint.loadedAndParsed.code ?? '';
+  assertPublication(expectedAfterProcess);
 
   function* restartOnSupersede(
     this: IWorkflowAction,
@@ -77,12 +118,15 @@ export function* workflow(
   }
 
   // File is ignored or does not contain any tags. Return original code.
-  if (!entrypoint.hasWywMetadata()) {
+  const expectedBeforeMetadata = expectedAfterProcess;
+  const hasWywMetadata = entrypoint.hasWywMetadata();
+  assertPublication(expectedBeforeMetadata);
+  if (!hasWywMetadata) {
     if (isLoadedEntrypointWithoutArtifacts(entrypoint)) {
       // A root bundler pass for a plain dependency must not pin eval/cache state.
       // If another WyW file needs this module, it will be prepared on demand.
       recordPipelineDisposableRoot(entrypoint.name, 'preeval');
-      cache.delete('entrypoints', entrypoint.name);
+      releasePublication(expectedBeforeMetadata);
     }
 
     return {
@@ -94,13 +138,26 @@ export function* workflow(
   // *** 2nd stage ***
 
   try {
+    const expectedBeforeEval = expectedAfterProcess;
     const evalStageResult = yield* this.getNext(
       'evalFile',
       entrypoint,
       undefined,
       null
     );
-    entrypoint.assertNotSuperseded();
+    const evalAction = entrypoint.createAction(
+      'evalFile',
+      undefined,
+      null,
+      this.actionContext,
+      this.services
+    );
+    const recordedEvalPublication = evalAction.takeCachePublication();
+    const expectedAfterEval =
+      recordedEvalPublication !== null
+        ? recordedEvalPublication.publication
+        : expectedBeforeEval;
+    assertPublication(expectedAfterEval);
 
     if (evalStageResult === null) {
       return {
@@ -118,6 +175,7 @@ export function* workflow(
 
     // *** 3rd stage ***
 
+    const expectedBeforeCollect = expectedAfterEval;
     const collectStageResult = yield* this.getNext(
       'collect',
       entrypoint,
@@ -126,24 +184,30 @@ export function* workflow(
       },
       null
     );
-    entrypoint.assertNotSuperseded();
+    assertPublication(expectedBeforeCollect);
 
-    if (!collectStageResult.metadata) {
+    const expectedAfterCollect = expectedBeforeCollect;
+    const collectMetadata = collectStageResult.metadata;
+    assertPublication(expectedAfterCollect);
+    if (!collectMetadata) {
       recordPipelineLateNoMetadata(entrypoint.name, entrypoint.only, 'collect');
+      const code = collectStageResult.code!;
+      const sourceMap = collectStageResult.map;
+      assertPublication(expectedAfterCollect);
       if (isLoadedEntrypointWithoutArtifacts(entrypoint)) {
         recordPipelineDisposableRoot(entrypoint.name, 'collect');
-        cache.delete('entrypoints', entrypoint.name);
+        releasePublication(expectedAfterCollect);
       }
 
       return {
-        code: collectStageResult.code!,
-        sourceMap: collectStageResult.map,
+        code,
+        sourceMap,
       };
     }
 
     const diagnostics = collectTransformDiagnostics(
       entrypoint.name,
-      collectStageResult.metadata.processors
+      collectMetadata.processors
     );
 
     // *** 4th stage
@@ -152,16 +216,16 @@ export function* workflow(
       'extract',
       entrypoint,
       {
-        processors: collectStageResult.metadata.processors,
+        processors: collectMetadata.processors,
       },
       null
     );
-    entrypoint.assertNotSuperseded();
+    assertPublication(expectedAfterCollect);
 
     const metadata = options.pluginOptions.outputMetadata
       ? toTransformResultMetadata(
           {
-            ...collectStageResult.metadata,
+            ...collectMetadata,
             rules: extractStageResult.rules,
           },
           dependencies
@@ -177,7 +241,7 @@ export function* workflow(
       ...(metadata ? { metadata } : {}),
       replacements: [
         ...extractStageResult.replacements,
-        ...collectStageResult.metadata.replacements,
+        ...collectMetadata.replacements,
       ],
       sourceMap: collectStageResult.map,
     };

@@ -7,6 +7,7 @@ type MockEntrypoint = {
   dependencies: Map<string, Pick<IEntrypointDependency, 'resolved'>>;
   generation: number;
   ignored?: boolean;
+  loadedAndParsed?: { evaluator: 'ignored'; reason: 'extension' | 'rule' };
   initialCode?: string;
   invalidationDependencies?: Map<
     string,
@@ -45,6 +46,9 @@ describe('TransformCacheCollection: ignored dependency entrypoint', () => {
       invalidationDependencies: new Map(),
       generation,
       ignored,
+      loadedAndParsed: ignored
+        ? { evaluator: 'ignored', reason: 'extension' }
+        : undefined,
       transformed: false,
     });
   };
@@ -110,6 +114,14 @@ describe('TransformCacheCollection: ignored dependency entrypoint', () => {
       changed: false,
       unknownDependencyGraphs: new Set(),
     });
+  });
+
+  it('does not declare ignored executable code to have an empty graph', () => {
+    cache.get('entrypoints', assetName)!.loadedAndParsed = {
+      evaluator: 'ignored',
+      reason: 'rule',
+    };
+    expect(checkParent().unknownDependencyGraphs).toEqual(new Set([assetName]));
   });
 
   it('keeps an unfinished non-ignored entrypoint unknown', () => {

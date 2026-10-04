@@ -1,5 +1,6 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
+import { createRequire } from 'module';
 import path from 'path';
 
 import { loadWywOptions } from '../transform/helpers/loadWywOptions';
@@ -176,6 +177,18 @@ describe('loadWywOptions', () => {
   it('throws a clear error for .mjs config files with top-level await', () => {
     const root = mkdtempSync(path.join(tmpdir(), 'wyw-options-'));
     const configFile = path.join(root, 'wyw-in-js.config.mjs');
+    // Node refuses to require() an async ESM graph; bun evaluates it. The
+    // clear error only exists where the refusal does.
+    const probeFile = path.join(root, 'probe.mjs');
+    writeFileSync(probeFile, 'await Promise.resolve();\nexport default 1;\n');
+    const runtimeRequiresAsyncEsm = (() => {
+      try {
+        createRequire(probeFile)(probeFile);
+        return true;
+      } catch {
+        return false;
+      }
+    })();
 
     writeFileSync(
       configFile,
@@ -190,6 +203,10 @@ describe('loadWywOptions', () => {
     );
 
     try {
+      if (runtimeRequiresAsyncEsm) {
+        expect(loadWywOptions({ configFile }).displayName).toBe(true);
+        return;
+      }
       expect(() => loadWywOptions({ configFile })).toThrow(
         'WyW config loading is synchronous, so .mjs config files must not use top-level await'
       );

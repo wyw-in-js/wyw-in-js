@@ -10,6 +10,7 @@ import type { StrictOptions } from '@wyw-in-js/shared';
 import { TransformCacheCollection } from '../cache';
 import { shaker } from '../shaker';
 import { Entrypoint } from '../transform/Entrypoint';
+import { CacheEpochAbortedError } from '../transform/actions/CacheEpochAbortedError';
 import { loadAndParse } from '../transform/Entrypoint.helpers';
 import type { Services } from '../transform/types';
 import { EventEmitter } from '../utils/EventEmitter';
@@ -146,5 +147,69 @@ describe('Entrypoint: root without code reuses the loaded code of the cached gen
     expect(
       cache.invalidateIfChangedWithDetails(parentFile, parentCode).changed
     ).toBe(true);
+  });
+
+  it.each([false, true])(
+    'keeps loaded code after dependency invalidation only when disk bytes match (file edited: %s)',
+    (editFile) => {
+      const leafFile = path.join(root, 'leaf.ts');
+      const leafCode = 'export const value = 1;';
+      fs.writeFileSync(leafFile, leafCode);
+      const leaf = Entrypoint.createRoot(
+        services,
+        leafFile,
+        ['value'],
+        leafCode
+      );
+      leaf.setTransformResult({ code: leafCode, metadata: null });
+      cache.add('entrypoints', leafFile, leaf.createEvaluated(services));
+
+      const cachedDep = cache.get('entrypoints', depFile)!;
+      cachedDep.dependencies.set('./leaf', {
+        source: './leaf',
+        only: ['value'],
+        resolved: leafFile,
+      });
+      cachedDep.invalidateOnDependencyChange.add(leafFile);
+      cache.add('entrypoints', depFile, cachedDep);
+
+      fs.writeFileSync(leafFile, 'export const value = 2;');
+      const later = new Date(Date.now() + 5000);
+      fs.utimesSync(leafFile, later, later);
+      const editedCode = "export const token = 'blue';\n";
+      if (editFile) {
+        fs.writeFileSync(depFile, editedCode);
+      }
+
+      expect(
+        cache.invalidateIfChangedWithDetails(depFile, depLoaded).changed
+      ).toBe(true);
+      expect(cache.get('entrypoints', depFile)).toBeUndefined();
+
+      // A second check encounters the evicted dependency graph and performs
+      // transactional recovery. The outer transform retries in the new epoch.
+      expect(() => Entrypoint.createRoot(services, depFile, ['*'])).toThrow(
+        CacheEpochAbortedError
+      );
+      const reprocessed = Entrypoint.createRoot(services, depFile, ['*']);
+      expect(reprocessed.initialCode).toBe(editFile ? undefined : depLoaded);
+      expect(reprocessed.originalCode).toBe(editFile ? editedCode : depLoaded);
+      expect(reprocessed.transformed).toBe(false);
+    }
+  );
+
+  it('discards retained loader output on an explicit clear', () => {
+    cache.clear('all');
+    const reprocessed = Entrypoint.createRoot(services, depFile, ['*']);
+    expect(reprocessed.initialCode).toBeUndefined();
+    expect(reprocessed.originalCode).toBe(depOnDisk);
+  });
+
+  it('discards retained loader output when configuration changes', () => {
+    cache.setKeySalt('first');
+    cache.setKeySalt('second');
+    const reprocessed = Entrypoint.createRoot(services, depFile, ['*']);
+    expect(reprocessed.initialCode).toBeUndefined();
+    expect(reprocessed.originalCode).toBe(depOnDisk);
   });
 });

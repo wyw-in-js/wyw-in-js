@@ -153,7 +153,6 @@ export class EventEmitter {
       idx,
       entrypointRef
     );
-
     try {
       const result = fn();
       if (result instanceof Promise) {
@@ -170,6 +169,94 @@ export class EventEmitter {
       this.onAction('fail', performance.now(), id, false, e);
       throw e;
     }
+  }
+
+  /** @internal Transform actions fence every public lifecycle callback. */
+  public actionGuarded<TRes>(
+    actionType: string,
+    idx: string,
+    entrypointRef: string,
+    fn: () => TRes,
+    assertCurrent: () => void,
+    prepareFinish: () => void
+  ): TRes {
+    if (!this.enabled) {
+      let result: TRes;
+      try {
+        result = fn();
+      } catch (error) {
+        prepareFinish();
+        throw error;
+      }
+      if (result instanceof Promise) {
+        return result.then(
+          (value) => {
+            prepareFinish();
+            return value;
+          },
+          (error) => {
+            prepareFinish();
+            throw error;
+          }
+        ) as TRes;
+      }
+      prepareFinish();
+      return result;
+    }
+
+    let id: number;
+    try {
+      id = this.onAction(
+        'start',
+        performance.now(),
+        actionType,
+        idx,
+        entrypointRef
+      );
+    } finally {
+      // If the observer both mutates lifecycle state and throws, the lifecycle
+      // control error is authoritative over the observer's own exception.
+      assertCurrent();
+    }
+
+    const emitFinish = (
+      phase: 'fail' | 'finish',
+      isAsync: boolean,
+      error?: unknown
+    ) => {
+      try {
+        this.onAction(phase, performance.now(), id, isAsync, error);
+      } finally {
+        assertCurrent();
+      }
+    };
+
+    let result: TRes;
+    try {
+      result = fn();
+    } catch (error) {
+      prepareFinish();
+      emitFinish('fail', false, error);
+      throw error;
+    }
+    if (result instanceof Promise) {
+      return result.then(
+        (value) => {
+          prepareFinish();
+          emitFinish('finish', true);
+          return value;
+        },
+        (error) => {
+          prepareFinish();
+          emitFinish('fail', true, error);
+          throw error;
+        }
+      ) as TRes;
+    }
+
+    prepareFinish();
+    emitFinish('finish', false);
+    return result;
   }
 
   public entrypointEvent(sequenceId: number, event: EntrypointEvent) {

@@ -347,80 +347,82 @@ describe('TransformCacheCollection: unknown dependency graph', () => {
     expect(cache.invalidateIfChanged(parentName, parentContent)).toBe(true);
   });
 
-  it('preserves pending recovery evidence for other roots across a lifecycle reset', () => {
-    const otherName = 'other.js';
-    const otherDependency = 'other-dependency.js';
-    const otherContent = 'import "./other-dependency.js";';
-
-    cache.beginUnknownGraphRecovery(
-      parentName,
-      new Set([depName]),
-      parentContent,
-      {}
-    );
-    cache.beginUnknownGraphRecovery(
-      otherName,
-      new Set([otherDependency]),
-      otherContent,
-      {}
-    );
-
-    expect(
-      cache.invalidateIfChangedWithDetails(parentName, parentContent, 'loaded')
-        .unknownDependencyGraphs
-    ).toEqual(new Set([depName]));
-    expect(
-      cache.invalidateIfChangedWithDetails(otherName, otherContent, 'loaded')
-        .unknownDependencyGraphs
-    ).toEqual(new Set([otherDependency]));
-  });
-
-  it('scopes a recovery bypass to the active lifecycle', () => {
-    const recoveryToken = {};
-    cache.beginUnknownGraphRecovery(
+  it('opens a cold replacement epoch and rejects the retired epoch', () => {
+    const oldEpoch = cache.getCurrentEpoch();
+    const recoveryToken = cache.createGraphTraversalToken(oldEpoch);
+    const transition = cache.startUnknownGraphRecovery(
       parentName,
       new Set([depName]),
       parentContent,
       recoveryToken
     );
+    transition.complete();
 
     expect(
       cache.invalidateIfChangedWithDetails(
         parentName,
         parentContent,
         'loaded',
-        recoveryToken
+        undefined,
+        cache.getCurrentEpoch()
       ).unknownDependencyGraphs
     ).toEqual(new Set());
-    expect(
-      cache.invalidateIfChangedWithDetails(parentName, parentContent, 'loaded')
-        .unknownDependencyGraphs
-    ).toEqual(new Set([depName]));
+    expect(() =>
+      cache.invalidateIfChangedWithDetails(
+        parentName,
+        parentContent,
+        'loaded',
+        undefined,
+        oldEpoch
+      )
+    ).toThrow(transition.abortError);
   });
 
-  it('does not let a detached entrypoint declare recovery complete', () => {
-    cache.beginUnknownGraphRecovery(
+  it('rejects an epoch traversal token from another cache', () => {
+    const otherCache = new TransformCacheCollection<MockEntrypoint>();
+    const foreignToken = otherCache.createGraphTraversalToken(
+      otherCache.getCurrentEpoch()
+    );
+
+    expect(() =>
+      cache.invalidateIfChangedWithDetails(
+        parentName,
+        parentContent,
+        'loaded',
+        foreignToken
+      )
+    ).toThrow(/wrong owner/);
+  });
+
+  it('rejects stale freshness checks before they mutate replacement state', () => {
+    const oldEpoch = cache.getCurrentEpoch();
+    const transition = cache.startUnknownGraphRecovery(
       parentName,
       new Set([depName]),
       parentContent,
-      {}
+      cache.createGraphTraversalToken(oldEpoch)
     );
-    const detached = {
+    transition.complete();
+
+    const replacement = {
       name: parentName,
       initialCode: parentContent,
       dependencies: new Map(),
       invalidationDependencies: new Map(),
       generation: 2,
-      hasTransformResult: false,
+      hasTransformResult: true,
     };
-    cache.add('entrypoints', parentName, detached);
-    cache.delete('entrypoints', parentName);
+    cache.add('entrypoints', parentName, replacement);
 
-    cache.completeUnknownGraphRecovery(parentName, detached);
-
-    expect(
-      cache.invalidateIfChangedWithDetails(parentName, parentContent, 'loaded')
-        .unknownDependencyGraphs
-    ).toEqual(new Set([depName]));
+    expect(() =>
+      cache.invalidateIfChangedWithDetails(
+        parentName,
+        'export const changed = true;',
+        'loaded',
+        undefined,
+        oldEpoch
+      )
+    ).toThrow(transition.abortError);
+    expect(cache.get('entrypoints', parentName)).toBe(replacement);
   });
 });

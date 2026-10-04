@@ -1,4 +1,10 @@
+/* eslint-disable require-yield */
+import { EventEmitter } from '../../../utils/EventEmitter';
 import { syncActionRunner } from '../../actions/actionRunner';
+import type {
+  IProcessEntrypointAction,
+  SyncScenarioForAction,
+} from '../../types';
 import {
   createEntrypoint,
   createServices,
@@ -269,5 +275,77 @@ describe('processImports', () => {
       services
     );
     expect(handlers.processEntrypoint).toHaveBeenCalledTimes(1);
+  });
+  it('continues on the successor when a dependency is superseded while it is processed', () => {
+    const services = createServices();
+    const parent = createEntrypoint(
+      services,
+      '/foo/parent.js',
+      ['__wywPreval'],
+      'import { value } from "./dep.js";'
+    );
+    const depPath = '/foo/dep.js';
+    const processed: string[][] = [];
+    let nextActionId = 0;
+    let depTransformActionId: number | null = null;
+    let reentered = false;
+    services.eventEmitter = new EventEmitter(
+      () => {},
+      (...args) => {
+        if (args[0] === 'start') {
+          const id = nextActionId;
+          nextActionId += 1;
+          if (args[2] === 'transform' && depTransformActionId === null) {
+            depTransformActionId = id;
+          }
+          return id;
+        }
+        if (
+          args[0] === 'finish' &&
+          args[2] === depTransformActionId &&
+          !reentered
+        ) {
+          reentered = true;
+          // A concurrent root widens the dependency while its own transform
+          // finishes: the dependency's result acceptance is fenced.
+          createEntrypoint(services, depPath, ['other', 'value']);
+        }
+        return undefined;
+      },
+      () => {}
+    );
+    const handlers = getHandlers<'sync'>({
+      processImports,
+      *processEntrypoint(
+        this: IProcessEntrypointAction
+      ): SyncScenarioForAction<IProcessEntrypointAction> {
+        processed.push([...this.entrypoint.only]);
+        yield ['transform', this.entrypoint, undefined, null];
+      },
+      *transform() {
+        return { code: '', metadata: null };
+      },
+    });
+
+    const action = parent.createAction(
+      'processImports',
+      {
+        resolved: [
+          {
+            only: ['value'],
+            resolved: depPath,
+            source: './dep.js',
+          },
+        ],
+      },
+      null
+    );
+
+    expect(() => syncActionRunner(action, handlers)).not.toThrow();
+    expect(processed).toEqual([
+      ['__wywPreval', 'value'],
+      ['__wywPreval', 'other', 'value'],
+    ]);
+    expect(parent.supersededWith).toBeNull();
   });
 });

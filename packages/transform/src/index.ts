@@ -25,6 +25,22 @@ export {
   isUnprocessedEntrypointError,
   UnprocessedEntrypointError,
 } from './transform/actions/UnprocessedEntrypointError';
+export {
+  CACHE_EPOCH_ABORTED,
+  CacheEpochAbortedError,
+  isCacheEpochAbortedError,
+} from './transform/actions/CacheEpochAbortedError';
+export type { CacheRecoveryReason } from './transform/actions/CacheEpochAbortedError';
+export {
+  CACHE_KEY_SALT_BUSY,
+  CacheKeySaltBusyError,
+  isCacheKeySaltBusyError,
+} from './transform/actions/CacheKeySaltBusyError';
+export {
+  CACHE_RECOVERY_DID_NOT_CONVERGE,
+  CacheRecoveryConvergenceError,
+  isCacheRecoveryConvergenceError,
+} from './transform/actions/CacheRecoveryConvergenceError';
 export type {
   DependencyResolution,
   Dependencies,
