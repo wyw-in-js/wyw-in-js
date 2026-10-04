@@ -35,6 +35,7 @@ import { AbortError } from './transform/actions/AbortError';
 import { EntrypointEvictedError } from './transform/actions/EntrypointEvictedError';
 import { CacheRecoveryConvergenceError } from './transform/actions/CacheRecoveryConvergenceError';
 import type { Result } from './types';
+import { isRootWithoutProcessors } from './utils/processorImportPrecheck';
 import {
   hasPipelineTelemetryReporter,
   isPipelineTelemetryActive,
@@ -89,6 +90,23 @@ const executeTransformAttempt = async (
   customHandlers: Partial<AllHandlers<'sync'>>
 ): Promise<Result> => {
   const { options } = services;
+
+  // Such a root produces no artifacts; the workflow would run preeval and
+  // prepare on it only to discard the result. Custom handlers keep the full
+  // pipeline because they may observe or replace any stage.
+  if (
+    Object.keys(customHandlers).length === 0 &&
+    isRootWithoutProcessors(
+      originalCode,
+      options.filename,
+      options.pluginOptions
+    )
+  ) {
+    return {
+      code: originalCode,
+      sourceMap: options.inputSourceMap,
+    };
+  }
 
   /*
    * This method can be run simultaneously for multiple files.
