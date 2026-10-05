@@ -25,6 +25,12 @@ export type TransformWorkerScopeConfig = {
   root: string;
 };
 
+/** Sent to every worker when it starts. */
+export type TransformWorkerData = {
+  /** This worker's share of the parsed-AST cache budget. */
+  parseCacheEntries: number;
+};
+
 export type SerializedError = {
   message: string;
   name: string;

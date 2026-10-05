@@ -1,11 +1,14 @@
 import { availableParallelism } from 'node:os';
+import { getHeapStatistics } from 'node:v8';
 import { Worker } from 'node:worker_threads';
 
 import type { RawSourceMap } from 'source-map';
 
 import type { Result } from '../types';
+import { MAX_PARSE_CACHE_ENTRIES } from '../utils/parseOxc';
 import type {
   MainToWorkerMessage,
+  TransformWorkerData,
   TransformWorkerScopeConfig,
   WorkerToMainMessage,
 } from './protocol';
@@ -13,6 +16,12 @@ import { deserializeError, serializeError } from './protocol';
 import { TransformWorkerScope } from './scope';
 
 export type TransformWorkerPoolOptions = {
+  /**
+   * Initial old-generation heap limit of each worker, in MB. A worker that
+   * runs out of memory is replaced by one with twice the limit and its
+   * transforms run again. An explicit `--max-old-space-size` overrides it.
+   */
+  heapLimitMb?: number;
   /** @internal Worker entry; tests replace it. */
   workerUrl?: URL;
   /** Number of worker threads. Defaults to min(4, available cores - 1). */
@@ -35,8 +44,11 @@ export type TransformWorkerJob = {
   outputFilename?: string;
 };
 
+type TransformMessage = Extract<MainToWorkerMessage, { type: 'transform' }>;
+
 type JobState = {
   job: TransformWorkerJob;
+  message: TransformMessage;
   reject: (error: Error) => void;
   resolve: (result: Result) => void;
   slot: WorkerSlot;
@@ -62,6 +74,17 @@ const defaultWorkerUrl = new URL(
 // A worker that does not exit after shutdown is terminated after this delay.
 const SHUTDOWN_TIMEOUT_MS = 2000;
 
+// Without a limit a worker heap grows toward the process limit and mostly
+// holds garbage. On a large webpack app, workers stayed at 0.6-0.95 GB with
+// this limit and 1.2-1.4 GB without it, at the same build time.
+const DEFAULT_WORKER_HEAP_LIMIT_MB = 1536;
+const MAX_WORKER_HEAP_LIMIT_MB = Math.floor(
+  getHeapStatistics().heap_size_limit / 1024 / 1024
+);
+
+const isOutOfMemory = (error: Error): boolean =>
+  (error as { code?: unknown }).code === 'ERR_WORKER_OUT_OF_MEMORY';
+
 export const getDefaultTransformWorkerCount = (): number =>
   Math.max(1, Math.min(4, availableParallelism() - 1));
 
@@ -78,6 +101,8 @@ export class TransformWorkerPool {
 
   readonly #scopes = new Map<number, TransformWorkerScopeConfig>();
 
+  readonly #parseCacheEntries: number;
+
   readonly #slots: WorkerSlot[];
 
   readonly #workerUrl: URL;
@@ -87,16 +112,25 @@ export class TransformWorkerPool {
 
   #disposed: Promise<void> | null = null;
 
+  #heapLimitMb: number;
+
   #lastJobId = 0;
 
   #lastScopeId = 0;
 
   public constructor(options: TransformWorkerPoolOptions = {}) {
     this.#workerUrl = options.workerUrl ?? defaultWorkerUrl;
+    this.#heapLimitMb = Math.min(
+      options.heapLimitMb ?? DEFAULT_WORKER_HEAP_LIMIT_MB,
+      MAX_WORKER_HEAP_LIMIT_MB
+    );
     const count = Math.max(
       1,
       Math.floor(options.workers ?? getDefaultTransformWorkerCount())
     );
+    // Workers split the parsed-AST cache budget of one process, so a pool
+    // keeps about as many ASTs as an in-process transform would.
+    this.#parseCacheEntries = Math.ceil(MAX_PARSE_CACHE_ENTRIES / count);
     this.#slots = Array.from({ length: count }, (_, index) =>
       this.#spawn(index)
     );
@@ -127,19 +161,21 @@ export class TransformWorkerPool {
     const slot = this.#pickSlot(job.filename);
     this.#resolvers.set(scopeId, job.asyncResolve);
 
+    const message: TransformMessage = {
+      code: job.code,
+      filename: job.filename,
+      inputSourceMap: job.inputSourceMap,
+      jobId,
+      outputFilename: job.outputFilename,
+      scopeId,
+      type: 'transform',
+    };
+
     return new Promise<Result>((resolve, reject) => {
-      this.#jobs.set(jobId, { job, reject, resolve, slot });
+      this.#jobs.set(jobId, { job, message, reject, resolve, slot });
       slot.inFlight += 1;
       if (slot.inFlight === 1) slot.worker.ref();
-      slot.worker.postMessage({
-        code: job.code,
-        filename: job.filename,
-        inputSourceMap: job.inputSourceMap,
-        jobId,
-        outputFilename: job.outputFilename,
-        scopeId,
-        type: 'transform',
-      } satisfies MainToWorkerMessage);
+      slot.worker.postMessage(message);
     });
   }
 
@@ -245,7 +281,12 @@ export class TransformWorkerPool {
   }
 
   #spawn(index: number, assigned = 0): WorkerSlot {
-    const worker = new Worker(this.#workerUrl);
+    const worker = new Worker(this.#workerUrl, {
+      resourceLimits: { maxOldGenerationSizeMb: this.#heapLimitMb },
+      workerData: {
+        parseCacheEntries: this.#parseCacheEntries,
+      } satisfies TransformWorkerData,
+    });
     // An idle pool must not keep the process alive; jobs re-ref their worker.
     worker.unref();
     const slot: WorkerSlot = {
@@ -349,6 +390,29 @@ export class TransformWorkerPool {
 
   #onWorkerFailure(slot: WorkerSlot, error: Error) {
     if (this.#slots[slot.index] !== slot) return;
+    // A worker that ran out of memory comes back with twice the heap limit
+    // and runs its transforms again, so a low default never fails a build.
+    if (
+      !this.#disposed &&
+      isOutOfMemory(error) &&
+      this.#heapLimitMb < MAX_WORKER_HEAP_LIMIT_MB
+    ) {
+      this.#heapLimitMb = Math.min(
+        this.#heapLimitMb * 2,
+        MAX_WORKER_HEAP_LIMIT_MB
+      );
+      const replacement = this.#replace(slot);
+      this.#jobs.forEach((state) => {
+        if (state.slot !== slot) return;
+        // eslint-disable-next-line no-param-reassign
+        state.slot = replacement;
+        replacement.inFlight += 1;
+        if (replacement.inFlight === 1) replacement.worker.ref();
+        replacement.worker.postMessage(state.message);
+      });
+      return;
+    }
+
     // A worker that fails before it has loaded would fail again: stop here
     // instead of respawning it in a loop.
     if (!slot.ready && !this.#broken) {
@@ -365,9 +429,15 @@ export class TransformWorkerPool {
       state.reject(failure);
     });
     if (this.#disposed || this.#broken) return;
+    this.#replace(slot);
+  }
+
+  #replace(slot: WorkerSlot): WorkerSlot {
     slot.worker.removeAllListeners();
     slot.worker.terminate().catch(() => undefined);
-    this.#slots[slot.index] = this.#spawn(slot.index, slot.assigned);
+    const replacement = this.#spawn(slot.index, slot.assigned);
+    this.#slots[slot.index] = replacement;
+    return replacement;
   }
 }
 

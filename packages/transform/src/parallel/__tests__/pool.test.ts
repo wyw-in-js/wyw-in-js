@@ -128,6 +128,29 @@ describe('transform worker pool', () => {
     expect(result.cssText).toBeUndefined();
   });
 
+  it('runs transforms again after a worker runs out of memory', async () => {
+    const smallPool = createTransformWorkerPool({ heapLimitMb: 8, workers: 1 });
+    try {
+      const scope = smallPool.createScope({
+        asyncResolveKey: 'test:resolver',
+        pluginOptions: { configFile },
+        root,
+      });
+      const result = await scope.transform({
+        asyncResolve: async () => processorFile,
+        code: [
+          "import { css } from 'test-css-processor';",
+          'export const small = css`color: purple;`;',
+        ].join('\n'),
+        filename: join(root, 'small-heap.ts'),
+      });
+
+      expect(result.cssText).toContain('color:purple');
+    } finally {
+      await smallPool.dispose();
+    }
+  });
+
   it('fails jobs instead of respawning workers that cannot start', async () => {
     const workerFile = join(root, 'broken-worker.mjs');
     writeFileSync(workerFile, "throw new Error('cannot load');\n");

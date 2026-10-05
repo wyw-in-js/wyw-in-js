@@ -3,14 +3,16 @@
  * TransformCacheCollection (and therefore its own eval broker); module
  * resolution and warnings are proxied to the thread that owns the bundler.
  */
-import { parentPort } from 'node:worker_threads';
+import { parentPort, workerData } from 'node:worker_threads';
 
 import type { PartialOptions } from '../transform/helpers/loadWywOptions';
 import { TransformCacheCollection } from '../cache';
 import { disposeEvalBroker } from '../eval/broker';
 import { transform } from '../transform';
+import { setParseCacheLimit } from '../utils/parseOxc';
 import type {
   MainToWorkerMessage,
+  TransformWorkerData,
   TransformWorkerScopeConfig,
   WorkerToMainMessage,
 } from './protocol';
@@ -31,6 +33,12 @@ type PendingRequest = {
 const port = parentPort;
 if (!port) {
   throw new Error('[wyw-in-js] transform worker must run in a worker thread');
+}
+
+const { parseCacheEntries } = (workerData ??
+  {}) as Partial<TransformWorkerData>;
+if (parseCacheEntries) {
+  setParseCacheLimit(parseCacheEntries);
 }
 
 const scopes = new Map<number, WorkerScope>();
