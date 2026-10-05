@@ -59,6 +59,9 @@ use: [{ loader: '@wyw-in-js/webpack-loader', options: { parallel: true } }],
 `true` starts up to four workers, leaving at least one CPU core free; a number sets the count. All compilers in one
 process, such as the client and server builds of Next.js, share the workers.
 
+Each worker starts with a 1.5 GB heap limit and is restarted with a larger one if it runs out of memory. An explicit
+`--max-old-space-size` (for example in `NODE_OPTIONS`) applies to every worker instead of that limit.
+
 Options are sent to the workers as data, so they cannot contain functions. Define function options, such as
 `tagResolver` or a `classNameSlug` function, in a [config file](/configuration): every worker loads it. If an option
 cannot be sent, or `WYWinJSDebugPlugin` is used, the loader warns and runs transforms on the main thread.

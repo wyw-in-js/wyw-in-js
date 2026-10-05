@@ -78,6 +78,9 @@ export default defineConfig(() => ({
 transformed by the same worker, and each worker keeps its own cache, so a module imported by many files is evaluated
 once per worker.
 
+Each worker starts with a 1.5 GB heap limit and is restarted with a larger one if it runs out of memory. An explicit
+`--max-old-space-size` (for example in `NODE_OPTIONS`) applies to every worker instead of that limit.
+
 Options are sent to the workers as data, so they cannot contain functions. Define function options, such as
 `tagResolver` or a `classNameSlug` function, in a [config file](/configuration): every worker loads it. If an option
 cannot be sent, or `debug` is set, the plugin warns and runs transforms on the main thread.
