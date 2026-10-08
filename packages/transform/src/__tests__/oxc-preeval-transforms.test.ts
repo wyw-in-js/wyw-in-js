@@ -155,6 +155,123 @@ describe('oxc preeval transforms', () => {
         'function load() { const require = makeRequire(); require(dep); }'
       );
     });
+
+    describe('specifier folding', () => {
+      const fold = (lines: string[]) =>
+        addRequireFallbackWithOxc(lines.join('\n'), filename).split('\n');
+
+      it('folds const bindings referenced from nested functions and blocks', () => {
+        expect(
+          fold([
+            "const dir = './__fixtures__';",
+            "const file = dir + '/foo.js';",
+            'function load() { { return require(file); } }',
+          ])
+        ).toEqual([
+          "const dir = './__fixtures__';",
+          "const file = dir + '/foo.js';",
+          'function load() { { return require("./__fixtures__/foo.js"); } }',
+        ]);
+      });
+
+      it('does not fold reassigned let bindings', () => {
+        expect(
+          fold(["let p = './a.js';", "p = './b.js';", 'require(p);'])
+        ).toEqual(["let p = './a.js';", "p = './b.js';", 'require(p, true);']);
+      });
+
+      it('does not fold var bindings reassigned inside a function', () => {
+        expect(
+          fold([
+            "var p = './a.js';",
+            "function next() { p = './b.js'; }",
+            'next();',
+            'require(p);',
+          ])
+        ).toEqual([
+          "var p = './a.js';",
+          "function next() { p = './b.js'; }",
+          'next();',
+          'require(p, true);',
+        ]);
+      });
+
+      it('evaluates initializers in the declaration scope', () => {
+        expect(
+          fold([
+            "const base = './a';",
+            "const p = base + '.js';",
+            "function load() { const base = './b'; return require(p); }",
+          ])
+        ).toEqual([
+          "const base = './a';",
+          "const p = base + '.js';",
+          'function load() { const base = \'./b\'; return require("./a.js"); }',
+        ]);
+      });
+
+      it('follows a name through bindings declared in different scopes', () => {
+        expect(
+          fold([
+            "const p = './a';",
+            "{ const q = p + '/'; { const p = q + 'b.js'; require(p); } }",
+          ])
+        ).toEqual([
+          "const p = './a';",
+          "{ const q = p + '/'; { const p = q + 'b.js'; require(\"./a/b.js\"); } }",
+        ]);
+      });
+
+      it('respects function-level shadowing by hoisted declarations', () => {
+        expect(
+          fold([
+            "const p = './a.js';",
+            "function viaVar() { if (x) { var p = './b.js'; } return require(p); }",
+            'function viaFunction() { function p() {} return require(p); }',
+            'function viaParam(p) { return require(p); }',
+          ])
+        ).toEqual([
+          "const p = './a.js';",
+          "function viaVar() { if (x) { var p = './b.js'; } return require(p, true); }",
+          'function viaFunction() { function p() {} return require(p, true); }',
+          'function viaParam(p) { return require(p, true); }',
+        ]);
+      });
+
+      it('respects block-level shadowing', () => {
+        expect(
+          fold([
+            "const p = './a.js';",
+            "{ let p = './b.js'; p = './c.js'; require(p); }",
+            "{ const p = './d.js'; require(p); }",
+            'try {} catch (p) { require(p); }',
+            'for (const p of list) require(p);',
+            'require(p);',
+          ])
+        ).toEqual([
+          "const p = './a.js';",
+          "{ let p = './b.js'; p = './c.js'; require(p, true); }",
+          '{ const p = \'./d.js\'; require("./d.js"); }',
+          'try {} catch (p) { require(p, true); }',
+          'for (const p of list) require(p, true);',
+          'require("./a.js");',
+        ]);
+      });
+
+      it('does not fold const bindings read before their declaration', () => {
+        expect(
+          fold([
+            'require(p);',
+            'function load() { return require(p); }',
+            "const p = './a.js';",
+          ])
+        ).toEqual([
+          'require(p, true);',
+          'function load() { return require("./a.js"); }',
+          "const p = './a.js';",
+        ]);
+      });
+    });
   });
 
   describe('dangerous code removal', () => {
