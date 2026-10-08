@@ -30,6 +30,8 @@ const modulesOptions = [
   'native',
 ] as const;
 
+const preprocessorOptions = ['stylis', 'none'] as const;
+
 const argv = yargs(hideBin(process.argv))
   .usage('Usage: $0 [options] <files ...>')
   .option('config', {
@@ -106,6 +108,28 @@ const argv = yargs(hideBin(process.argv))
     description: 'Pattern of files to ignore. Be sure to provide a string',
     requiresArg: true,
   })
+  .option('prefixer', {
+    type: 'boolean',
+    description:
+      'Add vendor prefixes to the extracted CSS (--no-prefixer turns them off)',
+    default: true,
+  })
+  .option('keep-comments', {
+    type: 'boolean',
+    description: 'Keep CSS comments in the extracted CSS',
+  })
+  .option('keep-comments-pattern', {
+    type: 'string',
+    description:
+      'Keep only CSS comments that match this regular expression, e.g. "rtl:"',
+    requiresArg: true,
+    coerce: (pattern: string) => new RegExp(pattern),
+  })
+  .conflicts('keep-comments', 'keep-comments-pattern')
+  .option('preprocessor', {
+    choices: preprocessorOptions,
+    description: 'CSS preprocessor for the extracted rules',
+  })
   .alias('help', 'h')
   .alias('version', 'v')
   .parseSync();
@@ -115,10 +139,13 @@ type Options = {
   debug?: string;
   ignore?: string;
   insertCssRequires?: string;
+  keepComments?: boolean | RegExp;
   modules: (typeof modulesOptions)[number];
   outDir: string;
   outputMetadata?: boolean;
   parallel?: boolean;
+  prefixer?: boolean;
+  preprocessor?: (typeof preprocessorOptions)[number];
   sourceMaps?: boolean;
   sourceRoot: string;
   transform?: boolean;
@@ -177,11 +204,14 @@ async function processFiles(files: (number | string)[], options: Options) {
     const transformServices = {
       options: {
         filename,
+        keepComments: options.keepComments,
         outputFilename,
         pluginOptions: {
           configFile: options.configFile,
           outputMetadata: options.outputMetadata,
         },
+        prefixer: options.prefixer,
+        preprocessor: options.preprocessor,
         root: options.sourceRoot,
       },
       cache,
@@ -325,10 +355,13 @@ processFiles(argv._, {
   debug: argv.debug,
   ignore: argv.ignore,
   insertCssRequires: argv['insert-css-requires'],
+  keepComments: argv['keep-comments-pattern'] ?? argv['keep-comments'],
   modules: argv.modules,
   parallel: argv.parallel,
   outDir: argv['out-dir'],
   outputMetadata: argv['output-metadata'],
+  prefixer: argv.prefixer,
+  preprocessor: argv.preprocessor,
   sourceMaps: argv['source-maps'],
   sourceRoot: argv['source-root'],
   transform: argv.transform,
