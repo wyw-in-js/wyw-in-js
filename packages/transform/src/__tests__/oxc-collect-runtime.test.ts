@@ -7,7 +7,7 @@ import { SourceMapGenerator } from 'source-map';
 
 import { oxcShaker } from '../shaker';
 import { Entrypoint } from '../transform/Entrypoint';
-import { syncActionRunner } from '../transform/actions/actionRunner';
+import { asyncActionRunner } from '../transform/actions/actionRunner';
 import { collect } from '../transform/generators/collect';
 import { loadWywOptions } from '../transform/helpers/loadWywOptions';
 import { withDefaultServices } from '../transform/helpers/withDefaultServices';
@@ -468,7 +468,7 @@ export const whiteColor = '#fff';`);
     expect(titleCssText).toContain('&.CLASS_CONTRAST');
   });
 
-  it('is used by collect action for explicit oxcShaker entrypoints', () => {
+  it('is used by collect action for explicit oxcShaker entrypoints', async () => {
     const options = createOptions();
     const services = withDefaultServices({
       options: {
@@ -495,7 +495,7 @@ export const whiteColor = '#fff';`);
       throw new Error('Ignored');
     }
 
-    const result = syncActionRunner(
+    const result = await asyncActionRunner(
       entrypoint.createAction(
         'collect',
         {
@@ -543,7 +543,7 @@ export const whiteColor = '#fff';`);
     expect(result.map.sourcesContent).toContain(originalSource);
   });
 
-  it('forwards input source maps through collect action', () => {
+  it('forwards input source maps through collect action', async () => {
     const options = createOptions();
     const originalSource = dedent`
       import { css } from 'test-css-processor';
@@ -580,7 +580,7 @@ export const whiteColor = '#fff';`);
       throw new Error('Ignored');
     }
 
-    const result = syncActionRunner(
+    const result = await asyncActionRunner(
       entrypoint.createAction(
         'collect',
         {
