@@ -2,8 +2,8 @@
 
 import type { Node, Program } from 'oxc-parser';
 
+import { createOxcFileEdits } from '../oxc/fileEdits';
 import { parseOxcProgramCached } from '../parseOxc';
-import type { RuntimeReplacement } from './types';
 
 type AnyNode = Node & Record<string, unknown>;
 type AnyProperty = AnyNode & {
@@ -16,23 +16,6 @@ type AnyProperty = AnyNode & {
 
 const parseOxc = (code: string, filename: string): Program => {
   return parseOxcProgramCached(filename, code, 'module');
-};
-
-const applyReplacements = (
-  code: string,
-  replacements: RuntimeReplacement[]
-): string => {
-  let result = code;
-  replacements
-    .sort((a, b) => b.start - a.start)
-    .forEach((replacement) => {
-      result =
-        result.slice(0, replacement.start) +
-        replacement.value +
-        result.slice(replacement.end);
-    });
-
-  return result;
 };
 
 const shouldTerminateWithSemicolon = (
@@ -177,7 +160,7 @@ const formatRuntimeObjectLiterals = (
   code: string,
   filename: string
 ): string => {
-  const replacements: RuntimeReplacement[] = [];
+  const edits = createOxcFileEdits(code);
 
   const walk = (node: Node, parent: Node | null = null): void => {
     if (node.type === 'ObjectExpression') {
@@ -186,15 +169,15 @@ const formatRuntimeObjectLiterals = (
         parent?.type === 'CallExpression';
 
       if (shouldFormat) {
-        replacements.push({
-          end: node.end,
-          start: node.start,
-          value: printFormattedObjectExpression(
+        edits.replace(
+          node.start,
+          node.end,
+          printFormattedObjectExpression(
             node,
             code,
             getLineIndent(code, node.start)
-          ),
-        });
+          )
+        );
         return;
       }
     }
@@ -203,7 +186,7 @@ const formatRuntimeObjectLiterals = (
   };
 
   walk(parseOxc(code, filename));
-  return replacements.length > 0 ? applyReplacements(code, replacements) : code;
+  return edits.apply();
 };
 
 const collapseRuntimeBlankLines = (code: string): string => {
@@ -248,7 +231,7 @@ const ensureBlankLineAfterLeadingBlockComment = (code: string): string =>
   code.replace(/^(\/\*[\s\S]*?\*\/)\n(?!\n)/, '$1\n\n');
 
 const insertMissingSemicolons = (code: string, filename: string): string => {
-  const replacements: RuntimeReplacement[] = [];
+  const edits = createOxcFileEdits(code);
   const hasTrailingSemicolon = (node: Node): boolean =>
     code.slice(node.start, node.end).trimEnd().endsWith(';');
 
@@ -261,18 +244,14 @@ const insertMissingSemicolons = (code: string, filename: string): string => {
       shouldTerminateWithSemicolon(node, parent, key) &&
       !hasTrailingSemicolon(node)
     ) {
-      replacements.push({
-        end: node.end,
-        start: node.end,
-        value: ';',
-      });
+      edits.insert(node.end, ';');
     }
 
     getChildren(node).forEach((child) => walk(child.node, node, child.key));
   };
 
   walk(parseOxc(code, filename));
-  return replacements.length > 0 ? applyReplacements(code, replacements) : code;
+  return edits.apply();
 };
 
 export const normalizeRuntimeCode = (code: string, filename: string): string =>
