@@ -29,7 +29,8 @@ Map {
 exports[`prepareCode Testing transformation for for-debug: metadata 1`] = `null`;
 
 exports[`prepareCode Testing transformation for unsupported-dynamic-import: code 1`] = `
-"var random = Math.random() > 0.5 ? "first" : "second";
+"const random = Math.random() > 0.5 ? "first" : "second";
+
 export function foo(onImport) {
   __wyw_dynamic_import(random).then(onImport);
 }"

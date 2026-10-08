@@ -92,12 +92,10 @@ type PrepareCodeOptions = {
   stripForEvalRuntime?: boolean;
 };
 
-const normalizeOxcPreparedESM = (code: string): string =>
-  code
-    .replace(/^(?:[ \t]*\n)+/, '')
-    .replace(/[ \t\n]+$/, '')
-    .replace(/\n{2,}/g, '\n')
-    .replace(/^const /gm, 'var ');
+// Only the edges of the module are trimmed: no string or template literal can
+// start or end a program, so user-visible values stay byte-for-byte intact.
+const trimOxcPreparedESM = (code: string): string =>
+  code.replace(/^(?:[ \t]*\n)+/, '').replace(/[ \t\n]+$/, '');
 
 const ensureOxcPreevalResult = (
   services: Services,
@@ -236,7 +234,7 @@ const prepareOxcCodeImpl = (
       : stripTypesAndJsxWithOxc(preevalCode, filename).code;
 
     return [
-      normalizeOxcPreparedESM(strippedCode),
+      trimOxcPreparedESM(strippedCode),
       collectOxcImportMap(strippedCode, filename),
       null,
     ];
@@ -310,7 +308,7 @@ const prepareOxcCodeImpl = (
     }
 
     return [
-      normalizeOxcPreparedESM(preparedCode),
+      trimOxcPreparedESM(preparedCode),
       options.stripForEvalRuntime
         ? collectOxcImportMap(preparedCode, filename)
         : shaken.imports,
