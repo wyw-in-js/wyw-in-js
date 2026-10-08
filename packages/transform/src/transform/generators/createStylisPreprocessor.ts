@@ -76,18 +76,22 @@ const getOriginalElementValue = (
   return element ? element[ORIGINAL_VALUE_KEY] ?? element.value : '';
 };
 
-function throwIfNotProd(key: string, value: unknown, type: string): false {
-  if (process.env.NODE_ENV !== 'production') {
-    throw new Error(
-      `"element.${key}" has type "${type}" (${JSON.stringify(
-        value,
-        null,
-        2
-      )}), it's not expected. Please report a bug if it happens.`
-    );
-  }
-
-  return false;
+// Stylis 4 builds declarations with string `props` and `children`, rulesets
+// and at-rules with array `props`, and its prefixer copies keep those shapes.
+// Anything else means the element contract changed. That fails in every
+// environment: skipping the element would silently emit different CSS.
+function unexpectedElementShape(
+  key: string,
+  value: unknown,
+  type: string
+): never {
+  throw new Error(
+    `"element.${key}" has type "${type}" (${JSON.stringify(
+      value,
+      null,
+      2
+    )}), it's not expected. Please report a bug if it happens.`
+  );
 }
 
 type SpecificElement<TFields> = Omit<Element, keyof TFields> & TFields;
@@ -109,17 +113,20 @@ type Ruleset = SpecificElement<{
 function childrenIsString(children: string | Element[]): children is string {
   return (
     typeof children === 'string' ||
-    throwIfNotProd('children', children, 'Element[]')
+    unexpectedElementShape('children', children, 'Element[]')
   );
 }
 
 function propsAreStrings(props: string | string[]): props is string[] {
-  return Array.isArray(props) || throwIfNotProd('props', props, 'string');
+  return (
+    Array.isArray(props) || unexpectedElementShape('props', props, 'string')
+  );
 }
 
 function propsIsString(props: string | string[]): props is string {
   return (
-    typeof props === 'string' || throwIfNotProd('props', props, 'string[]')
+    typeof props === 'string' ||
+    unexpectedElementShape('props', props, 'string[]')
   );
 }
 

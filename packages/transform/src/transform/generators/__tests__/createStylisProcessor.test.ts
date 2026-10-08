@@ -1,5 +1,6 @@
 import dedent from 'dedent';
 import { compile, middleware, serialize, stringify } from 'stylis';
+import type { Element } from 'stylis';
 
 import {
   createStylisPreprocessor,
@@ -472,6 +473,26 @@ describe('stylisUrlReplacePlugin', () => {
 });
 
 describe('stylisGlobalPlugin', () => {
+  it('rejects an element of an unexpected shape in every environment', () => {
+    const malformedRuleset = {
+      type: 'rule',
+      props: '.component',
+      children: [],
+    } as unknown as Element;
+    const nodeEnv = process.env.NODE_ENV;
+
+    try {
+      ['production', 'development', 'test'].forEach((env) => {
+        process.env.NODE_ENV = env;
+        expect(() =>
+          stylisGlobalPlugin(malformedRuleset, 0, [], stringify)
+        ).toThrow('"element.props" has type "string"');
+      });
+    } finally {
+      process.env.NODE_ENV = nodeEnv;
+    }
+  });
+
   function compileRule(rule: string): string {
     return serialize(
       compile(rule),
