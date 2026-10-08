@@ -191,7 +191,8 @@ describe('getProcessorForImport', () => {
     );
   });
 
-  it('reports a non-processor function export at lookup time', () => {
+  it('skips a non-processor function export with a warning at lookup time', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
     const packageName = 'test-package-lookup-function-export';
     const root = createPackageFixture(
       packageName,
@@ -205,23 +206,29 @@ describe('getProcessorForImport', () => {
       'processor.js'
     );
 
-    const lookup = () =>
-      getProcessorForImport(
-        { imported: 'css', source: packageName },
-        path.join(root, 'entry.tsx'),
-        { tagResolver: undefined }
-      );
+    const [processor, , manifest] = getProcessorForImport(
+      { imported: 'css', source: packageName },
+      path.join(root, 'entry.tsx'),
+      { tagResolver: undefined }
+    );
 
-    expect(lookup).toThrow(
+    expect(processor).toBeNull();
+    expect(manifest).toBeNull();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const [message] = warnSpy.mock.calls[0];
+    expect(message).toContain(
       `[wyw-in-js] Invalid processor ${processorPath} for "css" from "${packageName}"`
     );
-    expect(lookup).toThrow(
+    expect(message).toContain(
       'default export must be a class extending BaseProcessor'
     );
-    expect(lookup).toThrow('"notAProcessor"');
+    expect(message).toContain('"notAProcessor"');
+    expect(message).toContain('The tag is skipped');
+    expect(message).toContain('wyw-in-js 3.0');
   });
 
-  it('reports a non-processor class returned by tagResolver at lookup time', () => {
+  it('skips a non-processor class returned by tagResolver with a warning', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
     const root = createTempRoot();
     tempRoots.push(root);
     const processorPath = path.join(root, 'not-a-processor.js');
@@ -230,18 +237,21 @@ describe('getProcessorForImport', () => {
       'class Helper { build() {} }\nmodule.exports = { default: Helper };\n'
     );
 
-    expect(() =>
-      getProcessorForImport(
-        { imported: 'css', source: '@/styles/helper' },
-        path.join(root, 'entry.tsx'),
-        { tagResolver: () => processorPath }
-      )
-    ).toThrow(
+    const [processor] = getProcessorForImport(
+      { imported: 'css', source: '@/styles/helper' },
+      path.join(root, 'entry.tsx'),
+      { tagResolver: () => processorPath }
+    );
+
+    expect(processor).toBeNull();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0][0]).toContain(
       `[wyw-in-js] Invalid processor ${processorPath} for "css" from "@/styles/helper"`
     );
   });
 
-  it('reports a processor module without a default export at lookup time', () => {
+  it('skips a processor module without a default export with a warning', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
     const packageName = 'test-package-lookup-missing-default';
     const root = createPackageFixture(
       packageName,
@@ -251,13 +261,53 @@ describe('getProcessorForImport', () => {
     );
     tempRoots.push(root);
 
-    expect(() =>
-      getProcessorForImport(
-        { imported: 'css', source: packageName },
-        path.join(root, 'entry.tsx'),
-        { tagResolver: undefined }
-      )
-    ).toThrow('got undefined');
+    const [processor] = getProcessorForImport(
+      { imported: 'css', source: packageName },
+      path.join(root, 'entry.tsx'),
+      { tagResolver: undefined }
+    );
+
+    expect(processor).toBeNull();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0][0]).toContain('got undefined');
+  });
+
+  it('warns about an invalid processor once per package and tag', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const packageName = 'test-package-lookup-warn-once';
+    const root = createTempRoot();
+    tempRoots.push(root);
+    const packageDir = path.join(root, 'node_modules', packageName);
+    writeProcessorPackage(
+      packageDir,
+      packageName,
+      'module.exports = { default: function notAProcessor() {} };\n'
+    );
+    writeFileSync(
+      path.join(packageDir, 'package.json'),
+      JSON.stringify({
+        name: packageName,
+        main: './index.js',
+        'wyw-in-js': {
+          tags: { css: './processor.js', styled: './processor.js' },
+        },
+      })
+    );
+
+    const lookupFrom = (importer: string, imported: string) =>
+      getProcessorForImport({ imported, source: packageName }, importer, {
+        tagResolver: undefined,
+      })[0];
+
+    expect(lookupFrom(path.join(root, 'a', 'entry.tsx'), 'css')).toBeNull();
+    expect(lookupFrom(path.join(root, 'b', 'entry.tsx'), 'css')).toBeNull();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+
+    expect(lookupFrom(path.join(root, 'a', 'entry.tsx'), 'styled')).toBeNull();
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+    expect(warnSpy.mock.calls[1][0]).toContain(
+      `for "styled" from "${packageName}"`
+    );
   });
 
   it('recognizes a BaseProcessor subclass from another copy of processor-utils', () => {

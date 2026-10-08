@@ -204,21 +204,43 @@ const describeDefaultExport = (value: unknown): string => {
   return typeof value === 'object' ? 'an object' : String(value);
 };
 
+// One warning per (processor module, tag); only invalid processors land here,
+// so the set stays as small as the misconfiguration it reports.
+const warnedInvalidProcessors = new Set<string>();
+
+// TODO(3.0): throw instead of skipping the tag; this is a breaking change.
+const warnInvalidProcessor = (
+  implementationPath: string,
+  { imported, source }: TagSource,
+  defaultExport: unknown
+): void => {
+  const key = `${implementationPath}\0${imported}`;
+  if (warnedInvalidProcessors.has(key)) {
+    return;
+  }
+
+  warnedInvalidProcessors.add(key);
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[wyw-in-js] Invalid processor ${implementationPath} for "${imported}" from "${source}": ` +
+      'its default export must be a class extending BaseProcessor ' +
+      `from @wyw-in-js/processor-utils, got ${describeDefaultExport(
+        defaultExport
+      )}. ` +
+      'The tag is skipped for now; this will be an error in wyw-in-js 3.0.'
+  );
+};
+
 const getProcessorFromFile = (
   processorPath: string,
-  { imported, source }: TagSource
+  tagSource: TagSource
 ): ProcessorLookupValue => {
   const { implementationPath, manifest } =
     resolveProcessorReference(processorPath);
   const Processor: unknown = nodeRequire(implementationPath).default;
   if (!isProcessorClass(Processor)) {
-    throw new Error(
-      `[wyw-in-js] Invalid processor ${implementationPath} for "${imported}" from "${source}": ` +
-        'its default export must be a class extending BaseProcessor ' +
-        `from @wyw-in-js/processor-utils, got ${describeDefaultExport(
-          Processor
-        )}.`
-    );
+    warnInvalidProcessor(implementationPath, tagSource, Processor);
+    return NO_PROCESSOR;
   }
 
   return {
