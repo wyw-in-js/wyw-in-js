@@ -16,12 +16,20 @@ export type ProcessorClass = new (
   ...args: ConstructorParameters<typeof BaseProcessor>
 ) => BaseProcessor;
 
+// Keyed by the resolved package.json path: two versions of one package
+// installed for different importers declare their tags independently.
 const definedTagsCache = new Map<string, Record<string, string> | undefined>();
 const resolvedTagResolverSourceCache = new Map<string, string | undefined>();
 type ProcessorLookupValue = {
   manifest: ProcessorManifest | null;
   processor: ProcessorClass | null;
 };
+const NO_PROCESSOR: ProcessorLookupValue = Object.freeze({
+  manifest: null,
+  processor: null,
+});
+// Keyed by the importer directory: a bare specifier resolves relative to it,
+// so importers in different packages may get different processor versions.
 const packageProcessorLookupCache = new Map<string, ProcessorLookupValue>();
 const tagResolverProcessorLookupCache = new WeakMap<
   NonNullable<StrictOptions['tagResolver']>,
@@ -36,8 +44,9 @@ const createTagResolverLookupCacheKey = (
 
 const createPackageLookupCacheKey = (
   source: string,
-  imported: string
-): string => `${source}\0${imported}`;
+  imported: string,
+  filename: string | null | undefined
+): string => `${filename ? dirname(filename) : ''}\0${source}\0${imported}`;
 
 const URL_SCHEME_RE = /^[A-Za-z][A-Za-z\d+.-]*:/;
 
@@ -106,13 +115,13 @@ const getDefinedTagsFromPackage = (
   pkgName: string,
   filename: string | null | undefined
 ): Record<string, string> | undefined => {
-  if (definedTagsCache.has(pkgName)) {
-    return definedTagsCache.get(pkgName);
-  }
-
   const packageJSONPath = findPackageJSON(pkgName, filename);
   if (!packageJSONPath) {
     return undefined;
+  }
+
+  if (definedTagsCache.has(packageJSONPath)) {
+    return definedTagsCache.get(packageJSONPath);
   }
 
   const packageDir = dirname(packageJSONPath);
@@ -132,23 +141,84 @@ const getDefinedTagsFromPackage = (
       )
     : undefined;
 
-  definedTagsCache.set(pkgName, normalizedTags);
+  definedTagsCache.set(packageJSONPath, normalizedTags);
 
   return normalizedTags;
 };
 
-const isValidProcessorClass = (module: unknown): module is ProcessorClass =>
-  module instanceof BaseProcessor.constructor;
+const hasOwn = (target: object, key: PropertyKey): boolean =>
+  Object.prototype.hasOwnProperty.call(target, key);
 
-const getProcessorFromFile = (processorPath: string): ProcessorLookupValue => {
+/**
+ * Recognizes `BaseProcessor` from any copy of `@wyw-in-js/processor-utils`
+ * (processor packages often pin their own version) by the members it has
+ * owned since the first release: the static `SKIP` sentinel and
+ * `isValidValue`.
+ */
+const isBaseProcessorFromAnyCopy = (ctor: object): boolean => {
+  const { SKIP: skip, prototype } = ctor as {
+    SKIP?: unknown;
+    prototype?: unknown;
+  };
+  return (
+    hasOwn(ctor, 'SKIP') &&
+    typeof skip === 'symbol' &&
+    skip.description === BaseProcessor.SKIP.description &&
+    typeof prototype === 'object' &&
+    prototype !== null &&
+    hasOwn(prototype, 'isValidValue')
+  );
+};
+
+const isProcessorClass = (value: unknown): value is ProcessorClass => {
+  if (typeof value !== 'function') {
+    return false;
+  }
+
+  if (value.prototype instanceof BaseProcessor) {
+    return true;
+  }
+
+  for (
+    let ancestor: unknown = Object.getPrototypeOf(value);
+    typeof ancestor === 'function';
+    ancestor = Object.getPrototypeOf(ancestor)
+  ) {
+    if (isBaseProcessorFromAnyCopy(ancestor)) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+const describeDefaultExport = (value: unknown): string => {
+  if (typeof value === 'function') {
+    return value.name ? `"${value.name}"` : 'an anonymous function';
+  }
+
+  if (value === null) {
+    return 'null';
+  }
+
+  return typeof value === 'object' ? 'an object' : String(value);
+};
+
+const getProcessorFromFile = (
+  processorPath: string,
+  { imported, source }: TagSource
+): ProcessorLookupValue => {
   const { implementationPath, manifest } =
     resolveProcessorReference(processorPath);
-  const Processor = nodeRequire(implementationPath).default;
-  if (!isValidProcessorClass(Processor)) {
-    return {
-      manifest: null,
-      processor: null,
-    };
+  const Processor: unknown = nodeRequire(implementationPath).default;
+  if (!isProcessorClass(Processor)) {
+    throw new Error(
+      `[wyw-in-js] Invalid processor ${implementationPath} for "${imported}" from "${source}": ` +
+        'its default export must be a class extending BaseProcessor ' +
+        `from @wyw-in-js/processor-utils, got ${describeDefaultExport(
+          Processor
+        )}.`
+    );
   }
 
   return {
@@ -158,20 +228,16 @@ const getProcessorFromFile = (processorPath: string): ProcessorLookupValue => {
 };
 
 const getProcessorFromPackage = (
-  packageName: string,
-  tagName: string,
+  tagSource: TagSource,
   filename: string | null | undefined
 ): ProcessorLookupValue => {
-  const definedTags = getDefinedTagsFromPackage(packageName, filename);
-  const processorPath = definedTags?.[tagName];
+  const definedTags = getDefinedTagsFromPackage(tagSource.source, filename);
+  const processorPath = definedTags?.[tagSource.imported];
   if (!processorPath) {
-    return {
-      manifest: null,
-      processor: null,
-    };
+    return NO_PROCESSOR;
   }
 
-  return getProcessorFromFile(processorPath);
+  return getProcessorFromFile(processorPath, tagSource);
 };
 
 export const getProcessorForImport = (
@@ -188,7 +254,7 @@ export const getProcessorForImport = (
 
   const cacheKey = tagResolver
     ? createTagResolverLookupCacheKey(source, imported, filename)
-    : createPackageLookupCacheKey(source, imported);
+    : createPackageLookupCacheKey(source, imported, filename);
   const lookupCache = tagResolver
     ? getTagResolverLookupCache(tagResolver)
     : packageProcessorLookupCache;
@@ -211,14 +277,11 @@ export const getProcessorForImport = (
 
     customFile = tagResolver(source, imported, tagResolverMeta);
   }
-  let lookupValue: ProcessorLookupValue = {
-    manifest: null,
-    processor: null,
-  };
+  let lookupValue = NO_PROCESSOR;
   if (customFile) {
-    lookupValue = getProcessorFromFile(customFile);
+    lookupValue = getProcessorFromFile(customFile, { imported, source });
   } else if (packageLookupCandidate) {
-    lookupValue = getProcessorFromPackage(source, imported, filename);
+    lookupValue = getProcessorFromPackage({ imported, source }, filename);
   }
 
   lookupCache.set(cacheKey, lookupValue);

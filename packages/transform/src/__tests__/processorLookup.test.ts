@@ -1,8 +1,17 @@
 /* eslint-env jest */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import {
+  copyFileSync,
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 
+import { BaseProcessor } from '@wyw-in-js/processor-utils';
 import * as shared from '@wyw-in-js/shared';
 
 import { getProcessorForImport } from '../processors/processorLookup';
@@ -13,10 +22,11 @@ const processorFixturePath = path.resolve(
   'test-css-processor.js'
 );
 
-const createPackageFixture = (packageName: string): string => {
-  const root = mkdtempSync(path.join(tmpdir(), 'wyw-processor-lookup-'));
-  const packageDir = path.join(root, 'node_modules', packageName);
-
+const writeProcessorPackage = (
+  packageDir: string,
+  packageName: string,
+  processorSource: string
+): void => {
   mkdirSync(packageDir, { recursive: true });
   writeFileSync(
     path.join(packageDir, 'package.json'),
@@ -34,13 +44,57 @@ const createPackageFixture = (packageName: string): string => {
       2
     )
   );
-  writeFileSync(
-    path.join(packageDir, 'processor.js'),
-    `module.exports = require(${JSON.stringify(processorFixturePath)});\n`
-  );
+  writeFileSync(path.join(packageDir, 'processor.js'), processorSource);
   writeFileSync(path.join(packageDir, 'index.js'), 'module.exports = {};\n');
+};
+
+const reexportFixtureProcessor = `module.exports = require(${JSON.stringify(
+  processorFixturePath
+)});\n`;
+
+const createTempRoot = (): string =>
+  mkdtempSync(path.join(tmpdir(), 'wyw-processor-lookup-'));
+
+const createPackageFixture = (
+  packageName: string,
+  processorSource = reexportFixtureProcessor
+): string => {
+  const root = createTempRoot();
+  writeProcessorPackage(
+    path.join(root, 'node_modules', packageName),
+    packageName,
+    processorSource
+  );
 
   return root;
+};
+
+const workspacePackageRoot = (packageName: string): string =>
+  path.resolve(path.dirname(require.resolve(packageName)), '..');
+
+/**
+ * Installs a physically separate copy of `@wyw-in-js/processor-utils` under
+ * `root/node_modules`, as a package manager does when a processor package
+ * pins a different version than the one `@wyw-in-js/transform` uses.
+ */
+const installSecondProcessorUtilsCopy = (root: string): void => {
+  const scopeDir = path.join(root, 'node_modules', '@wyw-in-js');
+  const copyDir = path.join(scopeDir, 'processor-utils');
+  const originalDir = workspacePackageRoot('@wyw-in-js/processor-utils');
+
+  mkdirSync(copyDir, { recursive: true });
+  copyFileSync(
+    path.join(originalDir, 'package.json'),
+    path.join(copyDir, 'package.json')
+  );
+  cpSync(path.join(originalDir, 'esm'), path.join(copyDir, 'esm'), {
+    recursive: true,
+  });
+  symlinkSync(
+    workspacePackageRoot('@wyw-in-js/shared'),
+    path.join(scopeDir, 'shared'),
+    'dir'
+  );
 };
 
 describe('getProcessorForImport', () => {
@@ -135,5 +189,166 @@ describe('getProcessorForImport', () => {
       packageName,
       path.join(root, 'entry.tsx')
     );
+  });
+
+  it('reports a non-processor function export at lookup time', () => {
+    const packageName = 'test-package-lookup-function-export';
+    const root = createPackageFixture(
+      packageName,
+      'module.exports = { default: function notAProcessor() {} };\n'
+    );
+    tempRoots.push(root);
+    const processorPath = path.join(
+      root,
+      'node_modules',
+      packageName,
+      'processor.js'
+    );
+
+    const lookup = () =>
+      getProcessorForImport(
+        { imported: 'css', source: packageName },
+        path.join(root, 'entry.tsx'),
+        { tagResolver: undefined }
+      );
+
+    expect(lookup).toThrow(
+      `[wyw-in-js] Invalid processor ${processorPath} for "css" from "${packageName}"`
+    );
+    expect(lookup).toThrow(
+      'default export must be a class extending BaseProcessor'
+    );
+    expect(lookup).toThrow('"notAProcessor"');
+  });
+
+  it('reports a non-processor class returned by tagResolver at lookup time', () => {
+    const root = createTempRoot();
+    tempRoots.push(root);
+    const processorPath = path.join(root, 'not-a-processor.js');
+    writeFileSync(
+      processorPath,
+      'class Helper { build() {} }\nmodule.exports = { default: Helper };\n'
+    );
+
+    expect(() =>
+      getProcessorForImport(
+        { imported: 'css', source: '@/styles/helper' },
+        path.join(root, 'entry.tsx'),
+        { tagResolver: () => processorPath }
+      )
+    ).toThrow(
+      `[wyw-in-js] Invalid processor ${processorPath} for "css" from "@/styles/helper"`
+    );
+  });
+
+  it('reports a processor module without a default export at lookup time', () => {
+    const packageName = 'test-package-lookup-missing-default';
+    const root = createPackageFixture(
+      packageName,
+      `module.exports = require(${JSON.stringify(
+        processorFixturePath
+      )}).default;\n`
+    );
+    tempRoots.push(root);
+
+    expect(() =>
+      getProcessorForImport(
+        { imported: 'css', source: packageName },
+        path.join(root, 'entry.tsx'),
+        { tagResolver: undefined }
+      )
+    ).toThrow('got undefined');
+  });
+
+  it('recognizes a BaseProcessor subclass from another copy of processor-utils', () => {
+    const packageName = 'test-package-lookup-second-utils-copy';
+    const root = createPackageFixture(
+      packageName,
+      [
+        "const { TaggedTemplateProcessor } = require('@wyw-in-js/processor-utils');",
+        'class SecondCopyCssProcessor extends TaggedTemplateProcessor {',
+        '  get asSelector() { return this.className; }',
+        '  get value() { return this.astService.stringLiteral(this.className); }',
+        '  addInterpolation() {}',
+        '  doEvaltimeReplacement() {}',
+        '  doRuntimeReplacement() {}',
+        '  extractRules() { return {}; }',
+        '}',
+        'module.exports = { default: SecondCopyCssProcessor };',
+        '',
+      ].join('\n')
+    );
+    tempRoots.push(root);
+    installSecondProcessorUtilsCopy(root);
+
+    const [processor] = getProcessorForImport(
+      { imported: 'css', source: packageName },
+      path.join(root, 'entry.tsx'),
+      { tagResolver: undefined }
+    );
+
+    expect(processor?.name).toBe('SecondCopyCssProcessor');
+    // The class really comes from a different copy of processor-utils.
+    expect(processor?.prototype instanceof BaseProcessor).toBe(false);
+  });
+
+  it('resolves processors per importer when packages resolve different versions', () => {
+    const packageName = 'test-package-lookup-two-versions';
+    const root = createTempRoot();
+    tempRoots.push(root);
+    const appA = path.join(root, 'packages', 'app-a');
+    const appB = path.join(root, 'packages', 'app-b');
+    writeProcessorPackage(
+      path.join(root, 'node_modules', packageName),
+      packageName,
+      reexportFixtureProcessor
+    );
+    writeProcessorPackage(
+      path.join(appB, 'node_modules', packageName),
+      packageName,
+      [
+        `const { default: CssProcessor } = require(${JSON.stringify(
+          processorFixturePath
+        )});`,
+        'class CssProcessorV2 extends CssProcessor {}',
+        'module.exports = { default: CssProcessorV2 };',
+        '',
+      ].join('\n')
+    );
+
+    const lookupFrom = (importer: string) =>
+      getProcessorForImport(
+        { imported: 'css', source: packageName },
+        importer,
+        { tagResolver: undefined }
+      )[0];
+
+    expect(lookupFrom(path.join(appA, 'src', 'entry.tsx'))?.name).toBe(
+      'CssProcessor'
+    );
+    expect(lookupFrom(path.join(appB, 'src', 'entry.tsx'))?.name).toBe(
+      'CssProcessorV2'
+    );
+    expect(lookupFrom(path.join(appA, 'src', 'other.tsx'))?.name).toBe(
+      'CssProcessor'
+    );
+  });
+
+  it('reuses the lookup for importers in the same directory', () => {
+    const findPackageJSONSpy = jest.spyOn(shared, 'findPackageJSON');
+    const packageName = 'test-package-lookup-same-directory';
+    const root = createPackageFixture(packageName);
+    tempRoots.push(root);
+
+    const lookupFrom = (importer: string) =>
+      getProcessorForImport(
+        { imported: 'css', source: packageName },
+        importer,
+        { tagResolver: undefined }
+      )[0];
+
+    expect(lookupFrom(path.join(root, 'a.tsx'))?.name).toBe('CssProcessor');
+    expect(lookupFrom(path.join(root, 'b.tsx'))?.name).toBe('CssProcessor');
+    expect(findPackageJSONSpy).toHaveBeenCalledTimes(1);
   });
 });
