@@ -602,6 +602,51 @@ describe('createEntrypoint', () => {
     expect(entrypoint2.getPreevalResult()).toBe(preevalResult);
   });
 
+  it('reads a reused transform result code only on demand', () => {
+    services.loadAndParseFn = jest.fn((s, name, loadedCode) => ({
+      ast: s.babel.parseSync(loadedCode ?? '', {
+        babelrc: false,
+        configFile: false,
+        filename: name,
+      })!,
+      code: loadedCode ?? '',
+      evaluator: jest.fn(),
+      evalConfig: {},
+    }));
+
+    const code = 'export const value = 1;';
+    const transformedCode = 'exports.value = 1;';
+    let codeReads = 0;
+    const entrypoint1 = createEntrypoint(
+      services,
+      '/foo/bar.js',
+      ['value'],
+      code
+    );
+    entrypoint1.setTransformResult({
+      get code() {
+        codeReads += 1;
+        return transformedCode;
+      },
+      metadata: null,
+    });
+    const evaluated = entrypoint1.createEvaluated();
+    services.cache.add('entrypoints', '/foo/bar.js', evaluated);
+
+    const entrypoint2 = createEntrypoint(
+      services,
+      '/foo/bar.js',
+      ['value'],
+      code
+    );
+
+    expect(entrypoint2.transformed).toBe(true);
+    expect(codeReads).toBe(0);
+    expect(entrypoint2.transformedCode).toBe(transformedCode);
+    expect(evaluated.transformResultCode).toBe(transformedCode);
+    expect(entrypoint1.transformedCode).toBe(transformedCode);
+  });
+
   it('reuses evaluated parsed state when only changes', () => {
     const loadAndParseFn = jest.fn((s, name, loadedCode) => ({
       ast: s.babel.parseSync(loadedCode ?? '', {

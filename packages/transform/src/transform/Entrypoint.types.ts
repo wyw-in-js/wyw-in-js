@@ -35,6 +35,13 @@ export interface IEntrypointDependency {
   source: string;
 }
 
+/**
+ * Transform stage output kept by an entrypoint. Only the legacy `Module`
+ * evaluator reads `code`, so the transform stage computes it on the first
+ * read; holders pass the object along without reading it.
+ */
+export type TransformResultCode = { readonly code: string };
+
 export interface IPreevalResult {
   ast: ParsedAst | null;
   baseCode?: string;

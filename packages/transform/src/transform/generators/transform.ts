@@ -1,4 +1,5 @@
 import { oxcShaker } from '../../shaker';
+import type { ITransformFileResult } from '../../types';
 import type { WYWTransformMetadata } from '../../utils/TransformMetadata';
 import { collectOxcExportsAndImports } from '../../utils/collectOxcExportsAndImports';
 import { collectOxcImportMap } from '../../utils/oxcImportMap';
@@ -86,7 +87,6 @@ export const emitCurrentStaticPlanDebug = (
 };
 
 type PrepareCodeOptions = {
-  emitCommonJS?: boolean;
   evalTelemetry?: EvalPreparationToken;
   shortCircuitOnMissingMetadata?: boolean;
   stripForEvalRuntime?: boolean;
@@ -298,31 +298,23 @@ const prepareOxcCodeImpl = (
 
   log('[evaluator:end]');
 
-  if (!options.emitCommonJS) {
-    let preparedCode = shaken.code;
-    if (options.stripForEvalRuntime) {
-      preparedCode = options.evalTelemetry
-        ? options.evalTelemetry.measureStage(
-            'strip',
-            () => stripTypesAndJsxWithOxc(shaken.code, filename).code
-          )
-        : stripTypesAndJsxWithOxc(shaken.code, filename).code;
-    }
-
-    return [
-      normalizeOxcPreparedESM(preparedCode),
-      options.stripForEvalRuntime
-        ? collectOxcImportMap(preparedCode, filename)
-        : shaken.imports,
-      transformMetadata ?? null,
-    ];
+  let preparedCode = shaken.code;
+  if (options.stripForEvalRuntime) {
+    preparedCode = options.evalTelemetry
+      ? options.evalTelemetry.measureStage(
+          'strip',
+          () => stripTypesAndJsxWithOxc(shaken.code, filename).code
+        )
+      : stripTypesAndJsxWithOxc(shaken.code, filename).code;
   }
 
-  const emitted = eventEmitter.perf('transform:emitCommonJS', () =>
-    emitOxcCommonJS(shaken.code, filename)
-  );
-
-  return [emitted.code, shaken.imports, transformMetadata ?? null];
+  return [
+    normalizeOxcPreparedESM(preparedCode),
+    options.stripForEvalRuntime
+      ? collectOxcImportMap(preparedCode, filename)
+      : shaken.imports,
+    transformMetadata ?? null,
+  ];
 };
 
 const prepareCodeImpl = (
@@ -451,6 +443,37 @@ function* resolveAndProcessOxcPreparedImports(
   return nextCode;
 }
 
+/**
+ * The result code is the CommonJS form of the prepared module. Only the legacy
+ * `Module` evaluator reads it (the eval broker prepares its own code), so the
+ * emit runs on the first read and is memoized.
+ */
+const createCommonJSTransformResult = (
+  eventEmitter: Services['eventEmitter'],
+  preparedCode: string,
+  filename: string,
+  metadata: WYWTransformMetadata | null
+): ITransformFileResult => {
+  let pendingCode: string | null = preparedCode;
+  let commonJSCode = '';
+
+  return {
+    get code() {
+      if (pendingCode !== null) {
+        const source = pendingCode;
+        commonJSCode = eventEmitter.perf(
+          'transform:emitCommonJS',
+          () => emitOxcCommonJS(source, filename).code
+        );
+        pendingCode = null;
+      }
+
+      return commonJSCode;
+    },
+    metadata,
+  };
+};
+
 export function* internalTransform(
   this: ITransformAction,
   prepareFn: PrepareCodeFn
@@ -472,113 +495,55 @@ export function* internalTransform(
 
   log('>> (%o)', only);
 
-  if (loadedAndParsed.evaluator === oxcShaker) {
-    ensureOxcPreevalResult(this.services, this.entrypoint, null);
-    yield* resolveStaticOxcPreevalValues.call(this);
-  }
+  ensureOxcPreevalResult(this.services, this.entrypoint, null);
+  yield* resolveStaticOxcPreevalValues.call(this);
 
   let [preparedCode, imports, metadata] = prepareFn(
     this.services,
     this.entrypoint,
     null
   );
-  let finalPreparedCode = preparedCode;
-
-  if (loadedAndParsed.evaluator === oxcShaker) {
-    if (metadata === null && isPrevalOnly(only)) {
-      log(
-        'skip resolving imports for __wywPreval-only entrypoint without metadata'
-      );
-      return {
-        code: finalPreparedCode,
-        metadata: null,
-      };
-    }
-
-    let nextCode = yield* resolveAndProcessOxcPreparedImports(
-      this,
-      preparedCode,
-      imports
-    );
-
-    if (yield* resolveStaticOxcPreevalValues.call(this)) {
-      [preparedCode, imports, metadata] = prepareFn(
-        this.services,
-        this.entrypoint,
-        null
-      );
-      nextCode = yield* resolveAndProcessOxcPreparedImports(
-        this,
-        preparedCode,
-        imports
-      );
-    }
-
-    emitCurrentStaticPlanDebug(this, imports);
-
-    finalPreparedCode = this.services.eventEmitter.perf(
-      'transform:emitCommonJS',
-      () =>
-        emitOxcCommonJS(
-          nextCode,
-          loadedAndParsed.evalConfig.filename ?? this.entrypoint.name
-        ).code
-    );
-  }
-
-  if (loadedAndParsed.code === finalPreparedCode) {
-    log('<< (%o)\n === no changes ===', only);
-  } else {
-    log('<< (%o)', only);
-    log.extend('source')('%s', finalPreparedCode || EMPTY_FILE);
-  }
-
-  if (finalPreparedCode === '') {
-    log('is skipped');
-    return {
-      code: loadedAndParsed.code ?? '',
-      metadata,
-    };
-  }
 
   if (metadata === null && isPrevalOnly(only)) {
     log(
       'skip resolving imports for __wywPreval-only entrypoint without metadata'
     );
     return {
-      code: finalPreparedCode,
+      code: preparedCode,
       metadata: null,
     };
   }
 
-  if (
-    loadedAndParsed.evaluator !== oxcShaker &&
-    imports !== null &&
-    imports.size > 0
-  ) {
-    const resolvedImports = yield* this.getNext(
-      'resolveImports',
-      this.entrypoint,
-      {
-        imports,
-      }
-    );
+  let nextCode = yield* resolveAndProcessOxcPreparedImports(
+    this,
+    preparedCode,
+    imports
+  );
 
-    if (resolvedImports.length !== 0) {
-      yield [
-        'processImports',
-        this.entrypoint,
-        {
-          resolved: resolvedImports,
-        },
-      ];
-    }
+  if (yield* resolveStaticOxcPreevalValues.call(this)) {
+    [preparedCode, imports, metadata] = prepareFn(
+      this.services,
+      this.entrypoint,
+      null
+    );
+    nextCode = yield* resolveAndProcessOxcPreparedImports(
+      this,
+      preparedCode,
+      imports
+    );
   }
 
-  return {
-    code: finalPreparedCode,
-    metadata,
-  };
+  emitCurrentStaticPlanDebug(this, imports);
+
+  log('<< (%o)', only);
+  log.extend('source')('%s', nextCode || EMPTY_FILE);
+
+  return createCommonJSTransformResult(
+    this.services.eventEmitter,
+    nextCode,
+    loadedAndParsed.evalConfig.filename ?? this.entrypoint.name,
+    metadata
+  );
 }
 
 export function* transform(

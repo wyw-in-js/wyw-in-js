@@ -10,6 +10,7 @@ import type {
   IEntrypointDependency,
   IIgnoredEntrypoint,
   IPreevalResult,
+  TransformResultCode,
 } from './Entrypoint.types';
 import {
   EvaluatedEntrypoint,
@@ -78,7 +79,7 @@ export class Entrypoint extends BaseEntrypoint {
 
   #supersededWith: Entrypoint | null = null;
 
-  #transformResultCode: string | null = null;
+  #transformResult: TransformResultCode | null = null;
 
   #transformResultMutation: object | null = null;
 
@@ -152,7 +153,9 @@ export class Entrypoint extends BaseEntrypoint {
 
   public get transformedCode(): string | null {
     return (
-      this.#transformResultCode ?? this.supersededWith?.transformedCode ?? null
+      this.#transformResult?.code ??
+      this.supersededWith?.transformedCode ??
+      null
     );
   }
 
@@ -567,7 +570,7 @@ export class Entrypoint extends BaseEntrypoint {
     evaluated.hasWywMetadata = this.#hasWywMetadata;
     evaluated.loadedAndParsed = this.loadedAndParsed;
     evaluated.preevalResult = this.#preevalResult;
-    evaluated.transformResultCode = this.#transformResultCode;
+    evaluated.transformResult = this.#transformResult;
 
     // EvaluatedEntrypoint construction emits a public `created` event through
     // the target services. That callback may retire either owner, so fence the
@@ -630,13 +633,14 @@ export class Entrypoint extends BaseEntrypoint {
   }
 
   public reuseTransformResult(
-    code: string | null,
+    result: string | TransformResultCode | null,
     hasWywMetadata: boolean
   ): void {
     this.assertCurrentCacheEpoch();
     this.#hasTransformResult = true;
     this.#hasWywMetadata = hasWywMetadata;
-    this.#transformResultCode = code;
+    this.#transformResult =
+      typeof result === 'string' ? { code: result } : result;
 
     resetSupersedeWindow(this.services, this.name);
   }
@@ -667,13 +671,14 @@ export class Entrypoint extends BaseEntrypoint {
     services.cache.assertEpoch(targetEpoch);
     const previousHasTransformResult = this.#hasTransformResult;
     const previousHasWywMetadata = this.#hasWywMetadata;
-    const previousTransformResultCode = this.#transformResultCode;
+    const previousTransformResult = this.#transformResult;
     const previousTransformResultMutation = this.#transformResultMutation;
     const transformResultMutation = {};
     this.#transformResultMutation = transformResultMutation;
     this.#hasTransformResult = true;
     this.#hasWywMetadata = Boolean(res?.metadata);
-    this.#transformResultCode = res?.code ?? null;
+    // Keep the result object: its code is computed on the first read.
+    this.#transformResult = res;
 
     try {
       services.eventEmitter.entrypointEvent(this.seqId, {
@@ -690,7 +695,7 @@ export class Entrypoint extends BaseEntrypoint {
       if (this.#transformResultMutation === transformResultMutation) {
         this.#hasTransformResult = previousHasTransformResult;
         this.#hasWywMetadata = previousHasWywMetadata;
-        this.#transformResultCode = previousTransformResultCode;
+        this.#transformResult = previousTransformResult;
         this.#transformResultMutation = previousTransformResultMutation;
       }
       throw error;
