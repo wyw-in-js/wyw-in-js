@@ -253,8 +253,7 @@ describe('prepareCode with explicit oxcShaker action', () => {
 
     const [code, imports, metadata] = prepareCodeForEvalRuntime(
       services,
-      entrypoint,
-      null
+      entrypoint
     );
 
     expect(code).toContain('export const helper =');
@@ -295,8 +294,7 @@ describe('prepareCode with explicit oxcShaker action', () => {
 
     const [code, imports, metadata] = prepareCodeForEvalRuntime(
       services,
-      entrypoint,
-      null
+      entrypoint
     );
 
     expect(code).toContain('export const __wywPreval');
@@ -338,8 +336,7 @@ describe('prepareCode with explicit oxcShaker action', () => {
 
     const [code, imports, metadata] = prepareCodeForEvalRuntime(
       services,
-      entrypoint,
-      null
+      entrypoint
     );
 
     expect(code).toContain('export const __wywPreval =');

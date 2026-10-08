@@ -39,7 +39,6 @@ export function* collect(
   );
 
   return {
-    ast: null,
     code: result.code,
     map: result.map,
     metadata: result.metadata,
