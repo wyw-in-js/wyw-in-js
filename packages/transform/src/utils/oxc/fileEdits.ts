@@ -52,7 +52,6 @@ export type OxcFileEdits = {
     value: string,
     options?: OxcInsertOptions
   ): OxcFileEdits;
-  readonly isEmpty: boolean;
   remove(start: number, end: number): OxcFileEdits;
   replace(start: number, end: number, value: string): OxcFileEdits;
   readonly source: string;
@@ -250,9 +249,6 @@ export const createOxcFileEdits = (
       return session.add([
         { end: position, start: position, value: `${before}${value}${after}` },
       ]);
-    },
-    get isEmpty() {
-      return edits.length === 0;
     },
     remove(start, end) {
       return session.add([{ end, start, value: '' }]);
