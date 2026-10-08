@@ -1,6 +1,5 @@
 /* eslint-disable no-continue */
 import { collectOxcExportsAndImports } from '../../utils/collectOxcExportsAndImports';
-import { oxcShaker } from '../../shaker';
 import type { Entrypoint } from '../Entrypoint';
 import type { IEntrypointDependency } from '../Entrypoint.types';
 import type {
@@ -68,9 +67,9 @@ export function* getExports(
   let withWildcardReexport: WildcardReexport[] = [];
   const result: string[] = [];
 
-  if (loadedAndParsed.evaluator !== oxcShaker) {
+  if (loadedAndParsed.evaluator === 'ignored') {
     throw new Error(
-      `[wyw-in-js] ${entrypoint.name} matched a legacy evaluator. The Oxc runtime path supports only the default Oxc evaluator.`
+      `[wyw-in-js] ${entrypoint.name} is ignored, its exports cannot be collected.`
     );
   }
 

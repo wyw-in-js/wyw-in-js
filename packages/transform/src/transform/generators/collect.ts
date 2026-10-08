@@ -1,4 +1,3 @@
-import { oxcShaker } from '../../shaker';
 import { collectOxcRuntime } from '../../utils/collectOxcRuntime';
 import type { ICollectAction, SyncScenarioForAction } from '../types';
 
@@ -18,12 +17,6 @@ export function* collect(
 
   if (loadedAndParsed.evaluator === 'ignored') {
     throw new Error('entrypoint was ignored');
-  }
-
-  if (loadedAndParsed.evaluator !== oxcShaker) {
-    throw new Error(
-      `[wyw-in-js] ${name} matched a legacy evaluator. The Oxc runtime path supports only the default Oxc evaluator.`
-    );
   }
 
   const result = collectOxcRuntime(
