@@ -30,6 +30,7 @@ import {
   resolveBindingAt,
   toMutationBindingKey,
 } from './scopeAnalysis';
+import { isBuildTimeEnvironmentRead, type StaticResult } from './staticOutcome';
 import type {
   Binding,
   ExtractionContext,
@@ -439,37 +440,29 @@ export const isProcessEnvValueAccess = (
   );
 };
 
-export const isDeterministicUndefinedExpression = (
+/**
+ * Build-time `process.env` policy. In the fallback positions of the static
+ * evaluator (`typeof`, `??`/`||`/`&&` left operands, comparison operands and
+ * function-local initializers), a direct `process.env.X` read, or a
+ * function-local variable initialized from one, reads as `undefined`.
+ * Everywhere else the read stays unknown and is left to runtime evaluation.
+ */
+export const readsAsBuildTimeUndefined = (
   expression: Expression,
+  result: StaticResult,
   ctx: ExtractionContext,
   env: ReadonlyMap<string, unknown>
 ): boolean => {
-  if (isProcessEnvValueAccess(expression, ctx, env)) {
-    return true;
-  }
-
-  if (expression.type === 'UnaryExpression' && expression.operator === 'void') {
-    return true;
+  if (!isBuildTimeEnvironmentRead(result)) {
+    return false;
   }
 
   if (expression.type === 'Identifier') {
-    if (env.has(expression.name)) {
-      return env.get(expression.name) === undefined;
-    }
-
-    const binding = resolveBindingAt(ctx, expression.name, expression.start);
-    if (
-      binding?.declarationKind === 'var' &&
-      binding.declarator &&
-      ctx.currentExpressionStart < binding.declarator.end
-    ) {
-      return true;
-    }
+    return (
+      env.has(expression.name) &&
+      isBuildTimeEnvironmentRead(env.get(expression.name))
+    );
   }
 
-  return (
-    expression.type === 'Identifier' &&
-    expression.name === 'undefined' &&
-    !resolveBindingAt(ctx, expression.name, expression.start)
-  );
+  return isProcessEnvValueAccess(expression, ctx, env);
 };

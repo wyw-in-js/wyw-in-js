@@ -21,8 +21,15 @@ import {
   getBindingHazardTimeline,
   hasArrayIterationMutationBefore,
   hasRelevantIntrinsicMutationBefore,
-  isDeterministicUndefinedExpression,
+  readsAsBuildTimeUndefined,
 } from './staticEvaluationSafety';
+import {
+  asOperandFailure,
+  isStaticNonValue,
+  unknownOutcome,
+  UnknownReason,
+  type StaticResult,
+} from './staticOutcome';
 import {
   cloneStaticValue,
   copyEnumerableOwnDataProperties,
@@ -41,12 +48,12 @@ import type {
   OxcFunctionLikeNode,
 } from './types';
 
-type EvaluateStatic = (
+export type EvaluateStatic = (
   expression: Expression,
   ctx: ExtractionContext,
   env?: EvalEnv,
   stack?: EvaluationStack
-) => unknown | undefined;
+) => StaticResult;
 
 export type EvaluationStack = Array<string | OxcFunctionLikeNode>;
 
@@ -124,15 +131,15 @@ const evaluateObjectExpressionMember = (
   env: EvalEnv,
   stack: EvaluationStack,
   evaluateStatic: EvaluateStatic
-): unknown | undefined => {
+): StaticResult => {
   if (expression.type !== 'ObjectExpression') {
-    return undefined;
+    return unknownOutcome(UnknownReason.UnsupportedSyntax);
   }
 
   for (let idx = expression.properties.length - 1; idx >= 0; idx -= 1) {
     const property = expression.properties[idx]!;
     if (property.type === 'SpreadElement') {
-      return undefined;
+      return unknownOutcome(UnknownReason.UnsupportedOperand);
     }
 
     const key = evaluateStaticPropertyKey(
@@ -144,7 +151,7 @@ const evaluateObjectExpressionMember = (
       evaluateStatic
     );
     if (key === null) {
-      return undefined;
+      return unknownOutcome(UnknownReason.UnsupportedOperand);
     }
 
     if (key === propertyKey) {
@@ -152,7 +159,7 @@ const evaluateObjectExpressionMember = (
     }
   }
 
-  return undefined;
+  return unknownOutcome(UnknownReason.MissingProperty);
 };
 
 export const evaluateKnownObjectMember = (
@@ -162,7 +169,7 @@ export const evaluateKnownObjectMember = (
   env: EvalEnv,
   stack: EvaluationStack,
   evaluateStatic: EvaluateStatic
-): unknown | undefined => {
+): StaticResult => {
   const objectMember = evaluateObjectExpressionMember(
     expression,
     propertyKey,
@@ -171,12 +178,12 @@ export const evaluateKnownObjectMember = (
     stack,
     evaluateStatic
   );
-  if (objectMember !== undefined) {
+  if (!isStaticNonValue(objectMember)) {
     return objectMember;
   }
 
   if (expression.type !== 'Identifier' || env.has(expression.name)) {
-    return undefined;
+    return unknownOutcome(UnknownReason.UnsupportedSyntax);
   }
 
   const binding = resolveBindingAt(ctx, expression.name, expression.start);
@@ -189,7 +196,7 @@ export const evaluateKnownObjectMember = (
     !binding.declarator?.init ||
     binding.declarator.id.type !== 'Identifier'
   ) {
-    return undefined;
+    return unknownOutcome(UnknownReason.UnsupportedBinding);
   }
 
   return evaluateKnownObjectMember(
@@ -295,7 +302,7 @@ export const assignPatternValue = (
       value === undefined
         ? evaluateStatic(pattern.right, ctx, env, stack)
         : value;
-    if (assignedValue === undefined) {
+    if (isStaticNonValue(assignedValue)) {
       return false;
     }
 
@@ -461,7 +468,7 @@ export const applyRootMutation = (
   env: EvalEnv,
   stack: EvaluationStack,
   evaluateStatic: EvaluateStatic
-): unknown | undefined => {
+): StaticResult => {
   const resolvePath = (node: Node): { path: Array<string | number> } | null => {
     if (node.type === 'Identifier') {
       return node.name === bindingName ? { path: [] } : null;
@@ -497,16 +504,22 @@ export const applyRootMutation = (
     mutation.type === 'AssignmentExpression' ? mutation.left : mutation.argument
   );
   if (!pathInfo) {
-    return undefined;
+    return unknownOutcome(UnknownReason.UnsupportedSyntax);
   }
 
   const cloned = cloneStaticValue(baseValue);
   if (pathInfo.path.length === 0) {
     if (mutation.type !== 'AssignmentExpression') {
-      return undefined;
+      return unknownOutcome(UnknownReason.UnsupportedOperand);
     }
 
     return evaluateStatic(mutation.right, ctx, env, stack);
+  }
+
+  // A property write on a primitive (or on a value that could not be cloned)
+  // throws at runtime.
+  if (typeof cloned !== 'object' || cloned === null) {
+    return unknownOutcome(UnknownReason.UnsupportedOperand);
   }
 
   let target = cloned as Record<string | number, unknown>;
@@ -514,7 +527,7 @@ export const applyRootMutation = (
     const key = pathInfo.path[idx];
     const next = target?.[key];
     if (typeof next !== 'object' || next === null) {
-      return undefined;
+      return unknownOutcome(UnknownReason.UnsupportedOperand);
     }
 
     target = next as Record<string | number, unknown>;
@@ -523,8 +536,8 @@ export const applyRootMutation = (
   const lastKey = pathInfo.path[pathInfo.path.length - 1]!;
   if (mutation.type === 'AssignmentExpression') {
     const nextValue = evaluateStatic(mutation.right, ctx, env, stack);
-    if (nextValue === undefined) {
-      return undefined;
+    if (isStaticNonValue(nextValue)) {
+      return asOperandFailure(nextValue);
     }
 
     target[lastKey] = nextValue;
@@ -533,7 +546,7 @@ export const applyRootMutation = (
 
   const currentValue = target[lastKey];
   if (typeof currentValue !== 'number') {
-    return undefined;
+    return unknownOutcome(UnknownReason.UnsupportedOperand);
   }
 
   target[lastKey] =
@@ -653,9 +666,13 @@ export const evaluateFunctionCall = (
   env: EvalEnv,
   stack: EvaluationStack,
   evaluateStatic: EvaluateStatic
-): unknown | undefined => {
-  if (fn.async || !fn.body || stack.includes(fn)) {
-    return undefined;
+): StaticResult => {
+  if (fn.async || !fn.body) {
+    return unknownOutcome(UnknownReason.UnsupportedSyntax);
+  }
+
+  if (stack.includes(fn)) {
+    return unknownOutcome(UnknownReason.Recursion);
   }
 
   const nextStack = [...stack, fn];
@@ -679,7 +696,7 @@ export const evaluateFunctionCall = (
         evaluateStatic
       )
     ) {
-      return undefined;
+      return unknownOutcome(UnknownReason.UnsupportedOperand);
     }
   }
 
@@ -696,15 +713,21 @@ export const evaluateFunctionCall = (
           continue;
         }
 
-        const value = declarator.init
+        let value = declarator.init
           ? evaluateStatic(declarator.init, ctx, localEnv, nextStack)
           : undefined;
-        if (
-          declarator.init &&
-          value === undefined &&
-          !isDeterministicUndefinedExpression(declarator.init, ctx, localEnv)
-        ) {
-          return undefined;
+        if (isStaticNonValue(value)) {
+          if (
+            !declarator.init ||
+            !readsAsBuildTimeUndefined(declarator.init, value, ctx, localEnv)
+          ) {
+            return asOperandFailure(value);
+          }
+          // An identifier keeps the build-time read, so only the positions
+          // covered by the process.env policy see `undefined` later.
+          if (declarator.id.type !== 'Identifier') {
+            value = undefined;
+          }
         }
         if (
           !assignPatternValue(
@@ -716,7 +739,7 @@ export const evaluateFunctionCall = (
             evaluateStatic
           )
         ) {
-          return undefined;
+          return unknownOutcome(UnknownReason.UnsupportedOperand);
         }
       }
       continue;
@@ -728,34 +751,34 @@ export const evaluateFunctionCall = (
 
     if (statement.type === 'ReturnStatement') {
       if (!statement.argument) {
-        return undefined;
+        return unknownOutcome(UnknownReason.UnsupportedSyntax);
       }
 
       return evaluateStatic(statement.argument, ctx, localEnv, nextStack);
     }
 
-    return undefined;
+    return unknownOutcome(UnknownReason.UnsupportedSyntax);
   }
 
-  return undefined;
+  return unknownOutcome(UnknownReason.UnsupportedSyntax);
 };
 
 const isCoercionFreePrimitive = (value: unknown): boolean =>
   value === null || (typeof value !== 'object' && typeof value !== 'function');
 
-export const evaluateStringConversion = (value: unknown): string | undefined =>
-  isCoercionFreePrimitive(value) ? String(value) : undefined;
+export const evaluateStringConversion = (value: unknown): StaticResult =>
+  isCoercionFreePrimitive(value)
+    ? String(value)
+    : unknownOutcome(UnknownReason.UnsupportedOperand);
 
-export const evaluateNumberConversion = (
-  value: unknown
-): number | undefined => {
+export const evaluateNumberConversion = (value: unknown): StaticResult => {
   if (!isCoercionFreePrimitive(value) || typeof value === 'symbol') {
-    return undefined;
+    return unknownOutcome(UnknownReason.UnsupportedOperand);
   }
   try {
     return Number(value);
   } catch {
-    return undefined;
+    return unknownOutcome(UnknownReason.EvaluationError);
   }
 };
 
@@ -765,31 +788,38 @@ export const evaluateBinary = (
   env: EvalEnv = new Map(),
   stack: EvaluationStack = [],
   evaluateStatic: EvaluateStatic
-): unknown | undefined => {
+): StaticResult => {
   if (expression.type !== 'BinaryExpression') {
-    return undefined;
+    return unknownOutcome(UnknownReason.UnsupportedSyntax);
   }
 
-  const left = evaluateStatic(expression.left as Expression, ctx, env, stack);
-  const right = evaluateStatic(expression.right as Expression, ctx, env, stack);
-
-  const leftIsDeterministicUndefined =
-    left === undefined &&
-    isDeterministicUndefinedExpression(expression.left as Expression, ctx, env);
-  const rightIsDeterministicUndefined =
-    right === undefined &&
-    isDeterministicUndefinedExpression(
-      expression.right as Expression,
-      ctx,
-      env
-    );
-
-  if (
-    (left === undefined && !leftIsDeterministicUndefined) ||
-    (right === undefined && !rightIsDeterministicUndefined)
-  ) {
-    return undefined;
+  const leftResult = evaluateStatic(
+    expression.left as Expression,
+    ctx,
+    env,
+    stack
+  );
+  const rightResult = evaluateStatic(
+    expression.right as Expression,
+    ctx,
+    env,
+    stack
+  );
+  const operands: Array<[Expression, StaticResult]> = [
+    [expression.left as Expression, leftResult],
+    [expression.right, rightResult],
+  ];
+  for (const [operand, result] of operands) {
+    if (
+      isStaticNonValue(result) &&
+      !readsAsBuildTimeUndefined(operand, result, ctx, env)
+    ) {
+      return asOperandFailure(result);
+    }
   }
+
+  const left = isStaticNonValue(leftResult) ? undefined : leftResult;
+  const right = isStaticNonValue(rightResult) ? undefined : rightResult;
 
   const comparesDistinctReferences =
     left !== right &&
@@ -807,7 +837,7 @@ export const evaluateBinary = (
     // Static export loading and local snapshot reconstruction can clone an
     // object graph. A false identity result is therefore not proof that the
     // runtime references are distinct.
-    return undefined;
+    return unknownOutcome(UnknownReason.UnsupportedOperand);
   }
 
   switch (expression.operator) {
@@ -817,13 +847,13 @@ export const evaluateBinary = (
       return left !== right;
     case '==':
       if (!isCoercionFreePrimitive(left) || !isCoercionFreePrimitive(right)) {
-        return undefined;
+        return unknownOutcome(UnknownReason.UnsupportedOperand);
       }
       // eslint-disable-next-line eqeqeq
       return left == right;
     case '!=':
       if (!isCoercionFreePrimitive(left) || !isCoercionFreePrimitive(right)) {
-        return undefined;
+        return unknownOutcome(UnknownReason.UnsupportedOperand);
       }
       // eslint-disable-next-line eqeqeq
       return left != right;
@@ -869,5 +899,5 @@ export const evaluateBinary = (
     }
   }
 
-  return undefined;
+  return unknownOutcome(UnknownReason.UnsupportedOperand);
 };
