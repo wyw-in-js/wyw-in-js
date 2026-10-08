@@ -172,7 +172,7 @@ export const isSafeStaticExpression = (
   if (unwrapped.type === 'ObjectExpression') {
     return unwrapped.properties.every((property) => {
       if (property.type === 'SpreadElement') {
-        return isSafeStaticExpression(property.argument);
+        return isSafeStaticExpression(property.argument, options);
       }
 
       const propertyNode = property as AnyNode;
