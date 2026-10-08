@@ -16,7 +16,8 @@ import {
 
 // The single parse entry of the transform package. Every production parse
 // goes through parseOxcCached: it owns the content-addressed cache, the .js
-// JSX fallback, raw-transfer recovery and parse telemetry.
+// JSX fallback, raw-transfer recovery and parse telemetry. Direct parser calls
+// elsewhere are rejected by the package's lint config.
 
 type OxcSourceType = 'module' | 'unambiguous';
 export type OxcAstType = 'js' | 'ts';
