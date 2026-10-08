@@ -15,7 +15,11 @@ import {
 import { EventEmitter } from '../EventEmitter';
 import type { AddedImport } from '../oxcAstService';
 import { isOxcNode } from '../oxc/ast';
-import { applyOxcEdits, createOxcFileEdits } from '../oxc/fileEdits';
+import {
+  applyOxcEdits,
+  createOxcFileEdits,
+  type OxcEdit,
+} from '../oxc/fileEdits';
 import {
   buildOxcCodeFrameError,
   createOxcLocationLookup,
@@ -53,7 +57,6 @@ import type {
   DefinedProcessor,
   OxcProcessorAnalysisPlan,
   ProcessorUsage,
-  Replacement,
   SameFileProcessorObject,
   StaticPlanFacts,
 } from './types';
@@ -343,7 +346,7 @@ export const applyOxcProcessors = (
     reusablePlan?.usedNames ??
     eventEmitter.perf(perfLabel('usedNames'), () => collectUsedNames(program));
   const addedImports: AddedImport[] = [];
-  const replacements: Replacement[] = [];
+  const replacements: OxcEdit[] = [];
   const createdProcessors: CreatedProcessor[] = [];
   const processors: BaseProcessor[] = [];
   const processorClassNamesByLocal = new Map<string, string>();

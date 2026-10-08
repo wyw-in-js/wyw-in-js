@@ -8,6 +8,7 @@ import {
   type OxcAssignmentTargetLeaf,
 } from '../oxc/assignmentTargets';
 import { getOxcNodeChildren } from '../oxc/ast';
+import type { OxcEdit } from '../oxc/fileEdits';
 import { collectOxcPatternBindingNames } from '../oxc/patterns';
 import { getOxcSyntacticPropertyKey } from '../oxc/projections';
 import {
@@ -23,7 +24,6 @@ import type {
   Binding,
   ExtractionContext,
   OxcStaticImportReference,
-  Replacement,
 } from './types';
 
 export const getConstantReplacement = (
@@ -332,8 +332,8 @@ export const collectIdentifierReferenceReplacements = (
   expression: Expression,
   replacements: ReadonlyMap<string, string>,
   exactReplacements?: ReadonlyMap<number, string>
-): Replacement[] => {
-  const localReplacements: Replacement[] = [];
+): OxcEdit[] => {
+  const localReplacements: OxcEdit[] = [];
   const ancestors: Node[] = [];
   const rootScope = createReplacementScope(null, true);
   const scopes = new WeakMap<Node, ReplacementScope>();
@@ -383,7 +383,7 @@ export const collectIdentifierReferenceReplacements = (
 
 export const applyExpressionReplacements = (
   expression: Pick<Node, 'end' | 'start'>,
-  replacements: Replacement[],
+  replacements: OxcEdit[],
   code: string
 ): string => {
   let result = code.slice(expression.start, expression.end);
@@ -458,11 +458,11 @@ export const collectStaticNamespaceMemberReferences = (
 ): {
   coveredReferenceStarts: Set<number>;
   imports: OxcStaticImportReference[];
-  replacements: Replacement[];
+  replacements: OxcEdit[];
 } => {
   const coveredReferenceStarts = new Set<number>();
   const imports = new Map<string, OxcStaticImportReference>();
-  const replacements: Replacement[] = [];
+  const replacements: OxcEdit[] = [];
 
   const walk = (node: Node): void => {
     if (node.type === 'MemberExpression' && node.object.type === 'Identifier') {

@@ -1,6 +1,6 @@
 import type { Program } from 'oxc-parser';
 
-import { applyOxcReplacements } from '../oxc/replacements';
+import { applyOxcEdits } from '../oxc/fileEdits';
 import {
   collectReferencedNames,
   collectRemovableNamesFromStatements,
@@ -116,7 +116,7 @@ export const removeUnusedAfterReplacement = (
         return current;
       }
 
-      const next = applyOxcReplacements(current, removals);
+      const next = applyOxcEdits(current, removals);
       try {
         program = parseOxc(next, filename);
         recordPipelineCleanupIteration(

@@ -11,7 +11,8 @@ import {
   replaceIdentifierReferences,
 } from './expressionReplacements';
 import { allocateHoistedBindingName } from './snapshotReplay';
-import type { Binding, ExtractionContext, Replacement } from './types';
+import type { OxcEdit } from '../oxc/fileEdits';
+import type { Binding, ExtractionContext } from './types';
 
 export const getHoistedBindingName = (
   binding: Binding,
@@ -73,7 +74,7 @@ export const declarationPatternCode = (
       : '';
   }
 
-  const replacements: Replacement[] = [];
+  const replacements: OxcEdit[] = [];
   collectOxcPatternBindingIdentifiers(declarator.id).forEach((identifier) => {
     const patternBinding = ctx.bindingIndex.bindingsByName
       .get(identifier.name)
@@ -115,7 +116,7 @@ export const declarationPatternCode = (
     declarator.id
   );
   const isInsideShorthand = (
-    replacement: Replacement,
+    replacement: OxcEdit,
     property: (typeof shorthandProperties)[number]
   ): boolean =>
     property.start <= replacement.start && replacement.end <= property.end;

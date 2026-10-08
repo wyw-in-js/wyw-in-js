@@ -3,6 +3,7 @@
 import type { Expression, Node } from 'oxc-parser';
 
 import { getOxcNodeChildren } from '../oxc/ast';
+import type { OxcEdit } from '../oxc/fileEdits';
 import { collectOxcPatternRuntimeExpressions } from '../oxc/patterns';
 import {
   isOxcFunctionLike,
@@ -38,7 +39,6 @@ import type {
   Binding,
   ExtractionContext,
   OxcStaticImportReference,
-  Replacement,
   StaticLocalExpression,
 } from './types';
 
@@ -66,7 +66,7 @@ export const replaceStaticLocalReferences = (
   expression: Expression,
   replacements: ReadonlyMap<string, string>,
   ctx: ExtractionContext,
-  extraReplacements: Replacement[] = [],
+  extraReplacements: OxcEdit[] = [],
   exactReplacements: ReadonlyMap<number, string> = new Map()
 ): string => {
   if (expression.type === 'Identifier' && extraReplacements.length === 0) {
@@ -788,7 +788,7 @@ function collectStaticDestructuringProjection(
 
   const importedFrom = new Set(initializer.importedFrom);
   const imports = [...initializer.imports];
-  const patternReplacements: Replacement[] = [];
+  const patternReplacements: OxcEdit[] = [];
   const localBindingNames = new Set(bindingNames.keys());
   for (const expression of collectOxcPatternRuntimeExpressions(declarator.id)) {
     if (
