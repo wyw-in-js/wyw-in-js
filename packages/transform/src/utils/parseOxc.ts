@@ -14,7 +14,12 @@ import {
   type OxcParserLanguage,
 } from './oxcParserLanguage';
 
+// The single parse entry of the transform package. Every production parse
+// goes through parseOxcCached: it owns the content-addressed cache, the .js
+// JSX fallback, raw-transfer recovery and parse telemetry.
+
 type OxcSourceType = 'module' | 'unambiguous';
+export type OxcAstType = 'js' | 'ts';
 
 type OxcParseOptions = Parameters<typeof parseSync>[2] & {
   experimentalRawTransfer?: boolean;
@@ -120,7 +125,7 @@ const parseCache = new Map<string, Map<string, ParsedOxc>>();
 let parseCacheSize = 0;
 const commentsByProgram = new WeakMap<Program, readonly Comment[]>();
 
-const getAstType = (filename: string): 'js' | 'ts' =>
+const getAstType = (filename: string): OxcAstType =>
   filename.endsWith('.ts') || filename.endsWith('.tsx') ? 'ts' : 'js';
 
 const getJsxFallbackFilename = (filename: string): string | null => {
@@ -134,11 +139,12 @@ const getJsxFallbackFilename = (filename: string): string | null => {
 // bucket key. Paths with equivalent parser behavior still share entries.
 const getParseCacheBucket = (
   filename: string,
-  sourceType: OxcSourceType
+  sourceType: OxcSourceType,
+  astType: OxcAstType
 ): Map<string, ParsedOxc> => {
   const bucketKey = `${sourceType}\0${getOxcParserLanguage(
     filename
-  )}\0${getAstType(filename)}\0${getJsxFallbackFilename(filename) !== null}`;
+  )}\0${astType}\0${getJsxFallbackFilename(filename) !== null}`;
   let bucket = parseCache.get(bucketKey);
   if (!bucket) {
     bucket = new Map();
@@ -178,9 +184,12 @@ const setCachedParse = (
 export const parseOxcCached = (
   filename: string,
   code: string,
-  sourceType: OxcSourceType
+  sourceType: OxcSourceType,
+  // The AST shape defaults to the filename's language family. CommonJS emit
+  // requests the JS shape for every file and gets its own cache bucket.
+  astType: OxcAstType = getAstType(filename)
 ): ParsedOxc => {
-  const bucket = getParseCacheBucket(filename, sourceType);
+  const bucket = getParseCacheBucket(filename, sourceType, astType);
   const cached = bucket.get(code);
   if (cached) {
     // Refresh recency so insertion-order eviction behaves as LRU: hot entries
@@ -194,6 +203,7 @@ export const parseOxcCached = (
       filename,
       code,
       sourceType,
+      astType,
       cached.jsxFallback,
       knownMeasurement
     );
@@ -203,7 +213,6 @@ export const parseOxcCached = (
     return cached;
   }
 
-  const astType = getAstType(filename);
   let parsed: ReturnType<typeof parseOxcSync>;
   try {
     parsed = parseOxcSync(
@@ -238,7 +247,7 @@ export const parseOxcCached = (
         jsxFallbackFilename,
         code,
         {
-          astType: getAstType(jsxFallbackFilename),
+          astType,
           range: true,
           sourceType,
         },
@@ -291,7 +300,7 @@ export const parseOxcCached = (
       sourceType === 'module' ? 'unambiguous' : 'module';
     // Cache entries keep source-type-specific telemetry identity, while their
     // immutable parse payload is shared.
-    setCachedParse(getParseCacheBucket(filename, other), code, {
+    setCachedParse(getParseCacheBucket(filename, other, astType), code, {
       ...sharedValue,
       pipelineMeasurement: undefined,
     });
@@ -316,8 +325,9 @@ export const parseOxcCached = (
 export const parseOxcProgramCached = (
   filename: string,
   code: string,
-  sourceType: OxcSourceType
-): Program => parseOxcCached(filename, code, sourceType).program;
+  sourceType: OxcSourceType,
+  astType?: OxcAstType
+): Program => parseOxcCached(filename, code, sourceType, astType).program;
 
 export const getOxcProgramComments = (
   program: Program

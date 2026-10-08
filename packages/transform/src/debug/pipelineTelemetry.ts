@@ -537,6 +537,7 @@ export const recordPipelineCachedParseHit = (
   filename: string,
   code: string,
   sourceType: string,
+  astType: string,
   jsxFallback: boolean,
   knownMeasurement?: CompletedCodeMeasurement
 ): CompletedCodeMeasurement | undefined => {
@@ -564,8 +565,6 @@ export const recordPipelineCachedParseHit = (
   }
   let revision = accumulator.parse.cachedRevisions.get(cacheEntry);
   if (!revision) {
-    const astType =
-      filename.endsWith('.ts') || filename.endsWith('.tsx') ? 'ts' : 'js';
     revision = getPipelineParseRevision(
       accumulator,
       createPipelineParserKey(
