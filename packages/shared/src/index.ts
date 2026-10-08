@@ -2,9 +2,14 @@ export type { Debugger } from './debugger';
 
 export { asyncResolveFallback, syncResolve } from './asyncResolveFallback';
 export { asyncResolverFactory } from './asyncResolverFactory';
+export {
+  WYW_CSS_MODULE_EXTENSION,
+  WYW_CSS_OUTPUT_QUERY,
+} from './cssOutputProtocol';
 export { hasEvalMeta } from './hasEvalMeta';
 export { findPackageJSON } from './findPackageJSON';
 export { isBoxedPrimitive } from './isBoxedPrimitive';
+export { canonicalizeForHash, isPlainObject } from './isPlainObject';
 export { enableDebug, logger } from './logger';
 export { isFeatureEnabled } from './options/isFeatureEnabled';
 export {
@@ -12,6 +17,13 @@ export {
   toNativeResolverAlias,
 } from './options/nativeResolverOptions';
 export type { NativeResolverAlias } from './options/nativeResolverOptions';
+export { normalizeInputSourceMap } from './normalizeInputSourceMap';
+export type {
+  InputSourceMap,
+  NormalizedInputSourceMap,
+} from './normalizeInputSourceMap';
+export { parseRequest, stripQueryAndHash } from './parseRequest';
+export type { ParsedRequest } from './parseRequest';
 export { slugify } from './slugify';
 export { ValueType } from './types';
 
