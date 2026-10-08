@@ -25,7 +25,7 @@ import {
   isPatternRuntimeExpressionStable,
   isProcessEnvValueAccess,
   mutationDirectlyTargetsBinding,
-  readsAsBuildTimeUndefined,
+  readsAsFallbackUndefined,
 } from './staticEvaluationSafety';
 import {
   cloneStaticValue,
@@ -36,7 +36,7 @@ import {
 } from './staticValues';
 import {
   asOperandFailure,
-  isBuildTimeEnvironmentRead,
+  isFallbackUndefinedRead,
   isStaticNonValue,
   opaqueRuntime,
   OpaqueReason,
@@ -211,7 +211,7 @@ export const evaluateStatic = (
       }
 
       return argIsUnboundBareIdentifier ||
-        readsAsBuildTimeUndefined(argument, arg, ctx, env)
+        readsAsFallbackUndefined(argument, arg, ctx, env)
         ? 'undefined'
         : asOperandFailure(arg);
     }
@@ -248,11 +248,11 @@ export const evaluateStatic = (
 
   if (expression.type === 'LogicalExpression') {
     const leftResult = evaluateStatic(expression.left, ctx, env, stack);
-    // A non-value never selects a branch, except a build-time process.env
-    // read, which the policy reads as `undefined`.
+    // A non-value never selects a branch, except the reads that the legacy
+    // fallback rules count as `undefined` (see readsAsFallbackUndefined).
     if (
       isStaticNonValue(leftResult) &&
-      !readsAsBuildTimeUndefined(expression.left, leftResult, ctx, env)
+      !readsAsFallbackUndefined(expression.left, leftResult, ctx, env)
     ) {
       return asOperandFailure(leftResult);
     }
@@ -320,17 +320,20 @@ export const evaluateStatic = (
       ctx.currentExpressionStart < binding.declarator.end
     ) {
       // Read before the declaration completes. A modeled call environment
-      // only vouches for `undefined`; otherwise a `var` is still `undefined`.
+      // only vouches for `undefined`. A `var` is left to evaluation, which
+      // sees the value at the end of the module.
       if (env.has(expression.name)) {
         const envValue = env.get(expression.name);
-        return envValue === undefined || isBuildTimeEnvironmentRead(envValue)
+        return envValue === undefined || isFallbackUndefinedRead(envValue)
           ? envValue
           : unknownOutcome(UnknownReason.TemporalDeadZone);
       }
 
-      return binding.declarationKind === 'var'
-        ? undefined
-        : unknownOutcome(UnknownReason.TemporalDeadZone);
+      return unknownOutcome(
+        binding.declarationKind === 'var'
+          ? UnknownReason.ReadBeforeDeclaration
+          : UnknownReason.TemporalDeadZone
+      );
     }
 
     if (env.has(expression.name)) {
@@ -787,7 +790,7 @@ export const evaluateStatic = (
   if (expression.type === 'MemberExpression') {
     if (isProcessEnvValueAccess(expression, ctx, env)) {
       // Treat process.env.X as undefined at build time (see
-      // readsAsBuildTimeUndefined). Reading from real process.env would
+      // readsAsFallbackUndefined). Reading from real process.env would
       // couple the bundle to whatever happens to be set on the build machine;
       // falling back to the ?? / || branch (or a runtime read) is more
       // predictable.

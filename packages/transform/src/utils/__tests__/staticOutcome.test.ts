@@ -227,6 +227,39 @@ describe('static evaluation outcome', () => {
     });
   });
 
+  it.each([
+    ['a plain read', 'color'],
+    ['a condition', "color ? color : 'blue'"],
+    ['a negation', "!color ? 'blue' : color"],
+    ['an object property', '({ color })'],
+  ])(
+    'leaves a var read before its declaration in %s to evaluation',
+    (_description, expression) => {
+      const code = `${expression};\nvar color = 'red';`;
+
+      expect(outcomeAt(code, expression, true)).toEqual({
+        kind: 'unknown',
+        reason: UnknownReason.ReadBeforeDeclaration,
+      });
+    }
+  );
+
+  it.each([
+    ["value ?? 'fallback'", 'fallback'],
+    ['typeof value', 'undefined'],
+    ['value === undefined', true],
+  ])(
+    'keeps reading a var before its declaration as undefined in %s',
+    (expression, value) => {
+      const code = `${expression};\nvar value = 'late';`;
+
+      expect(outcomeAt(code, expression, true)).toEqual({
+        kind: 'known',
+        value,
+      });
+    }
+  );
+
   it('does not extend the process.env policy through a module binding', () => {
     const code = dedent`
       const theme = process.env.THEME;

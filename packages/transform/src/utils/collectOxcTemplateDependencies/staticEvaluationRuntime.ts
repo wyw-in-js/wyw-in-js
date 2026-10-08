@@ -21,7 +21,7 @@ import {
   getBindingHazardTimeline,
   hasArrayIterationMutationBefore,
   hasRelevantIntrinsicMutationBefore,
-  readsAsBuildTimeUndefined,
+  readsAsFallbackUndefined,
 } from './staticEvaluationSafety';
 import {
   asOperandFailure,
@@ -719,12 +719,12 @@ export const evaluateFunctionCall = (
         if (isStaticNonValue(value)) {
           if (
             !declarator.init ||
-            !readsAsBuildTimeUndefined(declarator.init, value, ctx, localEnv)
+            !readsAsFallbackUndefined(declarator.init, value, ctx, localEnv)
           ) {
             return asOperandFailure(value);
           }
-          // An identifier keeps the build-time read, so only the positions
-          // covered by the process.env policy see `undefined` later.
+          // An identifier keeps the unknown read, so only the positions
+          // covered by the fallback rules see `undefined` later.
           if (declarator.id.type !== 'Identifier') {
             value = undefined;
           }
@@ -812,7 +812,7 @@ export const evaluateBinary = (
   for (const [operand, result] of operands) {
     if (
       isStaticNonValue(result) &&
-      !readsAsBuildTimeUndefined(operand, result, ctx, env)
+      !readsAsFallbackUndefined(operand, result, ctx, env)
     ) {
       return asOperandFailure(result);
     }

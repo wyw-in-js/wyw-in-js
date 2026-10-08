@@ -16,6 +16,11 @@ export enum UnknownReason {
   MissingProperty = 'missing-property',
   /** The binding or one of its sources changes before the read. */
   Mutation = 'mutation',
+  /**
+   * A `var` read before its declaration. Interpolations are evaluated at the
+   * end of the module, so the value is the one the declaration assigns.
+   */
+  ReadBeforeDeclaration = 'read-before-declaration',
   /** An operand is a runtime-only value. */
   OpaqueOperand = 'opaque-operand',
   /** The evaluation depends on itself. */
@@ -136,11 +141,13 @@ export const asOperandFailure = (
     : unknownOutcome(UnknownReason.OpaqueOperand);
 
 /**
- * Whether the result is a build-time `process.env` read. The policy that
- * reads it as `undefined` lives in `readsAsBuildTimeUndefined`.
+ * Whether the result is an unknown that the legacy fallback rules read as
+ * `undefined` in some positions: a build-time `process.env` read or a `var`
+ * read before its declaration. The rules live in `readsAsFallbackUndefined`.
  */
-export const isBuildTimeEnvironmentRead = (result: StaticResult): boolean =>
-  result === unknownOutcomes[UnknownReason.BuildTimeEnvironment];
+export const isFallbackUndefinedRead = (result: StaticResult): boolean =>
+  result === unknownOutcomes[UnknownReason.BuildTimeEnvironment] ||
+  result === unknownOutcomes[UnknownReason.ReadBeforeDeclaration];
 
 export const toStaticOutcome = (result: StaticResult): StaticOutcome => {
   if (isStaticNonValue(result)) {

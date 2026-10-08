@@ -30,7 +30,7 @@ import {
   resolveBindingAt,
   toMutationBindingKey,
 } from './scopeAnalysis';
-import { isBuildTimeEnvironmentRead, type StaticResult } from './staticOutcome';
+import { isFallbackUndefinedRead, type StaticResult } from './staticOutcome';
 import type {
   Binding,
   ExtractionContext,
@@ -441,26 +441,34 @@ export const isProcessEnvValueAccess = (
 };
 
 /**
- * Build-time `process.env` policy. In the fallback positions of the static
- * evaluator (`typeof`, `??`/`||`/`&&` left operands, comparison operands and
- * function-local initializers), a direct `process.env.X` read, or a
- * function-local variable initialized from one, reads as `undefined`.
- * Everywhere else the read stays unknown and is left to runtime evaluation.
+ * Legacy fallback rules. In the fallback positions of the static evaluator
+ * (`typeof`, `??`/`||`/`&&` left operands, comparison operands and
+ * function-local initializers) these unknown reads count as `undefined`:
+ * - a direct `process.env.X` read (build-time environment policy);
+ * - a `var` read before its declaration;
+ * - a function-local variable initialized from one of them.
+ * Everywhere else they stay unknown and are left to runtime evaluation.
  */
-export const readsAsBuildTimeUndefined = (
+export const readsAsFallbackUndefined = (
   expression: Expression,
   result: StaticResult,
   ctx: ExtractionContext,
   env: ReadonlyMap<string, unknown>
 ): boolean => {
-  if (!isBuildTimeEnvironmentRead(result)) {
+  if (!isFallbackUndefinedRead(result)) {
     return false;
   }
 
   if (expression.type === 'Identifier') {
+    if (env.has(expression.name)) {
+      return isFallbackUndefinedRead(env.get(expression.name));
+    }
+
+    const binding = resolveBindingAt(ctx, expression.name, expression.start);
     return (
-      env.has(expression.name) &&
-      isBuildTimeEnvironmentRead(env.get(expression.name))
+      binding?.declarationKind === 'var' &&
+      !!binding.declarator &&
+      ctx.currentExpressionStart < binding.declarator.end
     );
   }
 
