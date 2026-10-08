@@ -23,6 +23,7 @@ import { rootLog } from '../transform/rootLog';
 import type { Services } from '../transform/types';
 import { EventEmitter } from '../utils/EventEmitter';
 import { parseRequest, stripQueryAndHash } from '../utils/parseRequest';
+import { getEvalRunnerConditions } from '../utils/nativeResolver';
 
 import type { DebugEvalValueStatus } from './debugEval';
 import type { EvalRunnerInitPayload } from './protocol';
@@ -301,6 +302,7 @@ export const buildRunnerInitPayload = (
   const { pluginOptions } = services.options;
   const root = services.options.root ?? process.cwd();
   const { overrideContext, importOverrides, extensions } = pluginOptions;
+  const conditions = getEvalRunnerConditions(pluginOptions);
   const features = featuresOverride ?? pluginOptions.features;
   const baseGlobals: Record<string, unknown> = {
     ...(evalOptions.globals ?? {}),
@@ -326,6 +328,7 @@ export const buildRunnerInitPayload = (
       require: evalOptions.require ?? 'warn-and-run',
       root,
       extensions,
+      ...(conditions ? { conditions } : {}),
     },
     features,
     entrypoint: entrypoint.name,

@@ -7,6 +7,15 @@ import type {
 
 import type { SerializedError, SerializedValue } from './serialize';
 
+/**
+ * Export conditions for the runner's own resolution, expanded per edge kind
+ * (`import` also covers dynamic imports).
+ */
+export type EvalRunnerConditions = {
+  import: string[];
+  require: string[];
+};
+
 export type EvalRunnerInitPayload = {
   evalOptions: {
     errors: 'strict' | 'loose';
@@ -15,6 +24,8 @@ export type EvalRunnerInitPayload = {
     importOverrides?: ImportOverrides;
     root?: string;
     extensions?: string[];
+    /** Absent when no conditionNames are configured: Node defaults apply. */
+    conditions?: EvalRunnerConditions;
   };
   features: FeatureFlags<'happyDOM'>;
   debugEvalFiles?: boolean;
