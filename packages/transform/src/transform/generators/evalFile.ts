@@ -1,4 +1,5 @@
 import evaluate, { type IEvaluateResult } from '../../evaluators';
+import { getEvalStrategy } from '../../utils/evalStrategy';
 import { AbortError, isAborted } from '../actions/AbortError';
 import { EntrypointEvictedError } from '../actions/EntrypointEvictedError';
 import { isUnprocessedEntrypointError } from '../actions/UnprocessedEntrypointError';
@@ -25,8 +26,7 @@ export async function* evalFile(
     entrypoint.loadedAndParsed.evaluator === 'ignored'
       ? entrypoint.name
       : entrypoint.loadedAndParsed.evalConfig.filename ?? entrypoint.name;
-  const strategy =
-    this.services.options.pluginOptions.eval?.strategy ?? 'hybrid';
+  const strategy = getEvalStrategy(this.services.options.pluginOptions);
 
   if (preevalResult && (preevalResult.dependencyNames?.length ?? 0) === 0) {
     const expectedPublication = this.services.cache.get(

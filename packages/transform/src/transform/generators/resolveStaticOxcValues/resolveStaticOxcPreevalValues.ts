@@ -2,6 +2,7 @@
 
 import { isAbsolute } from 'path';
 
+import { getEvalStrategy } from '../../../utils/evalStrategy';
 import { appendOxcWywPreval } from '../../../utils/oxcPreevalStage';
 import { stripQueryAndHash } from '../../../utils/parseRequest';
 import { remapPureCallHints } from '../../../utils/pureCallHintSourceMap';
@@ -12,7 +13,6 @@ import {
 } from './candidateResolver';
 import {
   debugStaticResolve,
-  getEvalStrategy,
   getStaticStrategyFailure,
   parseProgram,
 } from './environment';
@@ -57,7 +57,7 @@ export function* resolveStaticOxcPreevalValues(
       ? this.entrypoint.name
       : this.entrypoint.loadedAndParsed.evalConfig.filename ??
         this.entrypoint.name;
-  const evalStrategy = getEvalStrategy(this);
+  const evalStrategy = getEvalStrategy(this.services.options.pluginOptions);
   if (evalStrategy === 'execute') {
     finalizeEvaltimeReplacements();
     candidates = preevalResult.staticValueCandidates ?? candidates;

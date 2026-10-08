@@ -40,9 +40,6 @@ export const isLocalStaticMetadataFile = (
 export const isEnvDisabled = (value: string): boolean =>
   value === '0' || value === 'false' || value === 'no' || value === 'off';
 
-export const getEvalStrategy = (action: ITransformAction) =>
-  action.services.options.pluginOptions.eval?.strategy ?? 'execute';
-
 /** Reason codes emitted by the static resolver when a candidate is rejected. */
 export type StaticRejectionReason =
   | 'candidate-import-unresolved'
