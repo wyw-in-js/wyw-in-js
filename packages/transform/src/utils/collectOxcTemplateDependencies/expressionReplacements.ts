@@ -8,7 +8,7 @@ import {
   type OxcAssignmentTargetLeaf,
 } from '../oxc/assignmentTargets';
 import { getOxcNodeChildren } from '../oxc/ast';
-import type { OxcEdit } from '../oxc/fileEdits';
+import { applyOxcEditsInRange, type OxcEdit } from '../oxc/fileEdits';
 import { collectOxcPatternBindingNames } from '../oxc/patterns';
 import { getOxcSyntacticPropertyKey } from '../oxc/projections';
 import {
@@ -381,36 +381,20 @@ export const collectIdentifierReferenceReplacements = (
   return localReplacements;
 };
 
-export const applyExpressionReplacements = (
-  expression: Pick<Node, 'end' | 'start'>,
-  replacements: OxcEdit[],
-  code: string
-): string => {
-  let result = code.slice(expression.start, expression.end);
-  replacements
-    .sort((a, b) => b.start - a.start)
-    .forEach((replacement) => {
-      const start = replacement.start - expression.start;
-      const end = replacement.end - expression.start;
-      result = result.slice(0, start) + replacement.value + result.slice(end);
-    });
-  return result;
-};
-
 export const replaceIdentifierReferences = (
   expression: Expression,
   replacements: ReadonlyMap<string, string>,
   code: string,
   exactReplacements?: ReadonlyMap<number, string>
 ): string => {
-  return applyExpressionReplacements(
-    expression,
+  return applyOxcEditsInRange(
+    code,
     collectIdentifierReferenceReplacements(
       expression,
       replacements,
       exactReplacements
     ),
-    code
+    expression
   );
 };
 

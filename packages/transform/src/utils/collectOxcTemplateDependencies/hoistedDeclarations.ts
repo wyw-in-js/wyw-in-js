@@ -6,12 +6,9 @@ import {
 } from '../oxc/patterns';
 import { toOxcBindingIdentity } from './bindingIdentity';
 import { findResolvedReferences as getReferences } from './bindingResolution';
-import {
-  applyExpressionReplacements,
-  replaceIdentifierReferences,
-} from './expressionReplacements';
+import { replaceIdentifierReferences } from './expressionReplacements';
 import { allocateHoistedBindingName } from './snapshotReplay';
-import type { OxcEdit } from '../oxc/fileEdits';
+import { applyOxcEditsInRange, type OxcEdit } from '../oxc/fileEdits';
 import type { Binding, ExtractionContext } from './types';
 
 export const getHoistedBindingName = (
@@ -126,11 +123,7 @@ export const declarationPatternCode = (
     );
     const valueCode =
       valueReplacements.length > 0
-        ? applyExpressionReplacements(
-            property.value,
-            valueReplacements,
-            ctx.code
-          )
+        ? applyOxcEditsInRange(ctx.code, valueReplacements, property.value)
         : ctx.code.slice(property.value.start, property.value.end);
     const keyCode = ctx.code.slice(property.key.start, property.key.end);
     return {
@@ -148,6 +141,6 @@ export const declarationPatternCode = (
   const allReplacements = [...directReplacements, ...shorthandReplacements];
 
   return allReplacements.length > 0
-    ? applyExpressionReplacements(declarator.id, allReplacements, ctx.code)
+    ? applyOxcEditsInRange(ctx.code, allReplacements, declarator.id)
     : ctx.code.slice(declarator.id.start, declarator.id.end);
 };

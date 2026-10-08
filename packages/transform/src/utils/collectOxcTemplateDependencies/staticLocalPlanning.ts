@@ -3,7 +3,7 @@
 import type { Expression, Node } from 'oxc-parser';
 
 import { getOxcNodeChildren } from '../oxc/ast';
-import type { OxcEdit } from '../oxc/fileEdits';
+import { applyOxcEditsInRange, type OxcEdit } from '../oxc/fileEdits';
 import { collectOxcPatternRuntimeExpressions } from '../oxc/patterns';
 import {
   isOxcFunctionLike,
@@ -12,7 +12,6 @@ import {
 import { toOxcBindingIdentity } from './bindingIdentity';
 import { findResolvedReferences as getReferences } from './bindingResolution';
 import {
-  applyExpressionReplacements,
   collectIdentifierReferenceReplacements,
   getConstantReplacement,
 } from './expressionReplacements';
@@ -86,8 +85,8 @@ export const replaceStaticLocalReferences = (
     parenthesizedExact.set(key, parenthesizeStaticReplacement(value));
   });
 
-  return applyExpressionReplacements(
-    expression,
+  return applyOxcEditsInRange(
+    ctx.code,
     [
       ...extraReplacements,
       ...collectIdentifierReferenceReplacements(
@@ -96,7 +95,7 @@ export const replaceStaticLocalReferences = (
         parenthesizedExact
       ),
     ],
-    ctx.code
+    expression
   );
 };
 
@@ -824,10 +823,10 @@ function collectStaticDestructuringProjection(
     });
   }
 
-  const patternSource = applyExpressionReplacements(
-    declarator.id,
+  const patternSource = applyOxcEditsInRange(
+    ctx.code,
     patternReplacements,
-    ctx.code
+    declarator.id
   );
 
   return {

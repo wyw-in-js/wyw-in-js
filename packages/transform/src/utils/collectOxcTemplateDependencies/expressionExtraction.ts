@@ -5,6 +5,7 @@ import { ValueType } from '@wyw-in-js/shared';
 import type { Expression, Node } from 'oxc-parser';
 import { createExpressionExtractor } from './expressionBatch';
 
+import { applyOxcEditsInRange } from '../oxc/fileEdits';
 import { collectOxcPatternRuntimeExpressions } from '../oxc/patterns';
 import { createOxcLocationLookup } from '../oxc/sourceLocations';
 import { findResolvedReferences as getReferences } from './bindingResolution';
@@ -21,7 +22,6 @@ import {
   unknownAliasMutationBinding,
 } from './scopeAnalysis';
 import {
-  applyExpressionReplacements,
   collectEagerIdentifierMutationTargets,
   collectEagerNodeStarts,
   collectIdentifierMutationTargets,
@@ -722,10 +722,10 @@ const extractExpression = (
       mergedReplacements
     );
   } else if (!hasSnapshotReplay && namespaceStatic.replacements.length > 0) {
-    staticExpressionCode = applyExpressionReplacements(
-      expression,
+    staticExpressionCode = applyOxcEditsInRange(
+      ctx.code,
       namespaceStatic.replacements,
-      ctx.code
+      expression
     );
   }
 
