@@ -1,6 +1,6 @@
 /* eslint-disable no-await-in-loop, no-continue */
 /**
- * This file exposes sync and async transform functions that:
+ * This file exposes the async transform function that:
  * - parse the passed code to AST
  * - builds a dependency graph for the file
  * - shakes each dependency and removes unused code
@@ -349,21 +349,6 @@ const executeTransform = async (
     }
   }
 };
-
-export function transformSync(
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  _partialServices: PartialServices,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  _originalCode: string,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  _syncResolve: (what: string, importer: string, stack: string[]) => string,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  _customHandlers: Partial<AllHandlers<'sync'>> = {}
-): Result {
-  throw new Error(
-    '[wyw-in-js] transformSync is not supported in v2. Use transform() (async) instead.'
-  );
-}
 
 export function transform(
   partialServices: PartialServices,
