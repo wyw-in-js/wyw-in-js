@@ -59,6 +59,17 @@ const animationProps = new Set([
   ...getPrefixedProp('animation-name'),
 ]);
 
+// RegExps shared by every rule. The global ones are only used through
+// String#replace(All), which resets `lastIndex` before and after matching.
+const GLOBAL_SELECTOR_REGEXP = /(&\f( )?)?:global\(/;
+const RELATIVE_URL_REGEXP = /\b(url\((["']?))(\.[^)]+?)(\2\))/g;
+const KEYFRAMES_AT_RULE_REGEXP = new RegExp(
+  `^(@(?:${getPrefixedProp('keyframes').join('|')}))\\s*`
+);
+const LEADING_WHITESPACE_REGEXP = /^\s*/;
+const ANIMATION_NAME_REGEXP = /:global\(([\w_-]+)\)|([\w_-]+)/;
+const NON_SUFFIX_CHARS_REGEXP = /[^a-zA-Z0-9_-]/g;
+
 const getOriginalElementValue = (
   element: (Element & { [ORIGINAL_VALUE_KEY]?: string }) | null
 ) => {
@@ -159,7 +170,7 @@ export const stylisGlobalPlugin: Middleware = (element) => {
       return getGlobalSelectorModifiers(parent);
     }
 
-    const match = value.match(/(&\f( )?)?:global\(/);
+    const match = value.match(GLOBAL_SELECTOR_REGEXP);
 
     if (match === null) {
       throw new Error(
@@ -246,7 +257,7 @@ export function createStylisUrlReplacePlugin(
       // It'll allow css-loader to resolve an imported asset properly.
       // eslint-disable-next-line no-param-reassign
       element.return = element.value.replace(
-        /\b(url\((["']?))(\.[^)]+?)(\2\))/g,
+        RELATIVE_URL_REGEXP,
         (_match, p1, _p2, p3, p4) =>
           p1 + transformUrl(p3, outputFilename, filename) + p4
       );
@@ -255,15 +266,6 @@ export function createStylisUrlReplacePlugin(
 }
 
 export function createKeyframeSuffixerPlugin(): Middleware {
-  const buildPropsRegexp = (prop: string, isAtRule: boolean) => {
-    const [at, colon] = isAtRule ? ['@', ''] : ['', ':'];
-    return new RegExp(
-      `^(${at}(?:${getPrefixedProp(prop).join('|')})${colon})\\s*`
-    );
-  };
-
-  const animationNameRegexp = /:global\(([\w_-]+)\)|([\w_-]+)/;
-
   const getReplacer = (
     startsWith: RegExp,
     searchValue: RegExp,
@@ -285,7 +287,7 @@ export function createKeyframeSuffixerPlugin(): Middleware {
       return elementToKeyframeSuffix(el.parent);
     }
 
-    return el.value.replaceAll(/[^a-zA-Z0-9_-]/g, '');
+    return el.value.replaceAll(NON_SUFFIX_CHARS_REGEXP, '');
   };
 
   const getDefinedKeyframes = (
@@ -346,11 +348,15 @@ export function createKeyframeSuffixerPlugin(): Middleware {
         [ORIGINAL_KEYFRAME_NAME]: isGlobal ? undefined : originalName,
         [IS_GLOBAL_KEYFRAMES]: isGlobal,
         props: element.props.map(
-          getReplacer(/^\s*/, animationNameRegexp, replaceFn)
+          getReplacer(
+            LEADING_WHITESPACE_REGEXP,
+            ANIMATION_NAME_REGEXP,
+            replaceFn
+          )
         ),
         value: getReplacer(
-          buildPropsRegexp('keyframes', true),
-          animationNameRegexp,
+          KEYFRAMES_AT_RULE_REGEXP,
+          ANIMATION_NAME_REGEXP,
           replaceFn
         )(element.value),
       });
@@ -431,10 +437,8 @@ function createCompactGlobalAnimationNormalizationPlugin(): Middleware {
   };
 }
 
-const isMiddleware = (obj: Middleware | null): obj is Middleware =>
-  obj !== null;
-
 const displayKeywordRegexp = /^[a-z-]+$/;
+const importantRegexp = /!\s*important\s*$/i;
 const knownMultiKeywordDisplayTokens = new Set([
   'block',
   'inline',
@@ -452,7 +456,6 @@ function normalizeMultiKeywordDisplayValue(value: string): string | null {
     return null;
   }
 
-  const importantRegexp = /!\s*important\s*$/i;
   const hasImportant = importantRegexp.test(trimmed);
   const withoutImportant = trimmed.replace(importantRegexp, '').trim();
 
@@ -608,31 +611,26 @@ function createStylisStringifier(
 export function createStylisPreprocessor(
   options: Options & { prefixer?: boolean }
 ) {
-  const stringifier = createStylisStringifier(options.keepComments);
+  // Multi-keyword `display` values are normalized only to keep the Stylis
+  // prefixer from emitting malformed declarations (#142), so the normalization
+  // is a part of the prefixing stage and `prefixer: false` turns off both.
+  const prefixing: Middleware[] =
+    options.prefixer === false
+      ? []
+      : [createStylisDisplayNormalizationPlugin(), prefixer];
 
-  function stylisPreprocess(selector: string, text: string): string {
-    const compiled = compile(`${selector} {${text}}\n`);
+  // The plugins keep no state between rules (per-rule data lives on the
+  // elements of the compiled rule), so one chain serves the whole file.
+  const plugins = middleware([
+    createStylisUrlReplacePlugin(options.filename, options.outputFilename),
+    stylisGlobalPlugin,
+    createCompactGlobalAnimationNormalizationPlugin(),
+    ...prefixing,
+    createKeyframeSuffixerPlugin(),
+    createStylisStringifier(options.keepComments),
+  ]);
 
-    return serialize(
-      compiled,
-      middleware(
-        [
-          createStylisUrlReplacePlugin(
-            options.filename,
-            options.outputFilename
-          ),
-          stylisGlobalPlugin,
-          createCompactGlobalAnimationNormalizationPlugin(),
-          options.prefixer === false
-            ? null
-            : createStylisDisplayNormalizationPlugin(),
-          options.prefixer === false ? null : prefixer,
-          createKeyframeSuffixerPlugin(),
-          stringifier,
-        ].filter(isMiddleware)
-      )
-    );
-  }
-
-  return stylisPreprocess;
+  return function stylisPreprocess(selector: string, text: string): string {
+    return serialize(compile(`${selector} {${text}}\n`), plugins);
+  };
 }
