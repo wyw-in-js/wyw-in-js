@@ -199,6 +199,10 @@ export class EvalBroker {
     Promise<ResolveCacheEntry>
   >();
 
+  private readonly nativeResolver = createNativeResolverAdapter(
+    () => this.currentServices.options.pluginOptions
+  );
+
   private readonly loadCache = new LruCache<string, PreparedCacheEntry>(
     LOAD_CACHE_SIZE
   );
@@ -1825,10 +1829,6 @@ export class EvalBroker {
       },
     });
   }
-
-  private readonly nativeResolver = createNativeResolverAdapter(
-    () => this.currentServices.options.pluginOptions
-  );
 
   private normalizeEvalResolvedId(
     resolvedId: string,
