@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import path from 'path';
 
+import { canonicalizeForHash } from '@wyw-in-js/shared';
 import type { StrictOptions } from '@wyw-in-js/shared';
 
 import { getEvalBroker } from '../eval/broker';
@@ -33,25 +34,6 @@ const getResolverId = (fn: unknown) => {
   resolverId += 1;
   resolverIds.set(resolver, resolverId);
   return resolverId;
-};
-
-const isPlainObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
-
-const canonicalizeForHash = (value: unknown): unknown => {
-  if (Array.isArray(value)) {
-    return value.map((item) => canonicalizeForHash(item));
-  }
-
-  if (isPlainObject(value)) {
-    return Object.fromEntries(
-      Object.keys(value)
-        .sort()
-        .map((key) => [key, canonicalizeForHash(value[key])])
-    );
-  }
-
-  return value;
 };
 
 export const getEvalCacheKey = (

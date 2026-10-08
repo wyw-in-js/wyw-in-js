@@ -8,12 +8,13 @@ import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 
-import type { RawSourceMap } from 'source-map';
 import type { Compiler, RawLoaderDefinitionFunction, Stats } from 'webpack';
 
 import {
   logger,
   mergeOxcResolverAlias,
+  normalizeInputSourceMap,
+  stripQueryAndHash,
   toNativeResolverAlias,
 } from '@wyw-in-js/shared';
 import type { PluginOptions, Preprocessor, Result } from '@wyw-in-js/transform';
@@ -39,18 +40,6 @@ export { WYWinJSDebugPlugin } from './WYWinJSDebugPlugin';
 const outputCssLoader = toWebpackRequestPath(
   fileURLToPath(new URL('./outputCssLoader.js', import.meta.url))
 );
-
-const stripQueryAndHash = (request: string) => {
-  const queryIdx = request.indexOf('?');
-  const hashIdx = request.indexOf('#');
-
-  if (queryIdx === -1) {
-    return hashIdx === -1 ? request : request.slice(0, hashIdx);
-  }
-  if (hashIdx === -1) return request.slice(0, queryIdx);
-
-  return request.slice(0, Math.min(queryIdx, hashIdx));
-};
 
 const hashText = (text: string): string =>
   crypto.createHash('sha256').update(text).digest('hex');
@@ -266,24 +255,6 @@ const webpack5Loader: Loader = function webpack5LoaderPlugin(
   content,
   inputSourceMap
 ) {
-  function convertSourceMap(
-    value: typeof inputSourceMap,
-    filename: string
-  ): RawSourceMap | undefined {
-    if (typeof value === 'string' || !value) {
-      return undefined;
-    }
-
-    return {
-      ...value,
-      file: value.file ?? filename,
-      mappings: value.mappings ?? '',
-      names: value.names ?? [],
-      sources: value.sources ?? [],
-      version: value.version ?? 3,
-    };
-  }
-
   // tell Webpack this loader is async
   this.async();
 
@@ -393,7 +364,7 @@ const webpack5Loader: Loader = function webpack5LoaderPlugin(
   const transformServices = {
     options: {
       filename: resourcePath,
-      inputSourceMap: convertSourceMap(inputSourceMap, resourcePath),
+      inputSourceMap: normalizeInputSourceMap(inputSourceMap, resourcePath),
       pluginOptions: {
         ...rest,
         oxcOptions: mergeOxcResolverAlias(rest.oxcOptions, nativeResolverAlias),

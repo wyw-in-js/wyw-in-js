@@ -4,6 +4,7 @@ import path from 'path';
 
 import { SourceMapConsumer } from 'source-map';
 
+import * as actualShared from '@wyw-in-js/shared';
 import type { Rules } from '@wyw-in-js/shared';
 
 // eslint-disable-next-line import/no-relative-packages -- not part of the transform public API
@@ -11,8 +12,13 @@ import { extractCssFromAst } from '../../../transform/src/transform/generators/e
 
 const transformMock = jest.fn();
 
+// Keep the real pure helpers (request parsing, source map normalisation, CSS
+// protocol constants) and stub only what the test controls.
+const realShared = { ...actualShared };
+
 jest.mock('@wyw-in-js/shared', () => ({
   __esModule: true,
+  ...realShared,
   logger: jest.fn(),
 }));
 

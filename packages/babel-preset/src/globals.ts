@@ -1,3 +1,5 @@
+import { isPlainObject } from '@wyw-in-js/shared';
+
 const ENCODED_GLOBAL_ENVELOPE_KEY = '__wyw_eval_global';
 const ENCODED_GLOBAL_SIGNATURE = 'wyw-eval-global';
 const ENCODED_GLOBAL_VERSION = 1;
@@ -20,15 +22,6 @@ type EncodedGlobalPayload = EncodedFunctionPayload | EncodedSymbolPayload;
 
 type EncodedGlobal = {
   [ENCODED_GLOBAL_ENVELOPE_KEY]: EncodedGlobalPayload;
-};
-
-const isPlainObject = (value: unknown): value is Record<string, unknown> => {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return false;
-  }
-
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === null || prototype === Object.prototype;
 };
 
 const formatGlobalsPath = (path: Array<string | number>): string =>

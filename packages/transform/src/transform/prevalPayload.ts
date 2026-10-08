@@ -1,4 +1,5 @@
 import type { ValueCache } from '@wyw-in-js/processor-utils';
+import { isPlainObject } from '@wyw-in-js/shared';
 import type { EvalStrategy } from '@wyw-in-js/shared';
 import { isDeepStrictEqual } from 'util';
 
@@ -34,19 +35,6 @@ type WywMetaNode = {
   displayName: string | undefined;
   extends: unknown;
   value: object;
-};
-
-const isPlainObject = (value: unknown): value is Record<string, unknown> => {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return false;
-  }
-
-  const prototype = Object.getPrototypeOf(value);
-  return (
-    prototype === null ||
-    prototype === Object.prototype ||
-    Object.getPrototypeOf(prototype) === null
-  );
 };
 
 const getOwnDataProperty = (

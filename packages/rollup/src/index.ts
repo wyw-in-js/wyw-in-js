@@ -11,6 +11,7 @@ import {
   asyncResolverFactory,
   logger,
   slugify,
+  stripQueryAndHash,
   syncResolve,
 } from '@wyw-in-js/shared';
 import type { PluginOptions, Preprocessor, Result } from '@wyw-in-js/transform';
@@ -198,10 +199,8 @@ export default function wywInJS({
     return boundResolve;
   };
 
-  const normalizeId = (id: string) => id.split('?')[0].split('#')[0];
-
   const beginDependencyLoad = (state: RollupGraphState, id: string): void => {
-    const normalized = normalizeId(id);
+    const normalized = stripQueryAndHash(id);
     state.dependencyLoadDepth.set(
       normalized,
       (state.dependencyLoadDepth.get(normalized) ?? 0) + 1
@@ -213,7 +212,7 @@ export default function wywInJS({
   };
 
   const endDependencyLoad = (state: RollupGraphState, id: string): void => {
-    const normalized = normalizeId(id);
+    const normalized = stripQueryAndHash(id);
     const depth = state.dependencyLoadDepth.get(normalized) ?? 0;
     if (depth <= 1) {
       state.dependencyLoadDepth.delete(normalized);
@@ -224,7 +223,7 @@ export default function wywInJS({
   };
 
   const isDependencyLoad = (state: RollupGraphState, id: string): boolean =>
-    state.dependencyLoadDepth.has(normalizeId(id));
+    state.dependencyLoadDepth.has(stripQueryAndHash(id));
 
   const runSerialized = async <T>(
     state: RollupGraphState,
@@ -241,7 +240,7 @@ export default function wywInJS({
       promote = resolve;
     });
     const queuedTransform = { promote };
-    const normalized = normalizeId(id);
+    const normalized = stripQueryAndHash(id);
     const queuedTransforms = state.queuedTransforms.get(normalized);
     if (queuedTransforms) {
       queuedTransforms.add(queuedTransform);

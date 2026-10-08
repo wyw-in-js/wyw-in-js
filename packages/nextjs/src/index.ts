@@ -1,8 +1,11 @@
 import { createRequire } from 'module';
 
 import {
+  isPlainObject,
   mergeOxcResolverAlias,
   toNativeResolverAlias,
+  WYW_CSS_MODULE_EXTENSION,
+  WYW_CSS_OUTPUT_QUERY,
 } from '@wyw-in-js/shared';
 import type { LoaderOptions as WywTurbopackLoaderOptions } from '@wyw-in-js/turbopack-loader';
 import type { LoaderOptions as WywWebpackLoaderOptions } from '@wyw-in-js/webpack-loader';
@@ -14,9 +17,7 @@ import type {
   RuleSetUseItem,
 } from 'webpack';
 
-const DEFAULT_EXTENSION = '.wyw-in-js.module.css';
-const CSS_OUTPUT_QUERY = '__wyw_css';
-const CSS_OUTPUT_QUERY_RE = new RegExp(`^\\??${CSS_OUTPUT_QUERY}$`);
+const CSS_OUTPUT_QUERY_RE = new RegExp(`^\\??${WYW_CSS_OUTPUT_QUERY}$`);
 const NODE_MODULES_RE = /[\\/]node_modules[\\/]/;
 
 const DEFAULT_TURBO_RULE_KEYS = ['*.js', '*.jsx', '*.ts', '*.tsx'];
@@ -134,12 +135,6 @@ function traverseRules(rules: unknown[], visitor: (rule: RuleSetRule) => void) {
 
 function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  if (!isObject(value)) return false;
-  const proto = Object.getPrototypeOf(value);
-  return proto === Object.prototype || proto === null;
 }
 
 function assertJsonSerializable(value: unknown, name: string) {
@@ -301,7 +296,8 @@ function injectWywLoader(
 ) {
   const loader = nodeRequire.resolve('@wyw-in-js/webpack-loader');
 
-  const extension = wywNext.loaderOptions?.extension ?? DEFAULT_EXTENSION;
+  const extension =
+    wywNext.loaderOptions?.extension ?? WYW_CSS_MODULE_EXTENSION;
 
   const userImportOverrides = wywNext.loaderOptions?.importOverrides;
   const importOverrides = userImportOverrides

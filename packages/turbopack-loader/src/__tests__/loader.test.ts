@@ -2,10 +2,17 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
+import * as actualShared from '@wyw-in-js/shared';
+
 const transformMock = jest.fn();
+
+// Keep the real pure helpers (request parsing, source map normalisation, CSS
+// protocol constants) and stub only what the test controls.
+const realShared = { ...actualShared };
 
 jest.mock('@wyw-in-js/shared', () => ({
   __esModule: true,
+  ...realShared,
   logger: jest.fn(),
 }));
 
