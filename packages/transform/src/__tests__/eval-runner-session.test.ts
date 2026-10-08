@@ -591,3 +591,68 @@ describe('eval runner sessions', () => {
     }
   });
 });
+
+describe('eval runner stdin', () => {
+  it('drops malformed lines with a diagnostic and keeps serving the protocol', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wyw-eval-runner-'));
+    const entry = join(root, 'entry.js');
+    const source = "export const __wywPreval = { value: () => 'alive' };";
+    writeFileSync(entry, source);
+    const harness = createHarness(root);
+
+    try {
+      // The broken line shares its chunk with a valid INIT, so the runner has
+      // to report it and still handle the rest of that chunk.
+      await harness.write(
+        `{"type":"INIT","id":\n${JSON.stringify(
+          initMessage('init', 1, entry)
+        )}\n`
+      );
+      const init = await harness.take(
+        (message) => message.type === 'INIT_ACK' && message.id === 'init'
+      );
+      expect(init.error).toBeUndefined();
+      await harness.waitForStderr(
+        '[wyw-eval-runner] Dropped malformed stdin message'
+      );
+      expect(harness.getStderr()).toContain('{"type":"INIT","id":');
+
+      // A long line is reported by its head and length only.
+      await harness.write(`${'x'.repeat(1_000)}\n`);
+      await harness.waitForStderr('(1000 chars)');
+      expect(harness.getStderr()).not.toContain('x'.repeat(201));
+
+      // Valid JSON is not enough: it has to have the shape of a message.
+      await harness.write(
+        'null\n42\n["EVAL"]\n{"id":"no-type"}\n{"type":"INIT","id":"bare"}\n'
+      );
+      await harness.waitForStderr('{"type":"INIT","id":"bare"}');
+
+      await harness.send({ type: 'EVAL', id: 'eval', payload: { id: entry } });
+      const load = await harness.take(
+        (message) => message.type === 'LOAD' && message.payload?.id === entry
+      );
+      await harness.send(
+        loadResult(load, entry, source, 'entry', ['__wywPreval'])
+      );
+      const result = await harness.take(
+        (message) => message.type === 'EVAL_RESULT' && message.id === 'eval'
+      );
+      expect(result.error).toBeUndefined();
+      expect(result.payload?.values).toEqual({
+        value: { kind: 'string', value: 'alive' },
+      });
+      expect(
+        harness
+          .getStderr()
+          .split('\n')
+          .filter((line) => line.includes('Dropped malformed stdin message'))
+      ).toHaveLength(7);
+      expect(harness.child.exitCode).toBeNull();
+      expect(harness.child.signalCode).toBeNull();
+    } finally {
+      await stopHarness(harness.child);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

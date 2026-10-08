@@ -2957,6 +2957,41 @@ const handleMessage = async (message) => {
   }
 };
 
+const MALFORMED_MESSAGE_PREVIEW_LENGTH = 200;
+
+// stdin carries one JSON message per line. A line that is not a protocol
+// message is reported on stderr and dropped instead of taking the runner, and
+// every evaluation in flight with it, down.
+const parseStdinMessage = (line) => {
+  let message;
+  let problem = null;
+  try {
+    message = JSON.parse(line);
+    if (
+      !isPlainObject(message) ||
+      typeof message.type !== 'string' ||
+      !isPlainObject(message.payload)
+    ) {
+      problem = 'not a protocol message';
+    }
+  } catch (error) {
+    problem = error instanceof Error ? error.message : String(error);
+  }
+
+  if (problem === null) return message;
+
+  const preview =
+    line.length > MALFORMED_MESSAGE_PREVIEW_LENGTH
+      ? `${line.slice(0, MALFORMED_MESSAGE_PREVIEW_LENGTH)}… (${
+          line.length
+        } chars)`
+      : line;
+  process.stderr.write(
+    `[wyw-eval-runner] Dropped malformed stdin message (${problem}): ${preview}\n`
+  );
+  return null;
+};
+
 let buffer = '';
 process.stdin.setEncoding('utf8');
 process.stdin.resume();
@@ -2966,8 +3001,8 @@ process.stdin.on('data', (chunk) => {
   buffer = lines.pop() ?? '';
   lines.forEach((line) => {
     if (!line.trim()) return;
-    const message = JSON.parse(line);
-    handleMessage(message);
+    const message = parseStdinMessage(line);
+    if (message) handleMessage(message);
   });
 });
 
