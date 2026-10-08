@@ -1,8 +1,15 @@
 import { SourceMapConsumer } from 'source-map';
 
-import type { Rules } from '@wyw-in-js/shared';
+import type { Artifact, Replacements, Rules } from '@wyw-in-js/shared';
 
-import { extractCssFromAst } from '../extract';
+import { syncActionRunner } from '../../actions/actionRunner';
+import {
+  createEntrypoint,
+  createServices,
+  getHandlers,
+} from '../../__tests__/entrypoint-helpers';
+import type { Services } from '../../types';
+import { extract, extractCssFromAst } from '../extract';
 
 const filename = '/path/to/src/file.js';
 
@@ -137,5 +144,124 @@ describe('extractCssFromAst', () => {
       '.a': 1,
       '.b': 5,
     });
+  });
+});
+
+describe('extract', () => {
+  const cssArtifact = (
+    rules: Rules,
+    replacements: Replacements = []
+  ): Artifact => ['css', [rules, replacements]];
+
+  const replacement = (line: number): Replacements[number] => ({
+    length: 1,
+    original: {
+      start: { line, column: 0 },
+      end: { line, column: 1 },
+    },
+  });
+
+  const runExtract = (processors: { artifacts: Artifact[] }[]) => {
+    const services = createServices();
+    services.options = { filename } as Services['options'];
+    const entrypoint = createEntrypoint(services, filename, ['*'], '');
+    const action = entrypoint.createAction('extract', { processors }, null);
+
+    return syncActionRunner(action, getHandlers<'sync'>({ extract }));
+  };
+
+  it('merges css artifacts of all processors in order', () => {
+    const result = runExtract([
+      {
+        artifacts: [
+          cssArtifact({ '.a': rule('a', 'color: red;', 1) }, [replacement(1)]),
+          ['meta', { ignored: true }],
+        ],
+      },
+      { artifacts: [] },
+      {
+        artifacts: [
+          cssArtifact(
+            {
+              '.b': rule('b', 'color: blue;', 2),
+              '.c': rule('c', 'color: green;', 3),
+            },
+            [replacement(2), replacement(3)]
+          ),
+        ],
+      },
+      {
+        artifacts: [
+          cssArtifact({ '.d': rule('d', 'color: black;', 4) }),
+          cssArtifact({ '.e': rule('e', 'color: white;', 5) }, [
+            replacement(5),
+          ]),
+        ],
+      },
+    ]);
+
+    expect(result.cssText).toBe(
+      '.a{color:red;}\n.b{color:blue;}\n.c{color:green;}\n.d{color:black;}\n.e{color:white;}\n'
+    );
+    expect(Object.keys(result.rules)).toEqual(['.a', '.b', '.c', '.d', '.e']);
+    expect(result.replacements).toEqual([
+      replacement(1),
+      replacement(2),
+      replacement(3),
+      replacement(5),
+    ]);
+  });
+
+  it('keeps the first position and the last value of a repeated selector', () => {
+    const result = runExtract([
+      {
+        artifacts: [
+          cssArtifact({
+            '.a': rule('a', 'color: red;', 1),
+            '.b': rule('b', 'color: blue;', 2),
+          }),
+        ],
+      },
+      {
+        artifacts: [
+          cssArtifact({
+            '.c': rule('c', 'color: green;', 3),
+            '.a': rule('a', 'color: black;', 4),
+          }),
+        ],
+      },
+    ]);
+
+    expect(result.cssText).toBe(
+      '.a{color:black;}\n.b{color:blue;}\n.c{color:green;}\n'
+    );
+    expect(Object.keys(result.rules)).toEqual(['.a', '.b', '.c']);
+    expect(result.rules['.a'].start).toEqual({ line: 4, column: 0 });
+  });
+
+  it('does not mutate the rules of a processor', () => {
+    const first: Rules = { '.a': rule('a', 'color: red;', 1) };
+    const second: Rules = { '.b': rule('b', 'color: blue;', 2) };
+
+    const result = runExtract([
+      { artifacts: [cssArtifact(first)] },
+      { artifacts: [cssArtifact(second)] },
+    ]);
+
+    expect(result.rules).not.toBe(first);
+    expect(Object.keys(first)).toEqual(['.a']);
+    expect(Object.keys(second)).toEqual(['.b']);
+  });
+
+  it('returns empty css when no processor has css artifacts', () => {
+    const result = runExtract([
+      { artifacts: [['meta', {}]] },
+      { artifacts: [] },
+    ]);
+
+    expect(result.cssText).toBe('');
+    expect(result.cssSourceMapText).toBe('');
+    expect(result.rules).toEqual({});
+    expect(result.replacements).toEqual([]);
   });
 });
