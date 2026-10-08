@@ -72,7 +72,6 @@ export default function wywInJS({
   let cacheKey = 'wyw-in-js:0';
   let isCacheKeyVisible = true;
   const filter = createFilter(include, exclude);
-  const emptyConfig = {};
   const graphStates = new WeakMap<object, RollupGraphState>();
   const fallbackCssByGraph = new WeakMap<object, Record<string, string>>();
   let publicPlugin: Plugin;
@@ -483,8 +482,7 @@ export default function wywInJS({
         const result = await transform(
           transformServices,
           code,
-          createAsyncResolver(getBoundResolve(this)),
-          emptyConfig
+          createAsyncResolver(getBoundResolve(this))
         );
 
         if (!result.cssText) return;
