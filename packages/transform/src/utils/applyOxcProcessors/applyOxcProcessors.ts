@@ -15,7 +15,7 @@ import {
 import { EventEmitter } from '../EventEmitter';
 import type { AddedImport } from '../oxcAstService';
 import { isOxcNode } from '../oxc/ast';
-import { applyOxcReplacementLayers } from '../oxc/replacements';
+import { applyOxcEdits, createOxcFileEdits } from '../oxc/fileEdits';
 import {
   buildOxcCodeFrameError,
   createOxcLocationLookup,
@@ -165,9 +165,7 @@ export const applyOxcProcessors = (
     return evaltimeCodePlan;
   };
   const buildUnprocessedCode = () =>
-    applyOxcReplacementLayers(workingCode, [
-      getEvaltimeCodePlan().replacements,
-    ]);
+    applyOxcEdits(workingCode, getEvaltimeCodePlan().replacements);
   const definedProcessors = new Map<string, DefinedProcessor>();
   const removableImportLocals = new Set(
     reusablePlan?.removableImportLocals ?? []
@@ -516,11 +514,15 @@ export const applyOxcProcessors = (
   const currentSameFileProcessorStaticValues =
     collectCurrentSameFileProcessorStaticValues();
 
-  const replacedCode = applyOxcReplacementLayers(workingCode, [
-    replacements,
-    evaltimeCodeReplacements,
-    extracted.replacements,
-  ]);
+  // Processor edits win over evaltime removals, which win over extracted
+  // expression edits, when two of them cover the same range.
+  const applyFileEdits = (): string =>
+    createOxcFileEdits(workingCode)
+      .add(replacements)
+      .add(evaltimeCodeReplacements)
+      .add(extracted.replacements)
+      .apply();
+  const replacedCode = applyFileEdits();
   const metadataExtendsHelperNames =
     collectWYWMetaExtendsHelperNames(replacedCode);
   const staticValueCandidates = extracted.staticValueCandidates.filter(
@@ -531,13 +533,8 @@ export const applyOxcProcessors = (
   let callbacksApplied = !deferProcessorCallbacks;
 
   const buildCode = (): string => {
-    const nextReplacedCode = applyOxcReplacementLayers(workingCode, [
-      replacements,
-      evaltimeCodeReplacements,
-      extracted.replacements,
-    ]);
     const codeWithAddedImports = insertAddedImports(
-      nextReplacedCode,
+      applyFileEdits(),
       filename,
       addedImports
     );
