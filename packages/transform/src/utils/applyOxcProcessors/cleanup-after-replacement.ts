@@ -1,6 +1,6 @@
 import type { Program } from 'oxc-parser';
 
-import { applyOxcEdits } from '../oxc/fileEdits';
+import { applyOxcEdits, mergeOxcRemovals } from '../oxc/fileEdits';
 import {
   collectReferencedNames,
   collectRemovableNamesFromStatements,
@@ -15,7 +15,6 @@ import {
   collectUnusedImportRemovals,
   collectUnusedScopedDeclarationRemovals,
   collectUnusedTopLevelDeclarationRemovals,
-  mergeEmptyRemovalRanges,
 } from './cleanupRemovals';
 import { parseOxc } from './shared';
 import {
@@ -90,7 +89,7 @@ export const removeUnusedAfterReplacement = (
         current,
         program
       );
-      const removals = mergeEmptyRemovalRanges([
+      const removals = mergeOxcRemovals([
         ...scopedDeclarationRemovals,
         ...topLevelDeclarationRemovals,
         ...generatedHelperRemovals,

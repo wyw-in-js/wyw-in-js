@@ -266,6 +266,37 @@ export const createOxcFileEdits = (
   return session;
 };
 
+/**
+ * Merges removals that overlap or touch into a single removal, so that
+ * independently planned removals never conflict. Edits with new text are kept
+ * as they are. The result is sorted by start; the input is not mutated.
+ */
+export const mergeOxcRemovals = (edits: OxcEdit[]): OxcEdit[] => {
+  if (edits.length <= 1) {
+    return edits;
+  }
+
+  const sorted = [...edits].sort((a, b) => a.start - b.start);
+  const merged: OxcEdit[] = [];
+
+  sorted.forEach((edit) => {
+    const previous = merged[merged.length - 1];
+    if (
+      previous &&
+      previous.value === '' &&
+      edit.value === '' &&
+      edit.start <= previous.end
+    ) {
+      previous.end = Math.max(previous.end, edit.end);
+      return;
+    }
+
+    merged.push({ ...edit });
+  });
+
+  return merged;
+};
+
 /** Applies `edits` to `source` (see `OxcFileEdits` for conflict rules). */
 export const applyOxcEdits = (
   source: string,

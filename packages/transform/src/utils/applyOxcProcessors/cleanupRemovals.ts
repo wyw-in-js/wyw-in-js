@@ -605,32 +605,6 @@ export const expandImportSpecifierRemovalRange = (
   };
 };
 
-export const mergeEmptyRemovalRanges = (removals: OxcEdit[]): OxcEdit[] => {
-  if (removals.length <= 1) {
-    return removals;
-  }
-
-  const sorted = [...removals].sort((a, b) => a.start - b.start);
-  const merged: OxcEdit[] = [];
-
-  sorted.forEach((removal) => {
-    const previous = merged[merged.length - 1];
-    if (
-      previous &&
-      previous.value === '' &&
-      removal.value === '' &&
-      removal.start <= previous.end
-    ) {
-      previous.end = Math.max(previous.end, removal.end);
-      return;
-    }
-
-    merged.push({ ...removal });
-  });
-
-  return merged;
-};
-
 export const collectUnusedImportRemovals = (
   code: string,
   program: Program,

@@ -9,6 +9,7 @@ import type {
   collectOxcExportsAndImports,
   OxcCollectedImport,
 } from '../collectOxcExportsAndImports';
+import type { OxcEdit } from '../oxc/fileEdits';
 import { collectOxcPatternIdentifierNames as collectPatternNames } from '../oxc/patterns';
 import { createCallableProvenanceIndex } from './callableProvenanceIndex';
 import {
@@ -24,7 +25,6 @@ import {
   parseShakerModule,
   removeExportKeyword,
   splitExportedVariableDeclaration,
-  type Replacement,
 } from './moduleRewrites';
 import {
   collectModuleInvocationEffects,
@@ -828,7 +828,7 @@ export const shakeOxcToESM = (
     }
   }
 
-  const replacements: Replacement[] = [];
+  const replacements: OxcEdit[] = [];
   statements.forEach((statement) => {
     if (!liveStatements.has(statement)) {
       replacements.push({

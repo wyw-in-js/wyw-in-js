@@ -4,6 +4,7 @@ import {
   applyOxcEdits,
   applyOxcEditsInRange,
   createOxcFileEdits,
+  mergeOxcRemovals,
   type OxcEdit,
 } from '../fileEdits';
 
@@ -253,5 +254,32 @@ describe('createOxcFileEdits', () => {
         createOxcFileEdits('run();').insert('after-imports', 'x')
       ).toThrow('after-imports');
     });
+  });
+});
+
+describe('mergeOxcRemovals', () => {
+  it('merges overlapping and touching removals into one', () => {
+    expect(
+      mergeOxcRemovals([
+        edit(6, 8, ''),
+        edit(0, 3, ''),
+        edit(2, 5, ''),
+        edit(5, 6, ''),
+      ])
+    ).toEqual([edit(0, 8, '')]);
+  });
+
+  it('keeps edits with new text apart from removals', () => {
+    expect(
+      mergeOxcRemovals([edit(4, 6, ''), edit(0, 2, ''), edit(2, 4, 'X')])
+    ).toEqual([edit(0, 2, ''), edit(2, 4, 'X'), edit(4, 6, '')]);
+  });
+
+  it('does not mutate the given removals', () => {
+    const removals = [edit(0, 3, ''), edit(2, 5, '')];
+
+    mergeOxcRemovals(removals);
+
+    expect(removals).toEqual([edit(0, 3, ''), edit(2, 5, '')]);
   });
 });
