@@ -633,15 +633,7 @@ describe('pipeline telemetry boundary', () => {
         parseOxcCached(plainFilename, plainCode, 'module');
         parseOxcCached(jsxFilename, jsxCode, 'unambiguous');
         parseOxcCached(jsxFilename, jsxCode, 'unambiguous');
-        // Production parses all go through the cache; the schema still
-        // accounts for direct parser work reported by other producers.
-        recordPipelineUncachedParse(
-          uncachedFilename,
-          uncachedCode,
-          'module',
-          'ts',
-          false
-        );
+        parseFile(undefined, uncachedFilename, uncachedCode);
       }
     );
     unregister();
@@ -841,13 +833,9 @@ describe('pipeline telemetry boundary', () => {
         expect(() =>
           parseOxcCached(cachedFilename, cachedCode, 'module')
         ).toThrow();
-        recordPipelineUncachedParse(
-          directFilename,
-          directCode,
-          'module',
-          'ts',
-          true
-        );
+        expect(() =>
+          parseFile(undefined, directFilename, directCode)
+        ).toThrow();
       }
     );
     unregister();

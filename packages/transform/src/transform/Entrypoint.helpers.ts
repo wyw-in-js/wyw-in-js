@@ -7,7 +7,7 @@ import { logger } from '@wyw-in-js/shared';
 import { oxcShaker } from '../shaker';
 import type { ParentEntrypoint } from '../types';
 import { getFileIdx } from '../utils/getFileIdx';
-import { parseOxcProgramCached } from '../utils/parseOxc';
+import { parseOxcProgramFresh } from '../utils/parseOxc';
 import { stripQueryAndHash } from '../utils/parseRequest';
 
 import type {
@@ -49,9 +49,9 @@ export function parseFile(
 ): ParsedAst {
   const log = logger.extend('transform:parse').extend(getFileIdx(filename));
 
-  // The program comes from the shared parse cache: callers must treat it as
-  // read-only.
-  const program = parseOxcProgramCached(filename, originalCode, 'module');
+  // Public callers own the returned AST and may mutate it, so it must never be
+  // the program shared through the parse cache.
+  const program = parseOxcProgramFresh(filename, originalCode, 'module');
 
   log('stage-1', `${filename} has been parsed`);
 

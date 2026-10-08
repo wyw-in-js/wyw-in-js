@@ -507,7 +507,8 @@ export const recordPipelineRawTransferFallback = (
   code: string,
   sourceType: string,
   astType: string,
-  kind: ParseKind
+  kind: ParseKind,
+  jsxFallbackAllowed: boolean
 ): void => {
   const accumulator = getAccumulator();
   if (!accumulator) return;
@@ -519,7 +520,7 @@ export const recordPipelineRawTransferFallback = (
         sourceType,
         filename,
         astType,
-        kind === 'cached' && filename.endsWith('.js')
+        jsxFallbackAllowed
       ),
       kind,
       measureCode(accumulator, code)
@@ -646,7 +647,9 @@ export const recordPipelineUncachedParse = (
   code: string,
   sourceType: string,
   astType: string,
-  error: boolean
+  error: boolean,
+  jsxFallback = false,
+  jsxFallbackAllowed = false
 ): void => {
   recordPipelineParseMiss(
     filename,
@@ -654,9 +657,9 @@ export const recordPipelineUncachedParse = (
     sourceType,
     astType,
     'uncached',
-    false,
+    jsxFallback,
     error,
-    false
+    jsxFallbackAllowed
   );
 };
 

@@ -1,7 +1,7 @@
 const path = require('node:path');
 
 const singleParseEntryMessage =
-  'Parse through parseOxcCached/parseOxcProgramCached from src/utils/parseOxc.ts: it owns the parse cache, the .js JSX fallback, raw-transfer recovery and parse telemetry.';
+  'Parse through src/utils/parseOxc.ts (parseOxcCached/parseOxcProgramCached, or parseOxcProgramFresh for a caller-owned AST): it owns the parse cache, the .js JSX fallback, raw-transfer recovery and parse telemetry.';
 
 module.exports = {
   extends: ['@wyw-in-js/eslint-config/library'],

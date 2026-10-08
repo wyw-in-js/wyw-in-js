@@ -7,6 +7,7 @@ import {
   recordPipelineCachedParseMiss,
   recordPipelineCachedParseHit,
   recordPipelineRawTransferFallback,
+  recordPipelineUncachedParse,
 } from '../debug/pipelineTelemetry';
 import type { ParseKind } from '../debug/pipelineTelemetry.types';
 import {
@@ -14,10 +15,11 @@ import {
   type OxcParserLanguage,
 } from './oxcParserLanguage';
 
-// The single parse entry of the transform package. Every production parse
-// goes through parseOxcCached: it owns the content-addressed cache, the .js
-// JSX fallback, raw-transfer recovery and parse telemetry. Direct parser calls
-// elsewhere are rejected by the package's lint config.
+// The single parse entry of the transform package. Internal parses go through
+// parseOxcCached; parseOxcProgramFresh serves callers that own and may mutate
+// the AST. Both share the .js JSX fallback, raw-transfer recovery and parse
+// telemetry. Direct parser calls elsewhere are rejected by the package's lint
+// config.
 
 type OxcSourceType = 'module' | 'unambiguous';
 export type OxcAstType = 'js' | 'ts';
@@ -48,7 +50,9 @@ export const parseOxcSync = (
   options: OxcParseOptions,
   telemetryKind?: ParseKind,
   // A JSX reparse belongs to its original .js logical request.
-  telemetryFilename = filename
+  telemetryFilename = filename,
+  telemetryJsxFallbackAllowed = telemetryKind === 'cached' &&
+    telemetryFilename.endsWith('.js')
 ): ReturnType<typeof parseSync> => {
   const language = options.lang ?? getOxcParserLanguage(filename);
   const optionsWithTransfer: OxcParseOptions = {
@@ -83,7 +87,8 @@ export const parseOxcSync = (
         options.sourceType ?? 'module',
         options.astType ??
           (language === 'js' || language === 'jsx' ? 'js' : 'ts'),
-        telemetryKind
+        telemetryKind,
+        telemetryJsxFallbackAllowed
       );
     }
     try {
@@ -102,14 +107,17 @@ export const parseOxcSync = (
   }
 };
 
-type ParsedOxc = {
+type ParsedOxcPayload = {
   comments: Comment[];
   jsxFallback: boolean;
   module: {
     hasModuleSyntax: boolean;
   };
-  pipelineMeasurement: { bytes: number; revision: string } | undefined;
   program: Program;
+};
+
+type ParsedOxc = ParsedOxcPayload & {
+  pipelineMeasurement: { bytes: number; revision: string } | undefined;
 };
 
 // 200 evicts under sustained pressure on large monorepos — the
@@ -182,6 +190,69 @@ const setCachedParse = (
   return value;
 };
 
+// Parses with the .js JSX fallback. Failed requests are reported through
+// recordFailure; the caller records successful ones.
+const parseWithJsxFallback = (
+  filename: string,
+  code: string,
+  sourceType: OxcSourceType,
+  astType: OxcAstType,
+  telemetryKind: ParseKind,
+  recordFailure: (jsxFallback: boolean) => void
+): ParsedOxcPayload => {
+  const jsxFallbackFilename = getJsxFallbackFilename(filename);
+  const jsxFallbackAllowed = jsxFallbackFilename !== null;
+  const options = { astType, range: true, sourceType } as const;
+  let parsed: ReturnType<typeof parseOxcSync>;
+  try {
+    parsed = parseOxcSync(
+      filename,
+      code,
+      options,
+      telemetryKind,
+      filename,
+      jsxFallbackAllowed
+    );
+  } catch (error) {
+    recordFailure(false);
+    throw error;
+  }
+  let fatalError = parsed.errors.find((error) => error.severity === 'Error');
+  let jsxFallback = false;
+  if (fatalError?.message.includes('JSX') && jsxFallbackFilename) {
+    // Some bundlers pass .js files with JSX to WyW before a later JSX transform.
+    jsxFallback = true;
+    try {
+      parsed = parseOxcSync(
+        jsxFallbackFilename,
+        code,
+        options,
+        telemetryKind,
+        filename,
+        jsxFallbackAllowed
+      );
+    } catch (error) {
+      recordFailure(jsxFallback);
+      throw error;
+    }
+    fatalError = parsed.errors.find((error) => error.severity === 'Error');
+  }
+
+  if (fatalError) {
+    recordFailure(jsxFallback);
+    throw new Error(fatalError.message);
+  }
+
+  return {
+    comments: parsed.comments,
+    jsxFallback,
+    module: {
+      hasModuleSyntax: parsed.module.hasModuleSyntax,
+    },
+    program: parsed.program as Program,
+  };
+};
+
 export const parseOxcCached = (
   filename: string,
   code: string,
@@ -214,48 +285,13 @@ export const parseOxcCached = (
     return cached;
   }
 
-  let parsed: ReturnType<typeof parseOxcSync>;
-  try {
-    parsed = parseOxcSync(
-      filename,
-      code,
-      {
-        astType,
-        range: true,
-        sourceType,
-      },
-      'cached'
-    );
-  } catch (error) {
-    recordPipelineCachedParseMiss(
-      filename,
-      code,
-      sourceType,
-      astType,
-      false,
-      true
-    );
-    throw error;
-  }
-  let fatalError = parsed.errors.find((error) => error.severity === 'Error');
-  const jsxFallbackFilename = getJsxFallbackFilename(filename);
-  let jsxFallback = false;
-  if (fatalError?.message.includes('JSX') && jsxFallbackFilename) {
-    // Some bundlers pass .js files with JSX to WyW before a later JSX transform.
-    jsxFallback = true;
-    try {
-      parsed = parseOxcSync(
-        jsxFallbackFilename,
-        code,
-        {
-          astType,
-          range: true,
-          sourceType,
-        },
-        'cached',
-        filename
-      );
-    } catch (error) {
+  const payload = parseWithJsxFallback(
+    filename,
+    code,
+    sourceType,
+    astType,
+    'cached',
+    (jsxFallback) =>
       recordPipelineCachedParseMiss(
         filename,
         code,
@@ -263,37 +299,13 @@ export const parseOxcCached = (
         astType,
         jsxFallback,
         true
-      );
-      throw error;
-    }
-    fatalError = parsed.errors.find((error) => error.severity === 'Error');
-  }
-
-  if (fatalError) {
-    recordPipelineCachedParseMiss(
-      filename,
-      code,
-      sourceType,
-      astType,
-      jsxFallback,
-      true
-    );
-    throw new Error(fatalError.message);
-  }
-
-  const sharedValue = {
-    comments: parsed.comments,
-    jsxFallback,
-    module: {
-      hasModuleSyntax: parsed.module.hasModuleSyntax,
-    },
-    program: parsed.program as Program,
-  };
+      )
+  );
   const value: ParsedOxc = {
-    ...sharedValue,
+    ...payload,
     pipelineMeasurement: undefined,
   };
-  if (parsed.module.hasModuleSyntax) {
+  if (payload.module.hasModuleSyntax) {
     // Module syntax pins 'unambiguous' to the module grammar, so both
     // sourceType requests resolve to the same AST — publish it under both
     // keys instead of parsing the same content twice.
@@ -302,7 +314,7 @@ export const parseOxcCached = (
     // Cache entries keep source-type-specific telemetry identity, while their
     // immutable parse payload is shared.
     setCachedParse(getParseCacheBucket(filename, other, astType), code, {
-      ...sharedValue,
+      ...payload,
       pipelineMeasurement: undefined,
     });
   }
@@ -313,7 +325,7 @@ export const parseOxcCached = (
     code,
     sourceType,
     astType,
-    jsxFallback,
+    payload.jsxFallback,
     false,
     cachedParse
   );
@@ -329,6 +341,45 @@ export const parseOxcProgramCached = (
   sourceType: OxcSourceType,
   astType?: OxcAstType
 ): Program => parseOxcCached(filename, code, sourceType, astType).program;
+
+// A caller-owned program for public APIs whose callers may mutate the AST. It
+// neither reads nor populates the cache and is reported as an uncached request.
+export const parseOxcProgramFresh = (
+  filename: string,
+  code: string,
+  sourceType: OxcSourceType,
+  astType: OxcAstType = getAstType(filename)
+): Program => {
+  const jsxFallbackAllowed = getJsxFallbackFilename(filename) !== null;
+  const payload = parseWithJsxFallback(
+    filename,
+    code,
+    sourceType,
+    astType,
+    'uncached',
+    (jsxFallback) =>
+      recordPipelineUncachedParse(
+        filename,
+        code,
+        sourceType,
+        astType,
+        true,
+        jsxFallback,
+        jsxFallbackAllowed
+      )
+  );
+  commentsByProgram.set(payload.program, payload.comments);
+  recordPipelineUncachedParse(
+    filename,
+    code,
+    sourceType,
+    astType,
+    false,
+    payload.jsxFallback,
+    jsxFallbackAllowed
+  );
+  return payload.program;
+};
 
 export const getOxcProgramComments = (
   program: Program
