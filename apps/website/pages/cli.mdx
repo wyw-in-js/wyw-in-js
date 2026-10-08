@@ -58,6 +58,13 @@ The CLI options below are based on `wyw-in-js --help`.
 - `--source-maps`, `-s`: generate `.map` files for extracted CSS.
 - `--parallel`, `-p`: run extraction in parallel.
 - `--ignore`, `-x`: glob pattern to exclude files (passed to `glob`).
+- `--prefixer` (default: `true`): add vendor prefixes to the extracted CSS. `--no-prefixer` turns them off, like
+  `prefixer: false` in the bundler plugins.
+- `--keep-comments`: keep CSS comments in the extracted CSS, like `keepComments: true`.
+- `--keep-comments-pattern`: keep only the comments that match a regular expression, like `keepComments: /rtl:/`
+  (`--keep-comments-pattern "rtl:"`). Cannot be combined with `--keep-comments`.
+- `--preprocessor`: `stylis` (default) or `none`, like the `preprocessor` option. A custom preprocessor function cannot
+  be set from the CLI.
 - `--debug`, `-d`: write debug output into a directory. The log analyzer reads `actions.jsonl`,
   `dependencies.jsonl`, `entrypoints.jsonl`, and optional `eval-files.jsonl` / `perf-spans.jsonl`.
 
