@@ -379,8 +379,9 @@ function innerCreateEntrypoint(
     assertExternalEpoch?.();
 
     reusedEntrypoint.reuseTransformResult(
-      cached.transformResult ?? cached.transformResultCode,
-      cached.hasWywMetadata
+      cached.transformResultCode,
+      cached.hasWywMetadata,
+      cached.transformCodeFactory ?? null
     );
     if (
       'preevalResult' in cached &&

@@ -5,6 +5,8 @@ import type {
 } from '@wyw-in-js/shared';
 
 import type { Services } from './types';
+import type { Entrypoint } from './Entrypoint';
+import type { ITransformFileResult } from '../types';
 import type { WYWTransformMetadata } from '../utils/TransformMetadata';
 import type {
   OxcProcessorAnalysisPlan,
@@ -13,6 +15,19 @@ import type {
 import type { OxcPureCallHint } from '../utils/collectOxcTemplateDependencies';
 
 export type ParsedAst = unknown;
+
+export type TransformCodeFactory = (
+  entrypoint: Entrypoint,
+  services: Services
+) => string;
+
+export type EntrypointTransformResult =
+  | (ITransformFileResult & { prepareCode?: never })
+  | {
+      code?: never;
+      metadata: WYWTransformMetadata | null;
+      prepareCode: TransformCodeFactory;
+    };
 
 export interface IEntrypointCode {
   readonly ast: ParsedAst;
@@ -34,13 +49,6 @@ export interface IEntrypointDependency {
   resolved: string | null;
   source: string;
 }
-
-/**
- * Transform stage output kept by an entrypoint. Only the legacy `Module`
- * evaluator reads `code`, so the transform stage computes it on the first
- * read; holders pass the object along without reading it.
- */
-export type TransformResultCode = { readonly code: string };
 
 export interface IPreevalResult {
   ast: ParsedAst | null;

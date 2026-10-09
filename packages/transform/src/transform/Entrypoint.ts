@@ -1,6 +1,6 @@
 import { invariant } from 'ts-invariant';
 
-import type { ParentEntrypoint, ITransformFileResult } from '../types';
+import type { ParentEntrypoint } from '../types';
 
 import { getActionContextOwners } from './ActionContext';
 import { BaseEntrypoint } from './BaseEntrypoint';
@@ -10,13 +10,15 @@ import type {
   IEntrypointDependency,
   IIgnoredEntrypoint,
   IPreevalResult,
-  TransformResultCode,
+  EntrypointTransformResult,
+  TransformCodeFactory,
 } from './Entrypoint.types';
 import {
   EvaluatedEntrypoint,
   type IEvaluatedEntrypoint,
 } from './EvaluatedEntrypoint';
 import { AbortError } from './actions/AbortError';
+import { EntrypointEvictedError } from './actions/EntrypointEvictedError';
 import type { ActionByType } from './actions/BaseAction';
 import { BaseAction } from './actions/BaseAction';
 import { UnprocessedEntrypointError } from './actions/UnprocessedEntrypointError';
@@ -79,7 +81,15 @@ export class Entrypoint extends BaseEntrypoint {
 
   #supersededWith: Entrypoint | null = null;
 
-  #transformResult: TransformResultCode | null = null;
+  #transformResultCode: string | null = null;
+
+  #transformCodeFactory: TransformCodeFactory | null = null;
+
+  #transformResultServices: Services | null = null;
+
+  #materializingTransformResult: object | null = null;
+
+  #reusedTransformPublication: object | null = null;
 
   #transformResultMutation: object | null = null;
 
@@ -151,12 +161,76 @@ export class Entrypoint extends BaseEntrypoint {
     return this.#supersededWith?.supersededWith ?? this.#supersededWith;
   }
 
+  /** Whether `candidate` is this entrypoint or any generation superseding it. */
+  public isSelfOrSuccessor(candidate: Entrypoint): boolean {
+    if (candidate === this) {
+      return true;
+    }
+
+    for (
+      let current = this.#supersededWith;
+      current;
+      current = current.#supersededWith
+    ) {
+      if (current === candidate) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   public get transformedCode(): string | null {
-    return (
-      this.#transformResult?.code ??
-      this.supersededWith?.transformedCode ??
-      null
-    );
+    if (this.#transformResultCode !== null) {
+      return this.#transformResultCode;
+    }
+    if (this.supersededWith) {
+      return this.supersededWith.transformedCode;
+    }
+    const prepareCode = this.#transformCodeFactory;
+    if (!prepareCode) {
+      return null;
+    }
+
+    this.assertCurrentCacheEpoch();
+    this.assertNotSuperseded();
+    const services = this.#transformResultServices ?? this.services;
+    const targetEpoch = services.cacheEpoch ?? services.cache.getCurrentEpoch();
+    services.cache.assertEpoch(targetEpoch);
+    const expectedPublication = services.cache.get('entrypoints', this.name);
+    if (expectedPublication === undefined) {
+      throw new EntrypointEvictedError(this);
+    }
+    if (
+      !this.isPublishedAs(expectedPublication) &&
+      expectedPublication !== this.#reusedTransformPublication
+    ) {
+      throw new AbortError('superseded');
+    }
+    const mutation = this.#transformResultMutation;
+    if (this.#materializingTransformResult === mutation) {
+      throw new Error(`Recursive executable preparation for ${this.name}`);
+    }
+    this.#materializingTransformResult = mutation;
+    try {
+      const code = prepareCode(this, services);
+      services.cache.assertEpoch(targetEpoch);
+      this.assertCurrentCacheEpoch();
+      this.assertNotSuperseded();
+      if (
+        this.#transformResultMutation !== mutation ||
+        services.cache.get('entrypoints', this.name) !== expectedPublication
+      ) {
+        throw new AbortError('superseded');
+      }
+      this.#transformResultCode = code;
+      this.#transformCodeFactory = null;
+      return code;
+    } finally {
+      if (this.#materializingTransformResult === mutation) {
+        this.#materializingTransformResult = null;
+      }
+    }
   }
 
   public get transformed(): boolean {
@@ -438,7 +512,14 @@ export class Entrypoint extends BaseEntrypoint {
       throw invalidationError;
     }
 
-    if (this.transformedCode === null) {
+    if (
+      this.#transformResultCode === null &&
+      this.#transformCodeFactory === null
+    ) {
+      if (this.supersededWith) {
+        this.supersededWith.assertTransformed();
+        return;
+      }
       this.log('not transformed');
       throw new UnprocessedEntrypointError(this.supersededWith ?? this);
     }
@@ -570,7 +651,8 @@ export class Entrypoint extends BaseEntrypoint {
     evaluated.hasWywMetadata = this.#hasWywMetadata;
     evaluated.loadedAndParsed = this.loadedAndParsed;
     evaluated.preevalResult = this.#preevalResult;
-    evaluated.transformResult = this.#transformResult;
+    evaluated.transformResultCode = this.#transformResultCode;
+    evaluated.transformCodeFactory = this.#transformCodeFactory;
 
     // EvaluatedEntrypoint construction emits a public `created` event through
     // the target services. That callback may retire either owner, so fence the
@@ -633,14 +715,21 @@ export class Entrypoint extends BaseEntrypoint {
   }
 
   public reuseTransformResult(
-    result: string | TransformResultCode | null,
-    hasWywMetadata: boolean
+    code: string | null,
+    hasWywMetadata: boolean,
+    prepareCode: TransformCodeFactory | null = null
   ): void {
     this.assertCurrentCacheEpoch();
     this.#hasTransformResult = true;
     this.#hasWywMetadata = hasWywMetadata;
-    this.#transformResult =
-      typeof result === 'string' ? { code: result } : result;
+    this.#transformResultCode = code;
+    this.#transformCodeFactory = prepareCode;
+    this.#transformResultServices = this.services;
+    this.#transformResultMutation = {};
+    // An unchanged evaluated publication can remain cached while a new source
+    // entrypoint reuses its semantic state without republishing itself.
+    this.#reusedTransformPublication =
+      this.services.cache.get('entrypoints', this.name) ?? null;
 
     resetSupersedeWindow(this.services, this.name);
   }
@@ -662,7 +751,7 @@ export class Entrypoint extends BaseEntrypoint {
   }
 
   public setTransformResult(
-    res: ITransformFileResult | null,
+    res: EntrypointTransformResult | null,
     services: Services = this.services
   ) {
     this.assertCurrentCacheEpoch();
@@ -671,14 +760,19 @@ export class Entrypoint extends BaseEntrypoint {
     services.cache.assertEpoch(targetEpoch);
     const previousHasTransformResult = this.#hasTransformResult;
     const previousHasWywMetadata = this.#hasWywMetadata;
-    const previousTransformResult = this.#transformResult;
+    const previousTransformResultCode = this.#transformResultCode;
+    const previousTransformCodeFactory = this.#transformCodeFactory;
+    const previousTransformResultServices = this.#transformResultServices;
+    const previousReusedTransformPublication = this.#reusedTransformPublication;
     const previousTransformResultMutation = this.#transformResultMutation;
     const transformResultMutation = {};
     this.#transformResultMutation = transformResultMutation;
     this.#hasTransformResult = true;
     this.#hasWywMetadata = Boolean(res?.metadata);
-    // Keep the result object: its code is computed on the first read.
-    this.#transformResult = res;
+    this.#transformResultCode = res?.code ?? null;
+    this.#transformCodeFactory = res?.prepareCode ?? null;
+    this.#transformResultServices = services;
+    this.#reusedTransformPublication = null;
 
     try {
       services.eventEmitter.entrypointEvent(this.seqId, {
@@ -695,7 +789,10 @@ export class Entrypoint extends BaseEntrypoint {
       if (this.#transformResultMutation === transformResultMutation) {
         this.#hasTransformResult = previousHasTransformResult;
         this.#hasWywMetadata = previousHasWywMetadata;
-        this.#transformResult = previousTransformResult;
+        this.#transformResultCode = previousTransformResultCode;
+        this.#transformCodeFactory = previousTransformCodeFactory;
+        this.#transformResultServices = previousTransformResultServices;
+        this.#reusedTransformPublication = previousReusedTransformPublication;
         this.#transformResultMutation = previousTransformResultMutation;
       }
       throw error;

@@ -225,7 +225,10 @@ describe('prepareCode with explicit oxcShaker action', () => {
       handlers
     );
 
-    expect(result.code).toContain('require("./side-effect.js")');
+    const code = result.prepareCode
+      ? result.prepareCode(entrypoint, services)
+      : result.code;
+    expect(code).toContain('require("./side-effect.js")');
     expect(resolveImports).toHaveBeenCalledTimes(1);
     expect(handlers.processImports).toHaveBeenCalledTimes(1);
   });

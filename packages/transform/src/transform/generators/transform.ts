@@ -1,10 +1,10 @@
 import { oxcShaker } from '../../shaker';
-import type { ITransformFileResult } from '../../types';
 import type { WYWTransformMetadata } from '../../utils/TransformMetadata';
 import { collectOxcExportsAndImports } from '../../utils/collectOxcExportsAndImports';
 import { collectOxcImportMap } from '../../utils/oxcImportMap';
 import { emitOxcCommonJS, stripTypesAndJsxWithOxc } from '../../utils/oxcEmit';
 import { runOxcPreevalStage } from '../../utils/oxcPreevalStage';
+import { deferOxcPreevalCode } from '../../utils/oxcPreevalStage/deferredCode';
 import { shakeOxcToESM } from '../../utils/oxcShaker';
 import type { Entrypoint } from '../Entrypoint';
 import type {
@@ -136,9 +136,13 @@ const ensureOxcPreevalResult = (
     const preevalResult: IPreevalResult = {
       ast: originalAst,
       baseCode: result.baseCode,
-      code: result.code,
+      get code() {
+        return result.code;
+      },
       dependencyNames: result.dependencyNames,
-      evalCode: result.code,
+      get evalCode() {
+        return result.code;
+      },
       metadata: result.metadata,
       processorClassNames: result.processorClassNames,
       pureCallHints: result.pureCallHints,
@@ -151,6 +155,8 @@ const ensureOxcPreevalResult = (
       staticValueCache: result.staticValueCache,
       staticValueCandidates: result.staticValueCandidates,
     };
+    deferOxcPreevalCode(preevalResult, 'code', () => result.code);
+    deferOxcPreevalCode(preevalResult, 'evalCode', () => result.code);
 
     if (result.finalizeEvaltimeReplacements) {
       let evaltimeReplacementsFinalized = false;
@@ -167,8 +173,8 @@ const ensureOxcPreevalResult = (
           staticValueCache ?? preevalResult.staticValueCache
         );
         preevalResult.baseCode = result.baseCode;
-        preevalResult.code = result.code;
-        preevalResult.evalCode = result.code;
+        deferOxcPreevalCode(preevalResult, 'code', () => result.code);
+        deferOxcPreevalCode(preevalResult, 'evalCode', () => result.code);
         preevalResult.metadata = result.metadata;
         preevalResult.staticValueCache = result.staticValueCache;
         preevalResult.staticValueCandidates = result.staticValueCandidates;
@@ -443,35 +449,20 @@ function* resolveAndProcessOxcPreparedImports(
   return nextCode;
 }
 
-/**
- * The result code is the CommonJS form of the prepared module. Only the legacy
- * `Module` evaluator reads it (the eval broker prepares its own code), so the
- * emit runs on the first read and is memoized.
- */
-const createCommonJSTransformResult = (
-  eventEmitter: Services['eventEmitter'],
-  preparedCode: string,
-  filename: string,
-  metadata: WYWTransformMetadata | null
-): ITransformFileResult => {
-  let pendingCode: string | null = preparedCode;
-  let commonJSCode = '';
-
-  return {
-    get code() {
-      if (pendingCode !== null) {
-        const source = pendingCode;
-        commonJSCode = eventEmitter.perf(
-          'transform:emitCommonJS',
-          () => emitOxcCommonJS(source, filename).code
-        );
-        pendingCode = null;
-      }
-
-      return commonJSCode;
-    },
-    metadata,
-  };
+const prepareStaticEntrypointCode = (
+  entrypoint: Entrypoint,
+  services: Services
+): string => {
+  const [preparedCode] = prepareCode(services, entrypoint, null);
+  const { loadedAndParsed } = entrypoint;
+  const filename =
+    loadedAndParsed.evaluator === 'ignored'
+      ? entrypoint.name
+      : loadedAndParsed.evalConfig.filename ?? entrypoint.name;
+  return services.eventEmitter.perf(
+    'transform:emitCommonJS',
+    () => emitOxcCommonJS(preparedCode, filename).code
+  );
 };
 
 export function* internalTransform(
@@ -495,55 +486,144 @@ export function* internalTransform(
 
   log('>> (%o)', only);
 
-  ensureOxcPreevalResult(this.services, this.entrypoint, null);
-  yield* resolveStaticOxcPreevalValues.call(this);
+  if (loadedAndParsed.evaluator === oxcShaker) {
+    ensureOxcPreevalResult(this.services, this.entrypoint, null);
+    yield* resolveStaticOxcPreevalValues.call(this);
+  }
+
+  const preevalResult = this.entrypoint.getPreevalResult();
+  if (
+    prepareFn === prepareCode &&
+    this.entrypoint.parents.length === 0 &&
+    isPrevalOnly(only) &&
+    preevalResult?.metadata &&
+    (preevalResult.dependencyNames?.length ?? 0) === 0 &&
+    this.services.options.pluginOptions.eval?.strategy !== 'execute'
+  ) {
+    emitCurrentStaticPlanDebug(this, null);
+    log(
+      '<< (%o) executable preparation deferred; values resolved statically',
+      only
+    );
+    return {
+      prepareCode: prepareStaticEntrypointCode,
+      metadata: preevalResult.metadata,
+    };
+  }
 
   let [preparedCode, imports, metadata] = prepareFn(
     this.services,
     this.entrypoint,
     null
   );
+  const finalPreparedCode = preparedCode;
+
+  if (loadedAndParsed.evaluator === oxcShaker) {
+    if (metadata === null && isPrevalOnly(only)) {
+      log(
+        'skip resolving imports for __wywPreval-only entrypoint without metadata'
+      );
+      return {
+        code: finalPreparedCode,
+        metadata: null,
+      };
+    }
+
+    let nextCode = yield* resolveAndProcessOxcPreparedImports(
+      this,
+      preparedCode,
+      imports
+    );
+
+    if (yield* resolveStaticOxcPreevalValues.call(this)) {
+      [preparedCode, imports, metadata] = prepareFn(
+        this.services,
+        this.entrypoint,
+        null
+      );
+      nextCode = yield* resolveAndProcessOxcPreparedImports(
+        this,
+        preparedCode,
+        imports
+      );
+    }
+
+    emitCurrentStaticPlanDebug(this, imports);
+
+    log('<< (%o)', only);
+    log.extend('source')('%s', nextCode || EMPTY_FILE);
+
+    // Only the legacy `Module` evaluator reads the CommonJS form of the
+    // prepared module (the eval broker prepares its own code), so it is
+    // emitted when an entrypoint's transformed code is first read.
+    const filename =
+      loadedAndParsed.evalConfig.filename ?? this.entrypoint.name;
+    const originalCode = loadedAndParsed.code ?? '';
+    return {
+      prepareCode: (_entrypoint, services) => {
+        const code = services.eventEmitter.perf(
+          'transform:emitCommonJS',
+          () => emitOxcCommonJS(nextCode, filename).code
+        );
+        return code === '' ? originalCode : code;
+      },
+      metadata,
+    };
+  }
+
+  if (loadedAndParsed.code === finalPreparedCode) {
+    log('<< (%o)\n === no changes ===', only);
+  } else {
+    log('<< (%o)', only);
+    log.extend('source')('%s', finalPreparedCode || EMPTY_FILE);
+  }
+
+  if (finalPreparedCode === '') {
+    log('is skipped');
+    return {
+      code: loadedAndParsed.code ?? '',
+      metadata,
+    };
+  }
 
   if (metadata === null && isPrevalOnly(only)) {
     log(
       'skip resolving imports for __wywPreval-only entrypoint without metadata'
     );
     return {
-      code: preparedCode,
+      code: finalPreparedCode,
       metadata: null,
     };
   }
 
-  let nextCode = yield* resolveAndProcessOxcPreparedImports(
-    this,
-    preparedCode,
-    imports
-  );
-
-  if (yield* resolveStaticOxcPreevalValues.call(this)) {
-    [preparedCode, imports, metadata] = prepareFn(
-      this.services,
+  if (
+    loadedAndParsed.evaluator !== oxcShaker &&
+    imports !== null &&
+    imports.size > 0
+  ) {
+    const resolvedImports = yield* this.getNext(
+      'resolveImports',
       this.entrypoint,
-      null
+      {
+        imports,
+      }
     );
-    nextCode = yield* resolveAndProcessOxcPreparedImports(
-      this,
-      preparedCode,
-      imports
-    );
+
+    if (resolvedImports.length !== 0) {
+      yield [
+        'processImports',
+        this.entrypoint,
+        {
+          resolved: resolvedImports,
+        },
+      ];
+    }
   }
 
-  emitCurrentStaticPlanDebug(this, imports);
-
-  log('<< (%o)', only);
-  log.extend('source')('%s', nextCode || EMPTY_FILE);
-
-  return createCommonJSTransformResult(
-    this.services.eventEmitter,
-    nextCode,
-    loadedAndParsed.evalConfig.filename ?? this.entrypoint.name,
-    metadata
-  );
+  return {
+    code: finalPreparedCode,
+    metadata,
+  };
 }
 
 export function* transform(

@@ -8,7 +8,8 @@ import { TransformCacheCollection } from '../cache';
 import { disposeEvalBroker, EvalBroker } from '../eval/broker';
 import { transform } from '../transform';
 import { Entrypoint } from '../transform/Entrypoint';
-import type { IEvaluatedEntrypoint } from '../transform/EvaluatedEntrypoint';
+import { loadWywOptions } from '../transform/helpers/loadWywOptions';
+import { withDefaultServices } from '../transform/helpers/withDefaultServices';
 import { EventEmitter } from '../utils/EventEmitter';
 
 const EMIT_COMMONJS_SPAN = 'transform:emitCommonJS';
@@ -36,14 +37,11 @@ const createEmitCounter = () => {
   return { counter, eventEmitter };
 };
 
-const readTransformedCode = (
-  entry: Entrypoint | IEvaluatedEntrypoint | undefined
-): string | null => {
-  if (entry instanceof Entrypoint) {
-    return entry.transformedCode;
-  }
-
-  return entry?.transformResultCode ?? null;
+const pluginOptions = {
+  configFile: false,
+  features: { globalCache: true },
+  tagResolver: (source: string, tag: string) =>
+    source === 'test-css-processor' && tag === 'css' ? processorFile : null,
 };
 
 describe('CommonJS emit of the transform stage', () => {
@@ -92,14 +90,7 @@ describe('CommonJS emit of the transform stage', () => {
         options: {
           filename: componentFile,
           root,
-          pluginOptions: {
-            configFile: false,
-            features: { globalCache: true },
-            tagResolver: (source: string, tag: string) =>
-              source === 'test-css-processor' && tag === 'css'
-                ? processorFile
-                : null,
-          },
+          pluginOptions,
         },
       },
       fs.readFileSync(componentFile, 'utf8'),
@@ -142,13 +133,31 @@ describe('CommonJS emit of the transform stage', () => {
       expect(counter.emits).toBe(0);
 
       const tokens = cache.get('entrypoints', tokensFile);
-      expect(tokens).toBeDefined();
+      expect(tokens?.evaluated).toBe(true);
 
-      const firstRead = readTransformedCode(tokens);
+      // `Module` reads a dependency's code through an entrypoint reused from
+      // the cache.
+      const reused = Entrypoint.createRoot(
+        withDefaultServices({
+          cache,
+          eventEmitter,
+          options: {
+            filename: tokensFile,
+            root,
+            pluginOptions: loadWywOptions(pluginOptions),
+          },
+        }),
+        tokensFile,
+        tokens!.only,
+        undefined
+      );
+      expect(counter.emits).toBe(0);
+
+      const firstRead = reused.transformedCode;
       expect(firstRead).toContain('exports.colors');
       expect(counter.emits).toBe(1);
 
-      expect(readTransformedCode(tokens)).toBe(firstRead);
+      expect(reused.transformedCode).toBe(firstRead);
       expect(counter.emits).toBe(1);
     },
     BROKER_TEST_TIMEOUT
