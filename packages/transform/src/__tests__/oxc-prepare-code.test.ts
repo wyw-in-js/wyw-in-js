@@ -2,6 +2,7 @@
 /* eslint-env jest */
 
 import { join } from 'path';
+import vm from 'vm';
 
 import dedent from 'dedent';
 
@@ -228,6 +229,44 @@ describe('prepareCode with explicit oxcShaker action', () => {
     expect(result.code).toContain('require("./side-effect.js")');
     expect(resolveImports).toHaveBeenCalledTimes(1);
     expect(handlers.processImports).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps template literal contents in prepared CommonJS code', async () => {
+    const root = __dirname;
+    const filename = join(root, 'literal-source.js');
+    const literal = ['line1', '', '', 'const x = 1,', '}'].join('\n');
+    const source = [
+      `const text = \`${literal}\`;`,
+      `export const value = \`${literal}\`;`,
+      'export const object = {',
+      '  text,',
+      '};',
+    ].join('\n');
+    const services = createServices(filename, root);
+    const entrypoint = Entrypoint.createRoot(
+      services,
+      filename,
+      ['value', 'object'],
+      source
+    );
+
+    if (entrypoint.ignored) {
+      throw new Error('Ignored');
+    }
+
+    const result = await asyncActionRunner(
+      entrypoint.createAction('transform', undefined, null),
+      getHandlers<'sync'>({ transform: transformAction })
+    );
+    const exports: Record<string, unknown> = {};
+    vm.runInNewContext(result.code, {
+      exports,
+      module: { exports },
+      require: () => ({}),
+    });
+
+    expect(exports.value).toBe(literal);
+    expect(exports.object).toEqual({ text: literal });
   });
 
   it('strips TypeScript when eval runtime short-circuits modules without metadata', () => {
