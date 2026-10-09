@@ -7,7 +7,6 @@ import { createExpressionExtractor } from './expressionBatch';
 
 import { applyOxcEditsInRange } from '../oxc/fileEdits';
 import { collectOxcPatternRuntimeExpressions } from '../oxc/patterns';
-import { createOxcLocationLookup } from '../oxc/sourceLocations';
 import { findResolvedReferences as getReferences } from './bindingResolution';
 import * as timeline from './mutationTimeline';
 import {
@@ -29,7 +28,8 @@ import {
   getConstantReplacement,
   replaceIdentifierReferences,
 } from './expressionReplacements';
-import { evaluateStatic } from './staticEvaluator';
+import { evaluateStaticOutcome } from './staticEvaluator';
+import { hasStaticRuntimeIdentity } from './staticOutcome';
 import {
   cloneStaticValue,
   isStaticSerializableValue,
@@ -40,7 +40,6 @@ import {
   addHoistedCode,
   addHoistedSnapshotReplay,
   countPatternBindingNames,
-  expressionSpanKey,
   hasDestructuringIntrinsicMutationBefore,
   OxcSnapshotWriteUnsupportedError,
   snapshotReplayError,
@@ -61,7 +60,6 @@ import {
 } from './staticLocalPlanning';
 import { inferSnapshotExpressionKind } from './snapshotValueAnalysis';
 import * as recursiveProof from './recursiveProof';
-import { collectPureAnnotatedInvocationSpans } from './pureAnnotations';
 import type {
   Binding,
   ExtractedExpression,
@@ -427,13 +425,11 @@ const extractExpression = (
     expression.type === 'ArrowFunctionExpression';
 
   if (evaluate && !expressionHasNestedCallTimeUncertainty(expression, ctx)) {
-    const evaluated = evaluateStatic(expression, ctx);
-    const literal = literalCode(evaluated);
+    const outcome = evaluateStaticOutcome(expression, ctx);
+    const evaluated = outcome.kind === 'known' ? outcome.value : undefined;
+    const literal = outcome.kind === 'known' ? literalCode(evaluated) : null;
     preserveRuntimeIdentity =
-      evaluated !== null &&
-      ((typeof evaluated === 'object' && evaluated !== null) ||
-        typeof evaluated === 'function') &&
-      identityReferencesAreRootVisible;
+      hasStaticRuntimeIdentity(outcome) && identityReferencesAreRootVisible;
     if (preserveRuntimeIdentity && isStaticSerializableValue(evaluated)) {
       preservedStaticValue = cloneStaticValue(evaluated);
     }
@@ -751,10 +747,10 @@ const extractExpression = (
       pureAnnotatedInvocationSpans,
       staticCallProof: recursiveProof.create(),
     };
-    if (
-      !expressionHasNestedCallTimeUncertainty(expression, probeCtx) &&
-      literalCode(evaluateStatic(expression, probeCtx)) !== null
-    ) {
+    const probe = expressionHasNestedCallTimeUncertainty(expression, probeCtx)
+      ? null
+      : evaluateStaticOutcome(expression, probeCtx);
+    if (probe?.kind === 'known' && literalCode(probe.value) !== null) {
       for (const item of hintsToProbe) {
         const { hint } = item;
         hint.actionableWithoutRejection = true;
@@ -794,94 +790,6 @@ const extractExpressions = createExpressionExtractor({
 
 export const isOxcStaticSerializableValue = (value: unknown): boolean =>
   isStaticSerializableValue(value);
-export const evaluateOxcStaticExpressionAt = (
-  code: string,
-  filename: string,
-  expressionSpan: ExpressionSpan,
-  env: Map<string, unknown> = new Map(),
-  staticBindings?: StaticBindings,
-  processorManagedExpressionSpans: ExpressionSpan[] = []
-): unknown | undefined => {
-  const program = parseOxc(code, filename);
-  const analysis = analyzeProgram(program, {
-    collectTargetExpressions: true,
-    expressionSpanLookup: createSpanLookup([expressionSpan]),
-    mutationHazardIgnoreLookup: createSpanLookup(
-      processorManagedExpressionSpans
-    ),
-  });
-  const [expression] = analysis.targetExpressions;
-  if (!expression) {
-    return undefined;
-  }
-
-  const ctx: ExtractionContext = {
-    bindingIndex: analysis.bindingIndex,
-    code,
-    currentInsertionPoint: 0,
-    currentExpressionStart: expression.start,
-    dependencyNames: new Set(),
-    expressionValues: [],
-    filename,
-    hoistedBindingNames: new Map(),
-    hoistedDeclarations: new Map(),
-    hoistedDeclarationsByInsertionPoint: new Map(),
-    loc: createOxcLocationLookup(code),
-    processorManagedExpressionSpans: new Set(
-      processorManagedExpressionSpans.map(expressionSpanKey)
-    ),
-    program,
-    pureAnnotatedInvocationSpans: collectPureAnnotatedInvocationSpans(
-      code,
-      filename,
-      program
-    ),
-    replacements: [],
-    rootMutationHazardGuardsByBinding:
-      analysis.rootMutationHazardGuardsByBinding,
-    rootMutationHazardsByBinding: analysis.rootMutationHazardsByBinding,
-    rootMutationsByBinding: analysis.rootMutationsByBinding,
-    staticBindings,
-    staticCallProof: recursiveProof.create(),
-    staticImportAliases: new Map(),
-    staticValueCandidates: [],
-    staticValues: [],
-    usedNames: new Set(analysis.usedNames),
-  };
-
-  return evaluateStatic(expression, ctx, new Map(env));
-};
-
-export const evaluateOxcStaticExpression = (
-  source: string,
-  filename: string,
-  env: Map<string, unknown> = new Map(),
-  staticBindings?: StaticBindings
-): unknown | undefined => {
-  const code = `const __wyw_static_value = ${source};`;
-  const program = parseOxc(code, filename);
-  const declaration = program.body[0];
-  if (declaration?.type !== 'VariableDeclaration') {
-    return undefined;
-  }
-
-  const [declarator] = declaration.declarations;
-  if (!declarator?.init) {
-    return undefined;
-  }
-
-  return evaluateOxcStaticExpressionAt(
-    code,
-    filename,
-    {
-      end: declarator.init.end,
-      start: declarator.init.start,
-    },
-    env,
-    staticBindings
-  );
-};
-
 export const collectOxcExpressionDependencies = (
   code: string,
   filename: string,

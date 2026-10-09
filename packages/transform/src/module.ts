@@ -22,7 +22,6 @@ import { invariant } from 'ts-invariant';
 import { isFeatureEnabled } from '@wyw-in-js/shared';
 import type {
   Debugger,
-  EvalOptionsV2,
   EvalResolverKind,
   EvalWarning,
   ImportLoaderContext,
@@ -46,6 +45,7 @@ import {
 import type { IEvaluatedEntrypoint } from './transform/EvaluatedEntrypoint';
 import type { IEntrypointDependency } from './transform/Entrypoint.types';
 import type { Services } from './transform/types';
+import { getEvalOptions } from './utils/evalOptions';
 import {
   applyImportOverrideToOnly,
   getImportOverride,
@@ -171,20 +171,7 @@ type NativeFallbackOptions = {
   warnOnFallback: boolean;
 };
 
-const defaultEvalOptions: Required<
-  Pick<EvalOptionsV2, 'errors' | 'require' | 'resolver'>
-> = {
-  errors: 'strict',
-  require: 'warn-and-run',
-  resolver: 'bundler',
-};
-
 const warnedUnknownImportsByServices = new WeakMap<Services, Set<string>>();
-
-const getEvalOptions = (services: Services): EvalOptionsV2 => ({
-  ...defaultEvalOptions,
-  ...(services.options.pluginOptions.eval ?? {}),
-});
 
 function emitWarning(services: Services, message: string) {
   if (services.emitWarning) {

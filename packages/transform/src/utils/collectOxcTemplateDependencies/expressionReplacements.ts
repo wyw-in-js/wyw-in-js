@@ -18,7 +18,7 @@ import {
   isPropertyOnlyIdentifier,
   resolveBindingAt,
 } from './scopeAnalysis';
-import { evaluateStatic } from './staticEvaluator';
+import { evaluateStaticOutcome } from './staticEvaluator';
 import { literalCode } from './staticValues';
 import type {
   Binding,
@@ -44,8 +44,8 @@ export const getConstantReplacement = (
     binding?.isRoot &&
     binding.declarator?.id.type === 'Identifier'
   ) {
-    const evaluated = evaluateStatic(binding.declarator.id, ctx);
-    return literalCode(evaluated);
+    const outcome = evaluateStaticOutcome(binding.declarator.id, ctx);
+    return outcome.kind === 'known' ? literalCode(outcome.value) : null;
   }
 
   return null;

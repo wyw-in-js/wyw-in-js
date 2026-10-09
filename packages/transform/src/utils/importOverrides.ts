@@ -165,3 +165,83 @@ export function getImportOverride(
   const { matchers } = getCompiledImportOverrides(importOverrides);
   return matchers.find(({ matcher }) => matcher.match(key))?.override;
 }
+
+export type ImportOverrideMatch = {
+  key: string;
+  override: ImportOverride | undefined;
+};
+
+/**
+ * Finds the override for one import: file imports are keyed by their
+ * root-relative resolved path, package imports by their source.
+ */
+export function findImportOverride({
+  importOverrides,
+  resolved,
+  root,
+  source,
+}: {
+  importOverrides: ImportOverrides | undefined;
+  resolved: string | null;
+  root: string | undefined;
+  source: string;
+}): ImportOverrideMatch {
+  const { key } = toImportKey({ source, resolved, root });
+  return { key, override: getImportOverride(importOverrides, key) };
+}
+
+export type OverriddenImport<TResolved extends string | null> = {
+  mocked: boolean;
+  only: string[];
+  resolved: string | TResolved;
+};
+
+/**
+ * Applies the matching import override to a resolved import: `mock` replaces
+ * the resolved id (even for an unresolved import), `noShake` widens `only`
+ * to `['*']`. Returns `null` when no override matches.
+ */
+export function applyImportOverride<TResolved extends string | null>({
+  getStack,
+  importOverrides,
+  importer,
+  only,
+  resolved,
+  root,
+  source,
+}: {
+  getStack: () => string[];
+  importOverrides: ImportOverrides | undefined;
+  importer: string;
+  only: string[];
+  resolved: TResolved;
+  root: string | undefined;
+  source: string;
+}): OverriddenImport<TResolved> | null {
+  if (!importOverrides) {
+    return null;
+  }
+
+  const { override } = findImportOverride({
+    importOverrides,
+    resolved,
+    root,
+    source,
+  });
+  if (!override) {
+    return null;
+  }
+
+  return {
+    mocked: Boolean(override.mock),
+    only: applyImportOverrideToOnly(only, override),
+    resolved: override.mock
+      ? resolveMockSpecifier({
+          importer,
+          mock: override.mock,
+          root,
+          stack: getStack(),
+        })
+      : resolved,
+  };
+}
