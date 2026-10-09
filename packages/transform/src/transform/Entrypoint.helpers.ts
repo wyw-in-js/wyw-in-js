@@ -127,9 +127,6 @@ export function loadAndParse(
   }
 
   return {
-    get ast() {
-      return null;
-    },
     code,
     evaluator,
     evalConfig: {
