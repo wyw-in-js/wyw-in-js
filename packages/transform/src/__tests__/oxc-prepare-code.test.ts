@@ -226,7 +226,10 @@ describe('prepareCode with explicit oxcShaker action', () => {
       handlers
     );
 
-    expect(result.code).toContain('require("./side-effect.js")');
+    const code = result.prepareCode
+      ? result.prepareCode(entrypoint, services)
+      : result.code;
+    expect(code).toContain('require("./side-effect.js")');
     expect(resolveImports).toHaveBeenCalledTimes(1);
     expect(handlers.processImports).toHaveBeenCalledTimes(1);
   });
@@ -258,8 +261,11 @@ describe('prepareCode with explicit oxcShaker action', () => {
       entrypoint.createAction('transform', undefined, null),
       getHandlers<'sync'>({ transform: transformAction })
     );
+    const code = result.prepareCode
+      ? result.prepareCode(entrypoint, services)
+      : result.code;
     const exports: Record<string, unknown> = {};
-    vm.runInNewContext(result.code, {
+    vm.runInNewContext(code, {
       exports,
       module: { exports },
       require: () => ({}),

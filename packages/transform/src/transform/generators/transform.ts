@@ -85,7 +85,6 @@ export const emitCurrentStaticPlanDebug = (
 };
 
 type PrepareCodeOptions = {
-  emitCommonJS?: boolean;
   evalTelemetry?: EvalPreparationToken;
   shortCircuitOnMissingMetadata?: boolean;
   stripForEvalRuntime?: boolean;
@@ -294,31 +293,23 @@ const prepareCodeImpl = (
 
   log('[evaluator:end]');
 
-  if (!options.emitCommonJS) {
-    let preparedCode = shaken.code;
-    if (options.stripForEvalRuntime) {
-      preparedCode = options.evalTelemetry
-        ? options.evalTelemetry.measureStage(
-            'strip',
-            () => stripTypesAndJsxWithOxc(shaken.code, filename).code
-          )
-        : stripTypesAndJsxWithOxc(shaken.code, filename).code;
-    }
-
-    return [
-      trimOxcPreparedESM(preparedCode),
-      options.stripForEvalRuntime
-        ? collectOxcImportMap(preparedCode, filename)
-        : shaken.imports,
-      transformMetadata ?? null,
-    ];
+  let preparedCode = shaken.code;
+  if (options.stripForEvalRuntime) {
+    preparedCode = options.evalTelemetry
+      ? options.evalTelemetry.measureStage(
+          'strip',
+          () => stripTypesAndJsxWithOxc(shaken.code, filename).code
+        )
+      : stripTypesAndJsxWithOxc(shaken.code, filename).code;
   }
 
-  const emitted = eventEmitter.perf('transform:emitCommonJS', () =>
-    emitOxcCommonJS(shaken.code, filename)
-  );
-
-  return [emitted.code, shaken.imports, transformMetadata ?? null];
+  return [
+    trimOxcPreparedESM(preparedCode),
+    options.stripForEvalRuntime
+      ? collectOxcImportMap(preparedCode, filename)
+      : shaken.imports,
+    transformMetadata ?? null,
+  ];
 };
 
 /**
@@ -518,32 +509,22 @@ export function* internalTransform(
 
   emitCurrentStaticPlanDebug(this, imports);
 
-  const finalPreparedCode = this.services.eventEmitter.perf(
-    'transform:emitCommonJS',
-    () =>
-      emitOxcCommonJS(
-        nextCode,
-        loadedAndParsed.evalConfig.filename ?? this.entrypoint.name
-      ).code
-  );
+  log('<< (%o)', only);
+  log.extend('source')('%s', nextCode || EMPTY_FILE);
 
-  if (loadedAndParsed.code === finalPreparedCode) {
-    log('<< (%o)\n === no changes ===', only);
-  } else {
-    log('<< (%o)', only);
-    log.extend('source')('%s', finalPreparedCode || EMPTY_FILE);
-  }
-
-  if (finalPreparedCode === '') {
-    log('is skipped');
-    return {
-      code: loadedAndParsed.code ?? '',
-      metadata,
-    };
-  }
-
+  // Only the legacy `Module` evaluator reads the CommonJS form of the
+  // prepared module (the eval broker prepares its own code), so it is
+  // emitted when an entrypoint's transformed code is first read.
+  const filename = loadedAndParsed.evalConfig.filename ?? this.entrypoint.name;
+  const originalCode = loadedAndParsed.code ?? '';
   return {
-    code: finalPreparedCode,
+    prepareCode: (_entrypoint, services) => {
+      const code = services.eventEmitter.perf(
+        'transform:emitCommonJS',
+        () => emitOxcCommonJS(nextCode, filename).code
+      );
+      return code === '' ? originalCode : code;
+    },
     metadata,
   };
 }
