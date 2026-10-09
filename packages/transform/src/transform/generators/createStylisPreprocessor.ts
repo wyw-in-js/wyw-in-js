@@ -262,12 +262,23 @@ export function createStylisUrlReplacePlugin(
     if (element.type === 'decl' && outputFilename) {
       // When writing to a file, we need to adjust the relative paths inside url(..) expressions.
       // It'll allow css-loader to resolve an imported asset properly.
-      // eslint-disable-next-line no-param-reassign
-      element.return = element.value.replace(
-        RELATIVE_URL_REGEXP,
-        (_match, p1, _p2, p3, p4) =>
-          p1 + transformUrl(p3, outputFilename, filename) + p4
-      );
+      // The declaration is rewritten in place: the Stylis prefixer skips
+      // elements that already have `return`, so setting it here would drop
+      // vendor prefixes and the display normalization.
+      const replaceUrls = (css: string) =>
+        css.replace(
+          RELATIVE_URL_REGEXP,
+          (_match, p1, _p2, p3, p4) =>
+            p1 + transformUrl(p3, outputFilename, filename) + p4
+        );
+
+      Object.assign(element, {
+        children:
+          typeof element.children === 'string'
+            ? replaceUrls(element.children)
+            : element.children,
+        value: replaceUrls(element.value),
+      });
     }
   };
 }

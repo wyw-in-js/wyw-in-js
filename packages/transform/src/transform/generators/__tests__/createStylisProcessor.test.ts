@@ -212,6 +212,28 @@ describe('createStylisPreprocessor', () => {
     });
   });
 
+  describe('outputFilename', () => {
+    const withoutOutputFilename = createStylisPreprocessor({
+      filename: baseOptions.filename,
+    });
+
+    it.each([
+      'display: flex inline; align-items: center;',
+      'user-select: none; transform: translateX(1px);',
+      '& { animation: bar 0s forwards; } @keyframes bar { from { color: red } }',
+    ])('prefixes and normalizes declarations as without it: %s', (rule) => {
+      expect(compileRule(rule)).toBe(withoutOutputFilename('.foo', rule));
+    });
+
+    it('prefixes declarations with rewritten url() paths', () => {
+      expect(
+        compileRule('mask: url(./mask.svg); background: url("./bg.png");')
+      ).toBe(
+        '.foo{-webkit-mask:url(../src/mask.svg);mask:url(../src/mask.svg);background:url("../src/bg.png");}'
+      );
+    });
+  });
+
   it('should understand namespace ref', () => {
     expect(compileRule('&:not(.bar) { color: red }')).toMatchInlineSnapshot(
       `".foo:not(.bar){color:red;}"`
@@ -237,7 +259,7 @@ describe('createStylisPreprocessor', () => {
           '& { animation: bar 0s forwards; } @keyframes bar { from { color: red } }'
         )
       ).toMatchInlineSnapshot(
-        `".foo{animation:bar-foo 0s forwards;}@-webkit-keyframes bar-foo{from{color:red;}}@keyframes bar-foo{from{color:red;}}"`
+        `".foo{-webkit-animation:bar-foo 0s forwards;animation:bar-foo 0s forwards;}@-webkit-keyframes bar-foo{from{color:red;}}@keyframes bar-foo{from{color:red;}}"`
       );
     });
 
@@ -248,7 +270,7 @@ describe('createStylisPreprocessor', () => {
           '& { animation-name: bar; } @keyframes bar { from { color: red } }'
         )
       ).toMatchInlineSnapshot(
-        `".foo{animation-name:bar-foo;}@-webkit-keyframes bar-foo{from{color:red;}}@keyframes bar-foo{from{color:red;}}"`
+        `".foo{-webkit-animation-name:bar-foo;animation-name:bar-foo;}@-webkit-keyframes bar-foo{from{color:red;}}@keyframes bar-foo{from{color:red;}}"`
       );
 
       // Usage after definition
@@ -257,13 +279,13 @@ describe('createStylisPreprocessor', () => {
           '@keyframes bar { from { color: red } } & { animation-name: bar; }'
         )
       ).toMatchInlineSnapshot(
-        `"@-webkit-keyframes bar-foo{from{color:red;}}@keyframes bar-foo{from{color:red;}}.foo{animation-name:bar-foo;}"`
+        `"@-webkit-keyframes bar-foo{from{color:red;}}@keyframes bar-foo{from{color:red;}}.foo{-webkit-animation-name:bar-foo;animation-name:bar-foo;}"`
       );
     });
 
     it('should ignore unknown keyframes', () => {
       expect(compileRule('& { animation-name: bar; }')).toMatchInlineSnapshot(
-        `".foo{animation-name:bar;}"`
+        `".foo{-webkit-animation-name:bar;animation-name:bar;}"`
       );
     });
 
@@ -279,13 +301,17 @@ describe('createStylisPreprocessor', () => {
       it('in animation', () => {
         expect(
           compileRule('& { animation: :global(bar) 0s forwards; }')
-        ).toMatchInlineSnapshot(`".foo{animation:bar 0s forwards;}"`);
+        ).toMatchInlineSnapshot(
+          `".foo{-webkit-animation:bar 0s forwards;animation:bar 0s forwards;}"`
+        );
       });
 
       it('in animation-name', () => {
         expect(
           compileRule('& { animation-name: :global(bar); }')
-        ).toMatchInlineSnapshot(`".foo{animation-name:bar;}"`);
+        ).toMatchInlineSnapshot(
+          `".foo{-webkit-animation-name:bar;animation-name:bar;}"`
+        );
       });
 
       it('with no whitespace after an animation property colon', () => {
@@ -317,7 +343,7 @@ describe('createStylisPreprocessor', () => {
             '@keyframes :global(bar) { from { color: red } } & { animation-name: :global(bar); }'
           )
         ).toMatchInlineSnapshot(
-          `"@-webkit-keyframes bar{from{color:red;}}@keyframes bar{from{color:red;}}.foo{animation-name:bar;}"`
+          `"@-webkit-keyframes bar{from{color:red;}}@keyframes bar{from{color:red;}}.foo{-webkit-animation-name:bar;animation-name:bar;}"`
         );
 
         expect(
@@ -325,7 +351,7 @@ describe('createStylisPreprocessor', () => {
             '& { animation-name: :global(bar); } @keyframes :global(bar) { from { color: red } }'
           )
         ).toMatchInlineSnapshot(
-          `".foo{animation-name:bar;}@-webkit-keyframes bar{from{color:red;}}@keyframes bar{from{color:red;}}"`
+          `".foo{-webkit-animation-name:bar;animation-name:bar;}@-webkit-keyframes bar{from{color:red;}}@keyframes bar{from{color:red;}}"`
         );
       });
     });
@@ -388,15 +414,15 @@ describe('createStylisPreprocessor across rules', () => {
     expect(compileCorpus(configs.default)).toMatchInlineSnapshot(`
       [
         ".a{color:red;}.a:hover{color:blue;}",
-        ".b{background:url(../src/image.png);mask:url("../mask.svg");cursor:url(/abs.cur);}",
+        ".b{background:url(../src/image.png);-webkit-mask:url("../mask.svg");mask:url("../mask.svg");cursor:url(/abs.cur);}",
         "body {margin:0;}.dark .c{color:white;}",
-        ".d{display:flex inline;align-items:center;}",
-        "@-webkit-keyframes spin-e{from{transform:rotate(0);}to{transform:rotate(360deg);}}@keyframes spin-e{from{transform:rotate(0);}to{transform:rotate(360deg);}}.e{animation:spin-e 1s linear infinite;}",
-        ".f{animation:fade 0s forwards;}@-webkit-keyframes fade{from{opacity:0;}}@keyframes fade{from{opacity:0;}}",
-        "@media (min-width: 100px){.g{animation-name:pulse;}@-webkit-keyframes pulse-g{from{opacity:0;}}@keyframes pulse-g{from{opacity:0;}}}",
+        ".d{display:-webkit-inline-box;display:-webkit-inline-flex;display:-ms-inline-flexbox;display:inline-flex;-webkit-align-items:center;-webkit-box-align:center;-ms-flex-align:center;align-items:center;}",
+        "@-webkit-keyframes spin-e{from{-webkit-transform:rotate(0);-moz-transform:rotate(0);-ms-transform:rotate(0);transform:rotate(0);}to{-webkit-transform:rotate(360deg);-moz-transform:rotate(360deg);-ms-transform:rotate(360deg);transform:rotate(360deg);}}@keyframes spin-e{from{-webkit-transform:rotate(0);-moz-transform:rotate(0);-ms-transform:rotate(0);transform:rotate(0);}to{-webkit-transform:rotate(360deg);-moz-transform:rotate(360deg);-ms-transform:rotate(360deg);transform:rotate(360deg);}}.e{-webkit-animation:spin-e 1s linear infinite;animation:spin-e 1s linear infinite;}",
+        ".f{-webkit-animation:fade 0s forwards;animation:fade 0s forwards;}@-webkit-keyframes fade{from{opacity:0;}}@keyframes fade{from{opacity:0;}}",
+        "@media (min-width: 100px){.g{-webkit-animation-name:pulse;animation-name:pulse;}@-webkit-keyframes pulse-g{from{opacity:0;}}@keyframes pulse-g{from{opacity:0;}}}",
         ".h{left:0;}.h::-webkit-input-placeholder{color:gray;}.h::-moz-placeholder{color:gray;}.h:-ms-input-placeholder{color:gray;}.h::placeholder{color:gray;}.h:-moz-read-only{color:gray;}.h:read-only{color:gray;}",
-        "@-webkit-keyframes spin-e{from{opacity:0;}}@keyframes spin-e{from{opacity:0;}}.e{animation-name:spin-e;}",
-        ".i{animation-name:spin;}",
+        "@-webkit-keyframes spin-e{from{opacity:0;}}@keyframes spin-e{from{opacity:0;}}.e{-webkit-animation-name:spin-e;animation-name:spin-e;}",
+        ".i{-webkit-animation-name:spin;animation-name:spin;}",
       ]
     `);
     expect(compileCorpus(configs.noPrefixer)).toMatchInlineSnapshot(`
