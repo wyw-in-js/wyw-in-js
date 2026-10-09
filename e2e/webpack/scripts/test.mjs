@@ -30,7 +30,7 @@ const normalizeLineEndings = (value) =>
 
 const runBuild = async (
   entry,
-  { cacheDirectory, dependency, parallelLoader = false } = {}
+  { cacheDirectory, dependency, loaderOptions, parallelLoader = false } = {}
 ) => {
   const outDir = path.resolve(PKG_DIR, 'dist');
   await fs.rm(outDir, { recursive: true, force: true });
@@ -66,6 +66,7 @@ const runBuild = async (
             {
               loader: '@wyw-in-js/webpack-loader',
               ...(parallelLoader ? { options: {}, parallel: true } : {}),
+              ...(loaderOptions ? { options: loaderOptions } : {}),
             },
           ],
         },
@@ -282,6 +283,12 @@ const assertRspackParallelLoader = async () => {
   await assertFixture();
 };
 
+const assertWorkerThreads = async () => {
+  const entry = path.resolve(PKG_DIR, 'src', 'index.js');
+  await runBuild(entry, { loaderOptions: { parallel: 2 } });
+  await assertFixture();
+};
+
 const assertWatchUpdates = async () => {
   const tempDir = await fs.mkdtemp(path.join(PKG_DIR, 'watch-'));
   const entry = path.join(tempDir, 'entry.js');
@@ -389,6 +396,7 @@ const main = async () => {
   await assertPosixBackslashPath();
   await assertPersistentCache();
   await assertRspackParallelLoader();
+  await assertWorkerThreads();
   await assertWatchUpdates();
   await assertSourceMaps(PKG_DIR, useRspack);
 };
