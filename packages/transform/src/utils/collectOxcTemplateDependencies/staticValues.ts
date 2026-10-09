@@ -357,10 +357,10 @@ export const copyEnumerableOwnDataProperties = (
   }
 };
 
-export const getObjectMember = (
+export const readObjectMember = (
   objectValue: unknown,
   property: string | number
-): unknown | undefined => {
+): StaticPropertyRead => {
   if (
     isStaticProxy(objectValue) ||
     objectValue === null ||
@@ -370,13 +370,12 @@ export const getObjectMember = (
       typeof objectValue !== 'number' &&
       typeof objectValue !== 'boolean')
   ) {
-    return undefined;
+    return { found: false, safe: false };
   }
 
   const target =
     typeof objectValue === 'object' ? objectValue : Object(objectValue);
-  const member = readOwnDataProperty(target, String(property));
-  return member.safe && member.found ? member.value : undefined;
+  return readOwnDataProperty(target, String(property));
 };
 
 export const hasOnlyDataProperties = (value: object): boolean => {

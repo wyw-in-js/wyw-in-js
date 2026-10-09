@@ -12,7 +12,8 @@ import {
   resolveBindingAt,
   toMutationBindingKey,
 } from './scopeAnalysis';
-import { evaluateStatic } from './staticEvaluator';
+import { evaluateStaticOutcome } from './staticEvaluator';
+import { hasStaticRuntimeIdentity } from './staticOutcome';
 import {
   getHazardTimelineAt,
   someHazardTimelineEndAtOrBefore,
@@ -74,9 +75,12 @@ const snapshotStaticPropertyKey = (
     return null;
   }
 
-  const value = evaluateStatic(key as Expression, ctx);
-  if (typeof value === 'string' || typeof value === 'number') {
-    return value;
+  const outcome = evaluateStaticOutcome(key as Expression, ctx);
+  if (
+    outcome.kind === 'known' &&
+    (typeof outcome.value === 'string' || typeof outcome.value === 'number')
+  ) {
+    return outcome.value;
   }
 
   if (key.type !== 'Identifier') {
@@ -307,12 +311,12 @@ export const inferSnapshotExpressionKind = (
   stack = new Set<string>()
 ): SnapshotValueKind => {
   const current = unwrapSnapshotExpression(expression) as Expression;
-  const evaluated = evaluateStatic(current, ctx);
-  if (evaluated !== undefined) {
-    return (typeof evaluated === 'object' && evaluated !== null) ||
-      typeof evaluated === 'function'
-      ? 'identity'
-      : 'primitive';
+  const outcome = evaluateStaticOutcome(current, ctx);
+  if (hasStaticRuntimeIdentity(outcome)) {
+    return 'identity';
+  }
+  if (outcome.kind === 'known') {
+    return 'primitive';
   }
 
   if (current.type === 'Literal') {
