@@ -2,7 +2,7 @@ import { SourceMapConsumer } from 'source-map';
 
 import type { Artifact, Replacements, Rules } from '@wyw-in-js/shared';
 
-import { syncActionRunner } from '../../actions/actionRunner';
+import { asyncActionRunner } from '../../actions/actionRunner';
 import {
   createEntrypoint,
   createServices,
@@ -167,11 +167,11 @@ describe('extract', () => {
     const entrypoint = createEntrypoint(services, filename, ['*'], '');
     const action = entrypoint.createAction('extract', { processors }, null);
 
-    return syncActionRunner(action, getHandlers<'sync'>({ extract }));
+    return asyncActionRunner(action, getHandlers<'sync'>({ extract }));
   };
 
-  it('merges css artifacts of all processors in order', () => {
-    const result = runExtract([
+  it('merges css artifacts of all processors in order', async () => {
+    const result = await runExtract([
       {
         artifacts: [
           cssArtifact({ '.a': rule('a', 'color: red;', 1) }, [replacement(1)]),
@@ -212,8 +212,8 @@ describe('extract', () => {
     ]);
   });
 
-  it('keeps the first position and the last value of a repeated selector', () => {
-    const result = runExtract([
+  it('keeps the first position and the last value of a repeated selector', async () => {
+    const result = await runExtract([
       {
         artifacts: [
           cssArtifact({
@@ -239,11 +239,11 @@ describe('extract', () => {
     expect(result.rules['.a'].start).toEqual({ line: 4, column: 0 });
   });
 
-  it('does not mutate the rules of a processor', () => {
+  it('does not mutate the rules of a processor', async () => {
     const first: Rules = { '.a': rule('a', 'color: red;', 1) };
     const second: Rules = { '.b': rule('b', 'color: blue;', 2) };
 
-    const result = runExtract([
+    const result = await runExtract([
       { artifacts: [cssArtifact(first)] },
       { artifacts: [cssArtifact(second)] },
     ]);
@@ -253,8 +253,8 @@ describe('extract', () => {
     expect(Object.keys(second)).toEqual(['.b']);
   });
 
-  it('returns empty css when no processor has css artifacts', () => {
-    const result = runExtract([
+  it('returns empty css when no processor has css artifacts', async () => {
+    const result = await runExtract([
       { artifacts: [['meta', {}]] },
       { artifacts: [] },
     ]);
