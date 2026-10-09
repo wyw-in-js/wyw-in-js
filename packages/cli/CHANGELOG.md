@@ -1,5 +1,22 @@
 # @wyw-in-js/cli
 
+## 2.6.0
+
+### Minor Changes
+
+- 208752d: Keep vendor prefixes and the `display` normalization in CSS written by the CLI. With `outputFilename` set, the `url()` rewrite stopped the Stylis prefixer, so CLI output had no vendor prefixes and multi-keyword `display` values such as `flex inline` stayed as written. The CLI now writes the same CSS as the bundler plugins with the same options. To keep declarations unprefixed, pass `--no-prefixer`.
+
+  Add `--prefixer` (`--no-prefixer`), `--keep-comments`, `--keep-comments-pattern` and `--preprocessor` to the CLI. They match the `prefixer`, `keepComments` and `preprocessor` options of the bundler plugins. A custom preprocessor function cannot be set from the CLI.
+
+- a8e53b1: Add opt-in worker threads for transforms. The Vite, esbuild and Bun plugins and the webpack loader accept `parallel: true` (up to four workers) or a worker count, and the CLI accepts `--workers <count>`. Each worker keeps its own cache, a file always returns to the worker that transformed it first, and module resolution still goes through the bundler on the main thread. Options are sent to the workers as data, so function options must be defined in a wyw-in-js config file; with function options or debug reporting, transforms stay on the main thread and a warning explains why. Workers split the parsed-AST cache budget of one process between them and start with a 1.5 GB heap limit, which is raised when a worker runs out of memory. `@wyw-in-js/transform` exports the underlying `TransformWorkerPool` and the `createParallelTransforms` helper for other integrations.
+
+### Patch Changes
+
+- 1028608: Skip directories matched by file patterns instead of stopping the run. Previously, a pattern that also matched a directory left every file unprocessed, printed no summary, and skipped the debug report.
+- Updated dependencies
+  - @wyw-in-js/shared@2.6.0
+  - @wyw-in-js/transform@2.6.0
+
 ## 2.5.1
 
 ### Patch Changes

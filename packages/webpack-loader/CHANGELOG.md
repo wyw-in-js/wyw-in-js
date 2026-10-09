@@ -1,5 +1,20 @@
 # @wyw-in-js/webpack-loader
 
+## 2.6.0
+
+### Minor Changes
+
+- a8e53b1: Add opt-in worker threads for transforms. The Vite, esbuild and Bun plugins and the webpack loader accept `parallel: true` (up to four workers) or a worker count, and the CLI accepts `--workers <count>`. Each worker keeps its own cache, a file always returns to the worker that transformed it first, and module resolution still goes through the bundler on the main thread. Options are sent to the workers as data, so function options must be defined in a wyw-in-js config file; with function options or debug reporting, transforms stay on the main thread and a warning explains why. Workers split the parsed-AST cache budget of one process between them and start with a 1.5 GB heap limit, which is raised when a worker runs out of memory. `@wyw-in-js/transform` exports the underlying `TransformWorkerPool` and the `createParallelTransforms` helper for other integrations.
+
+### Patch Changes
+
+- be744b7: Pass extracted CSS directly to the output loader for every cache mode. This prevents Rspack watch builds from emitting the previous build's CSS and removes the dependency on loader execution order.
+- 5c8ea4a: Pass extracted CSS source maps through the loader callback when composing CSS loader pipelines. This avoids duplicate inline maps and intermediate source contents when composing extracted stylesheets, while keeping each CSS request tied to its source map. Raw asset modules retain inline CSS maps for source navigation.
+- 55d9925: Move helpers that adapters kept their own copies of into `@wyw-in-js/shared`: `stripQueryAndHash` and `parseRequest`, `isPlainObject`, `canonicalizeForHash`, `normalizeInputSourceMap`, and the CSS constants shared by the Next.js plugin and the Turbopack loader (`WYW_CSS_MODULE_EXTENSION`, `WYW_CSS_OUTPUT_QUERY`). Adapters and transform now import them. The Babel preset option checks and the Next.js config merging now accept plain objects created in another realm (for example by a `vm` context), as transform already did.
+- Updated dependencies
+  - @wyw-in-js/shared@2.6.0
+  - @wyw-in-js/transform@2.6.0
+
 ## 2.5.1
 
 ### Patch Changes
