@@ -1,7 +1,8 @@
 /* eslint-disable no-restricted-syntax */
 
-import type { Node, Program } from 'oxc-parser';
+import { visitorKeys, type Node, type Program } from 'oxc-parser';
 
+import { isOxcNode } from '../oxc/ast';
 import { createOxcFileEdits } from '../oxc/fileEdits';
 import { parseOxcProgramCached } from '../parseOxc';
 
@@ -64,25 +65,21 @@ const getChildren = (node: Node): Array<{ key: string | null; node: Node }> => {
   const result: Array<{ key: string | null; node: Node }> = [];
   const record = node as Node & Record<string, unknown>;
 
-  Object.keys(record).forEach((key) => {
-    if (key === 'type' || key === 'start' || key === 'end' || key === 'range') {
-      return;
-    }
-
+  const keys = visitorKeys[node.type] ?? [];
+  for (let idx = 0; idx < keys.length; idx += 1) {
+    const key = keys[idx]!;
     const value = record[key];
-    if (value && typeof value === 'object' && 'type' in (value as object)) {
-      result.push({ key, node: value as Node });
-      return;
-    }
-
-    if (Array.isArray(value)) {
-      value.forEach((item) => {
-        if (item && typeof item === 'object' && 'type' in (item as object)) {
-          result.push({ key, node: item as Node });
+    if (isOxcNode(value)) {
+      result.push({ key, node: value });
+    } else if (Array.isArray(value)) {
+      for (let itemIdx = 0; itemIdx < value.length; itemIdx += 1) {
+        const item = value[itemIdx];
+        if (isOxcNode(item)) {
+          result.push({ key, node: item });
         }
-      });
+      }
     }
-  });
+  }
 
   return result;
 };
@@ -203,12 +200,8 @@ const collapseRuntimeBlankLines = (code: string): string => {
         nextIdx += 1;
       }
 
-      const previousNonEmpty = [...result]
-        .reverse()
-        .find((entry) => entry.trim() !== '');
-      const nextNonEmpty = lines
-        .slice(nextIdx)
-        .find((entry) => entry.trim() !== '');
+      const previousNonEmpty = result.at(-1);
+      const nextNonEmpty = lines[nextIdx];
 
       if (previousNonEmpty && nextNonEmpty) {
         const trimmedPrevious = previousNonEmpty.trim();

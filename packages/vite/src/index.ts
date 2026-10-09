@@ -27,6 +27,8 @@ import {
 } from '@wyw-in-js/shared';
 import type {
   IFileReporterOptions,
+  ParallelTransforms,
+  ParallelTransformsOption,
   PluginOptions,
   Preprocessor,
   Result as TransformResult,
@@ -35,7 +37,26 @@ import type {
 } from '@wyw-in-js/transform';
 import * as transformPkg from '@wyw-in-js/transform';
 
+import {
+  findWywCssAssetFileName,
+  getRelativeImportPath,
+  getTrackedModuleIdForChunk,
+  getWywCssAssetFileNames,
+  hasCssLoadStatement,
+  isOutputChunkLike,
+  isWindowsAbsolutePath,
+  normalizeToPosix,
+  prependCssLoadStatement,
+} from './cssAssets.js';
+import type {
+  AssetFileNames,
+  CssReloadTarget,
+  OutputBundleLike,
+  RollupOutputLike,
+} from './cssAssets.js';
+
 const {
+  createParallelTransforms,
   createTransformManifest,
   createFileReporter,
   disposeEvalBroker,
@@ -73,6 +94,11 @@ type VitePluginOptions = {
   exclude?: FilterPattern;
   include?: FilterPattern;
   keepComments?: boolean | RegExp;
+  /**
+   * Run transforms in worker threads: `true` uses up to four workers, a number
+   * sets the count. Function options must be defined in a wyw-in-js config file.
+   */
+  parallel?: ParallelTransformsOption;
   prefixer?: boolean;
   preprocessor?: Preprocessor;
   preserveCssPaths?: boolean;
@@ -86,251 +112,6 @@ type OverrideContext = NonNullable<PluginOptions['overrideContext']>;
 type OverrideContextArgs = Parameters<OverrideContext>;
 
 export type { Plugin };
-
-type AssetInfoLike = { name?: unknown };
-type AssetFileNames = string | ((assetInfo: AssetInfoLike) => string);
-type RollupOutputLike = {
-  assetFileNames?: AssetFileNames;
-  format?: unknown;
-  preserveModules?: boolean;
-  preserveModulesRoot?: unknown;
-} & Record<string, unknown>;
-
-type OutputAssetLike = {
-  fileName: string;
-  name?: unknown;
-  names?: unknown;
-  originalFileName?: unknown;
-  originalFileNames?: unknown;
-  type: 'asset';
-};
-
-type OutputChunkLike = {
-  code: string;
-  facadeModuleId?: unknown;
-  fileName: string;
-  moduleIds?: unknown;
-  type: 'chunk';
-};
-
-type OutputBundleLike = Record<string, OutputAssetLike | OutputChunkLike>;
-
-type CssReloadTarget = {
-  moduleGraph: {
-    getModuleById(id: string): ModuleNode | null | undefined;
-  };
-  reloadModule(module: ModuleNode): void;
-};
-
-const isWindowsAbsolutePath = (value: string): boolean =>
-  /^[a-zA-Z]:[\\/]/.test(value);
-
-const normalizeToPosix = (value: string): string =>
-  value.replace(/\\/g, path.posix.sep);
-
-const isInside = (childPath: string, parentPath: string): boolean => {
-  const rel = path.relative(parentPath, childPath);
-  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
-};
-
-const isWywCssAssetName = (value: string): boolean =>
-  value.endsWith('.wyw-in-js.css');
-
-const normalizeAssetRelativePath = (value: string): string | null => {
-  const normalized = path.posix.normalize(
-    normalizeToPosix(value).replace(/^\/+/, '')
-  );
-  if (normalized.startsWith('..') || path.posix.isAbsolute(normalized)) {
-    return null;
-  }
-
-  return normalized;
-};
-
-const stripExtension = (value: string): string => {
-  const ext = path.posix.extname(value);
-  return ext ? value.slice(0, -ext.length) : value;
-};
-
-const getComparableAssetPaths = (
-  value: string,
-  rootDir: string
-): Set<string> => {
-  const variants = new Set<string>();
-  const normalized = normalizeToPosix(value);
-
-  variants.add(normalized);
-
-  if (path.isAbsolute(value) || isWindowsAbsolutePath(normalized)) {
-    if (isInside(value, rootDir)) {
-      const relativeToRoot = normalizeAssetRelativePath(
-        path.relative(rootDir, value)
-      );
-      if (relativeToRoot) {
-        variants.add(relativeToRoot);
-      }
-    }
-
-    return variants;
-  }
-
-  const relativePath = normalizeAssetRelativePath(value);
-  if (relativePath) {
-    variants.add(relativePath);
-  }
-
-  return variants;
-};
-
-const getStringValues = (value: unknown): string[] => {
-  if (!Array.isArray(value)) return [];
-
-  return value.filter((item): item is string => typeof item === 'string');
-};
-
-const getOutputAssetNames = (asset: OutputAssetLike): string[] => [
-  ...(typeof asset.name === 'string' ? [asset.name] : []),
-  ...getStringValues(asset.names),
-  ...(typeof asset.originalFileName === 'string'
-    ? [asset.originalFileName]
-    : []),
-  ...getStringValues(asset.originalFileNames),
-];
-
-const isOutputAssetLike = (value: unknown): value is OutputAssetLike =>
-  !!value &&
-  typeof value === 'object' &&
-  (value as { type?: unknown }).type === 'asset' &&
-  typeof (value as { fileName?: unknown }).fileName === 'string';
-
-const isOutputChunkLike = (value: unknown): value is OutputChunkLike =>
-  !!value &&
-  typeof value === 'object' &&
-  (value as { type?: unknown }).type === 'chunk' &&
-  typeof (value as { fileName?: unknown }).fileName === 'string' &&
-  typeof (value as { code?: unknown }).code === 'string';
-
-const getTrackedModuleIdForChunk = (
-  chunk: OutputChunkLike,
-  cssFilesByModuleId: Map<string, string>
-): string | null => {
-  if (
-    typeof chunk.facadeModuleId === 'string' &&
-    cssFilesByModuleId.has(chunk.facadeModuleId)
-  ) {
-    return chunk.facadeModuleId;
-  }
-
-  if (!Array.isArray(chunk.moduleIds)) {
-    return null;
-  }
-
-  const moduleId = chunk.moduleIds.find(
-    (id): id is string => typeof id === 'string' && cssFilesByModuleId.has(id)
-  );
-
-  return moduleId ?? null;
-};
-
-const findWywCssAssetFileName = (
-  bundle: OutputBundleLike,
-  cssFilename: string,
-  rootDir: string
-): string | null => {
-  const expectedNames = getComparableAssetPaths(cssFilename, rootDir);
-
-  for (const item of Object.values(bundle)) {
-    if (isOutputAssetLike(item) && item.fileName.endsWith('.css')) {
-      const isMatch = getOutputAssetNames(item).some((assetName) => {
-        const variants = getComparableAssetPaths(assetName, rootDir);
-        return Array.from(variants).some((variant) =>
-          expectedNames.has(variant)
-        );
-      });
-
-      if (isMatch) {
-        return normalizeToPosix(item.fileName);
-      }
-    }
-  }
-
-  return null;
-};
-
-const getRelativeImportPath = (
-  fromFileName: string,
-  toFileName: string
-): string => {
-  const fromDir = path.posix.dirname(normalizeToPosix(fromFileName));
-  const relativePath = path.posix.relative(
-    fromDir,
-    normalizeToPosix(toFileName)
-  );
-
-  return relativePath.startsWith('.') ? relativePath : `./${relativePath}`;
-};
-
-const escapeForRegExp = (value: string): string =>
-  value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-const hasStaticImport = (code: string, specifier: string): boolean =>
-  new RegExp(
-    `(^|\\n)\\s*import\\s*(?:["']${escapeForRegExp(
-      specifier
-    )}["']|[^\\n;]+\\s+from\\s+["']${escapeForRegExp(specifier)}["'])`,
-    'm'
-  ).test(code);
-
-const hasRequireCall = (code: string, specifier: string): boolean =>
-  new RegExp(
-    `(^|[;\\n])\\s*require\\(\\s*["']${escapeForRegExp(specifier)}["']\\s*\\)`,
-    'm'
-  ).test(code);
-
-const getCssLoadStatement = (format: unknown, specifier: string): string =>
-  format === 'cjs'
-    ? `require(${JSON.stringify(specifier)});\n`
-    : `import ${JSON.stringify(specifier)};\n`;
-
-const hasCssLoadStatement = (
-  code: string,
-  specifier: string,
-  format: unknown
-): boolean =>
-  format === 'cjs'
-    ? hasRequireCall(code, specifier)
-    : hasStaticImport(code, specifier);
-
-const prependCssLoadStatement = (
-  code: string,
-  specifier: string,
-  format: unknown
-): string => {
-  const statement = getCssLoadStatement(format, specifier);
-  let insertAt = 0;
-
-  if (code.startsWith('#!')) {
-    const lineBreakIndex = code.indexOf('\n');
-    if (lineBreakIndex >= 0) {
-      insertAt = lineBreakIndex + 1;
-    } else {
-      return `${code}\n${statement}`;
-    }
-  }
-
-  if (format === 'cjs') {
-    const directiveMatch =
-      /^(?:\s*(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*');)+/.exec(
-        code.slice(insertAt)
-      );
-
-    if (directiveMatch) {
-      insertAt += directiveMatch[0].length;
-    }
-  }
-
-  return `${code.slice(0, insertAt)}${statement}${code.slice(insertAt)}`;
-};
 
 const VITE_FS_PREFIX = '/@fs/';
 
@@ -376,113 +157,6 @@ const getCssReloadTarget = (
   return null;
 };
 
-const getWywCssAssetFileNames = (
-  resolvedConfig: ResolvedConfig,
-  output: RollupOutputLike,
-  originalAssetFileNames: AssetFileNames
-): ((assetInfo: AssetInfoLike) => string) | null => {
-  if (!output.preserveModules) return null;
-
-  const rootDir = resolvedConfig.root;
-
-  const preserveModulesRootValue = output.preserveModulesRoot;
-  let preserveModulesRootAbs: string | null = null;
-  if (typeof preserveModulesRootValue === 'string') {
-    preserveModulesRootAbs = path.isAbsolute(preserveModulesRootValue)
-      ? preserveModulesRootValue
-      : path.resolve(rootDir, preserveModulesRootValue);
-  }
-
-  const preserveModulesRootRel =
-    preserveModulesRootAbs && isInside(preserveModulesRootAbs, rootDir)
-      ? normalizeToPosix(path.relative(rootDir, preserveModulesRootAbs))
-      : null;
-
-  return (assetInfo) => {
-    const template =
-      typeof originalAssetFileNames === 'function'
-        ? originalAssetFileNames(assetInfo)
-        : originalAssetFileNames;
-
-    const assetName = assetInfo?.name;
-    if (typeof assetName !== 'string' || !isWywCssAssetName(assetName)) {
-      return template;
-    }
-
-    if (!template.includes('[')) {
-      return template;
-    }
-
-    let relativePath: string | null = null;
-
-    const assetNameNormalized = normalizeToPosix(assetName);
-
-    if (
-      path.isAbsolute(assetName) ||
-      isWindowsAbsolutePath(assetNameNormalized)
-    ) {
-      const preserveRel =
-        preserveModulesRootAbs && isInside(assetName, preserveModulesRootAbs)
-          ? path.relative(preserveModulesRootAbs, assetName)
-          : null;
-
-      if (
-        preserveRel &&
-        !path.isAbsolute(preserveRel) &&
-        !preserveRel.startsWith('..')
-      ) {
-        relativePath = preserveRel;
-      } else if (isInside(assetName, rootDir)) {
-        relativePath = path.relative(rootDir, assetName);
-      }
-    } else if (
-      preserveModulesRootRel &&
-      assetNameNormalized.startsWith(`${preserveModulesRootRel}/`)
-    ) {
-      relativePath = assetNameNormalized.slice(
-        preserveModulesRootRel.length + 1
-      );
-    } else {
-      relativePath = assetNameNormalized;
-    }
-
-    const normalized = relativePath
-      ? normalizeAssetRelativePath(relativePath)
-      : null;
-    if (!normalized) {
-      return template;
-    }
-
-    const withoutExt = stripExtension(normalized);
-
-    if (template.includes('[name]')) {
-      const dir = path.posix.dirname(withoutExt);
-      if (dir === '.' || dir === '') {
-        return template;
-      }
-
-      return template.replace(/\[name\]/g, `${dir}/[name]`);
-    }
-
-    const dir = path.posix.dirname(withoutExt);
-    if (dir === '.' || dir === '') {
-      return template;
-    }
-
-    const idx = template.indexOf('[');
-    if (idx < 0) {
-      return template;
-    }
-
-    const prefix = template.slice(0, idx);
-    if (prefix !== '' && !prefix.endsWith('/')) {
-      return template;
-    }
-
-    return `${prefix}${dir}/${template.slice(idx)}`;
-  };
-};
-
 export default function wywInJS({
   debug,
   include,
@@ -490,6 +164,7 @@ export default function wywInJS({
   sourceMap,
   preserveCssPaths,
   keepComments,
+  parallel,
   prefixer,
   preprocessor,
   ssrDevCss,
@@ -526,6 +201,9 @@ export default function wywInJS({
   let nativeResolverAlias: NativeResolverAlias = {};
   // transform() memoizes normalized options by object identity: [client, ssr]
   let pluginOptionsByEnv: Partial<PluginOptions>[] = [];
+  // Worker scopes get plain options; import.meta.env goes in contextGlobals.
+  let workerPluginOptions: Partial<PluginOptions> = rest;
+  let parallelTransforms: ParallelTransforms | null = null;
   const buildOverrideContext =
     (getEnv: () => Record<string, unknown> | undefined): OverrideContext =>
     (context: OverrideContextArgs[0], filename: OverrideContextArgs[1]) => {
@@ -661,6 +339,10 @@ export default function wywInJS({
 
   const getCache = (isSsr: boolean): TransformCacheCollectionType =>
     isSsr ? ssrCache : clientCache;
+
+  const disposeParallelTransforms = async () => {
+    await parallelTransforms?.dispose();
+  };
 
   type DepInfoLike = { file: string; processing?: Promise<void> };
   type DepsOptimizerLike = {
@@ -838,12 +520,19 @@ export default function wywInJS({
       Object.keys(metadataLookup).forEach((key) => {
         delete metadataLookup[key];
       });
+      // Workers load the transform pipeline while Vite reads the entries.
+      parallelTransforms?.start();
     },
-    buildEnd() {
+    async buildEnd() {
       onDone(process.cwd());
       if (config.command === 'build') {
         disposeEvalBrokers();
+        if (config.build.watch) parallelTransforms?.disposeEvalBrokers();
+        else await disposeParallelTransforms();
       }
+    },
+    async closeWatcher() {
+      await disposeParallelTransforms();
     },
     configResolved(resolvedConfig: ResolvedConfig) {
       config = resolvedConfig;
@@ -856,6 +545,17 @@ export default function wywInJS({
       pluginOptionsByEnv = [overrideContextClient, overrideContextSsr].map(
         (overrideContext) => ({ ...rest, oxcOptions, overrideContext })
       );
+      workerPluginOptions = { ...rest, oxcOptions };
+      disposeParallelTransforms();
+      parallelTransforms =
+        typeof createParallelTransforms === 'function'
+          ? createParallelTransforms({
+              onFallback: (message: string) =>
+                config.logger.warn(`[wyw-in-js] ${message}`),
+              parallel,
+              unsupported: debug ? 'the `debug` option is set' : null,
+            })
+          : null;
 
       if (preserveCssPaths && config.command === 'build') {
         const outputs = config.build.rollupOptions.output;
@@ -908,7 +608,10 @@ export default function wywInJS({
     },
     configureServer(_server) {
       devServer = _server;
-      devServer.httpServer?.once('close', disposeEvalBrokers);
+      devServer.httpServer?.once('close', () => {
+        disposeEvalBrokers();
+        disposeParallelTransforms();
+      });
 
       if (ssrDevCssEnabled && config.command === 'serve') {
         devServer.middlewares.use(
@@ -985,6 +688,7 @@ export default function wywInJS({
         for (const cache of caches) {
           cache.invalidateForFile(depId);
         }
+        parallelTransforms?.invalidateForFile(depId);
       }
 
       return affected
@@ -1091,12 +795,27 @@ export default function wywInJS({
       };
 
       const asyncResolve = isSsr ? asyncResolveSsr : asyncResolveClient;
+      const env = isSsr ? 'ssr' : 'client';
+      const workerScope = parallelTransforms?.scope(env, () => ({
+        asyncResolveKey: `vite:${env}`,
+        contextGlobals: importMetaEnvForEval
+          ? { __wyw_import_meta_env: importMetaEnvForEval[env] }
+          : undefined,
+        keepComments,
+        pluginOptions: workerPluginOptions,
+        prefixer,
+        preprocessor,
+        root: process.cwd(),
+      }));
 
-      const result: TransformResult = await transform(
-        transformServices,
-        code,
-        asyncResolve
-      );
+      const result: TransformResult = workerScope
+        ? await workerScope.transform({
+            asyncResolve,
+            code,
+            emitWarning: transformServices.emitWarning,
+            filename: id,
+          })
+        : await transform(transformServices, code, asyncResolve);
 
       result.diagnostics?.forEach((diagnostic: WYWTransformDiagnostic) => {
         this.warn({

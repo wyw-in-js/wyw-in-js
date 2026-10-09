@@ -2,7 +2,6 @@ import type { Program } from 'oxc-parser';
 
 import { applyOxcEdits, mergeOxcRemovals } from '../oxc/fileEdits';
 import {
-  collectReferencedNames,
   collectRemovableNamesFromStatements,
   collectTopLevelBindingsFromStatements,
   collectTopLevelStatementInfos,
@@ -49,7 +48,10 @@ export const removeUnusedAfterReplacement = (
         cumulativeRemovableNames
       );
       removableNames.forEach((name) => cumulativeRemovableNames.add(name));
-      const referencedNames = collectReferencedNames(program);
+      const referencedNames = new Set<string>();
+      statements.forEach((statement) => {
+        statement.references.forEach((name) => referencedNames.add(name));
+      });
       const topLevelBindings =
         collectTopLevelBindingsFromStatements(statements);
       const scopedBindings = collectScopedBindingInfos(program);
