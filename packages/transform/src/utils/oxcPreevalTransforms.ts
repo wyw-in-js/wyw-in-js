@@ -19,6 +19,8 @@ import {
 import { collectOxcExportsAndImports } from './collectOxcExportsAndImports';
 import { EventEmitter } from './EventEmitter';
 import { getOxcNodeChildren } from './oxc/ast';
+import { isInOxcTypeContext } from './oxc/lexicalScopes';
+import { unwrapOxcRuntimeExpression } from './oxc/runtimeSemantics';
 import {
   isControlStatement,
   removeEmptyControlStatements,
@@ -814,12 +816,6 @@ const isPropertyOnlyIdentifier = (node: Node, parent: Node | null): boolean => {
   return false;
 };
 
-const isTypeContext = (ancestors: Node[]): boolean =>
-  ancestors.some(
-    (ancestor) =>
-      ancestor.type.startsWith('TS') || ancestor.type.startsWith('JSDoc')
-  );
-
 const isInsideTypeof = (ancestors: Node[]): boolean =>
   ancestors.some(
     (ancestor) =>
@@ -999,11 +995,14 @@ const collectWindowScopedNames = (
   const windowScopedNames = new Set<string>();
 
   visit(program, createScope(null, 'root'), (node, scope) => {
+    if (isIgnoredNode(node) || node.type !== 'MemberExpression') {
+      return;
+    }
+
+    const object = unwrapOxcRuntimeExpression(node.object, false);
     if (
-      isIgnoredNode(node) ||
-      node.type !== 'MemberExpression' ||
-      node.object.type !== 'Identifier' ||
-      node.object.name !== 'window' ||
+      object.type !== 'Identifier' ||
+      object.name !== 'window' ||
       hasBinding(scope, 'window')
     ) {
       return;
@@ -1029,7 +1028,7 @@ const containsForbiddenReference = (
     if (
       isIgnoredNode(child) ||
       child.type !== 'Identifier' ||
-      isTypeContext(ancestors) ||
+      isInOxcTypeContext(ancestors) ||
       isInsideTypeof(ancestors) ||
       isPropertyOnlyIdentifier(child, parent) ||
       isBindingPosition(child, parent)
@@ -1666,7 +1665,7 @@ export const collectDangerousCodeReplacementsWithOxc = (
 
       if (
         node.type !== 'Identifier' ||
-        isTypeContext(ancestors) ||
+        isInOxcTypeContext(ancestors) ||
         isInsideTypeof(ancestors) ||
         isInsideImportDeclaration(ancestors)
       ) {
