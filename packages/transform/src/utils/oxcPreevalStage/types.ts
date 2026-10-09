@@ -27,6 +27,7 @@ export type OxcPreevalOptions = Pick<
 
 export type OxcPreevalResult = {
   baseCode: string;
+  /** Executable source is serialized and memoized when first read. */
   code: string;
   dependencyNames: string[];
   finalizeEvaltimeReplacements?: (

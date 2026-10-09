@@ -14,6 +14,7 @@ import type {
 import { shaker } from '../../shaker';
 import { DEFAULT_EVAL_OPTIONS } from '../../utils/evalOptions';
 import type { PluginOptions } from '../../types';
+import { DEFAULT_EVAL_STRATEGY } from '../../utils/evalStrategy';
 
 const searchPlaces = [
   `.wyw-in-jsrc`,
@@ -175,7 +176,7 @@ export function loadWywOptions(
   const defaultEval: EvalOptionsV2 = {
     ...DEFAULT_EVAL_OPTIONS,
     runtime: 'nodejs',
-    strategy: 'hybrid',
+    strategy: DEFAULT_EVAL_STRATEGY,
   };
 
   const config = (() => {

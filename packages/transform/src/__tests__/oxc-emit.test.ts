@@ -199,4 +199,25 @@ describe('emitOxcCommonJS', () => {
     expect(exports.theme).toBe(2);
     expect(result.code).toContain('Object.defineProperty(exports, "theme"');
   });
+
+  it('keeps template literal contents that look like trailing commas', () => {
+    const literal = ['a,', '}', '', 'const b,', '  }'].join('\n');
+    const result = emitOxcCommonJS(
+      [
+        `const local = \`${literal}\`;`,
+        `export const value = \`${literal}\`;`,
+        'export const object = {',
+        '  local,',
+        '};',
+      ].join('\n'),
+      tsFilename
+    );
+    const exports = executeCommonJS(result.code) as {
+      object: { local: string };
+      value: string;
+    };
+
+    expect(exports.value).toBe(literal);
+    expect(exports.object.local).toBe(literal);
+  });
 });

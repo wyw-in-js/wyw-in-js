@@ -72,7 +72,6 @@ export default function wywInJS({
   let cacheKey = 'wyw-in-js:0';
   let isCacheKeyVisible = true;
   const filter = createFilter(include, exclude);
-  const emptyConfig = {};
   const graphStates = new WeakMap<object, RollupGraphState>();
   const fallbackCssByGraph = new WeakMap<object, Record<string, string>>();
   let publicPlugin: Plugin;
@@ -483,11 +482,19 @@ export default function wywInJS({
         const result = await transform(
           transformServices,
           code,
-          createAsyncResolver(getBoundResolve(this)),
-          emptyConfig
+          createAsyncResolver(getBoundResolve(this))
         );
 
-        if (!result.cssText) return;
+        // `cssText` distinguishes three outcomes:
+        // - undefined: the file was not transformed, Rollup keeps its code;
+        // - empty: the code was transformed but produced no styles;
+        // - non-empty: the transformed code also needs its CSS module.
+        if (result.cssText === undefined) return;
+
+        if (result.cssText === '') {
+          /* eslint-disable-next-line consistent-return */
+          return { code: result.code, map: result.sourceMap };
+        }
 
         let { cssText } = result;
 
