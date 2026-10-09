@@ -231,7 +231,7 @@ describe('prepareCode with explicit oxcShaker action', () => {
     expect(handlers.processImports).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps template literal contents in prepared CommonJS code', () => {
+  it('keeps template literal contents in prepared CommonJS code', async () => {
     const root = __dirname;
     const filename = join(root, 'literal-source.js');
     const literal = ['line1', '', '', 'const x = 1,', '}'].join('\n');
@@ -254,7 +254,7 @@ describe('prepareCode with explicit oxcShaker action', () => {
       throw new Error('Ignored');
     }
 
-    const result = syncActionRunner(
+    const result = await asyncActionRunner(
       entrypoint.createAction('transform', undefined, null),
       getHandlers<'sync'>({ transform: transformAction })
     );
