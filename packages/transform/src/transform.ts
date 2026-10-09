@@ -31,7 +31,7 @@ import { disposeEvalBroker } from './eval/broker';
 import type { Handlers, Services } from './transform/types';
 import { configureEvalSession, getEvalCacheKey } from './transform/evalSession';
 import { isCacheEpochAbortedError } from './transform/actions/CacheEpochAbortedError';
-import { AbortError } from './transform/actions/AbortError';
+import { AbortError, isAborted } from './transform/actions/AbortError';
 import { EntrypointEvictedError } from './transform/actions/EntrypointEvictedError';
 import { CacheRecoveryConvergenceError } from './transform/actions/CacheRecoveryConvergenceError';
 import type { Result } from './types';
@@ -54,6 +54,13 @@ type AllHandlers<TMode extends 'async' | 'sync'> = Handlers<TMode>;
 
 const MAX_CACHE_RECOVERY_RETRIES = 3;
 const MAX_TOTAL_CACHE_RECOVERY_RETRIES = 100;
+
+/** The root was widened into a newer generation while a later stage ran. */
+class RootSupersededError extends AbortError {
+  constructor() {
+    super('superseded');
+  }
+}
 
 interface ActiveCacheKeySaltLease {
   active: boolean;
@@ -157,13 +164,25 @@ const executeTransformAttempt = async (
 
     return result;
   } catch (error) {
-    // Only eviction of this exact root can restart the top-level input.
-    // Foreign dependency failures and replacement publications stay fenced.
+    // Only eviction of this root can restart the top-level input. The
+    // workflow follows supersede successors, so the evicted entrypoint may be
+    // a later generation of the root. Foreign dependency failures and
+    // replacement publications stay fenced.
     if (
       error instanceof EntrypointEvictedError &&
-      error.entrypoint !== entrypoint
+      !entrypoint.isSelfOrSuccessor(error.entrypoint)
     ) {
       throw new AbortError('superseded');
+    }
+    // A concurrent transform can widen the root into a new generation while
+    // evaluation runs. The fence of that stage aborts the whole workflow
+    // instead of handing it over, so restart the input on the new generation.
+    if (
+      isAborted(error) &&
+      !(error instanceof EntrypointEvictedError) &&
+      entrypoint.supersededWith !== null
+    ) {
+      throw new RootSupersededError();
     }
     throw error;
   } finally {
@@ -242,6 +261,7 @@ const executeTransform = async (
       const retriedEpochs = new Set<number>();
       const allRetriedEpochs = new Set<number>();
       let publicationRetries = 0;
+      let supersedeRetries = 0;
 
       for (;;) {
         let cacheEpoch: TransformCacheEpoch | undefined;
@@ -278,6 +298,13 @@ const executeTransform = async (
             publicationRetries < MAX_CACHE_RECOVERY_RETRIES
           ) {
             publicationRetries += 1;
+            continue;
+          }
+          if (
+            error instanceof RootSupersededError &&
+            supersedeRetries < MAX_CACHE_RECOVERY_RETRIES
+          ) {
+            supersedeRetries += 1;
             continue;
           }
           const ownedEpochAbort =

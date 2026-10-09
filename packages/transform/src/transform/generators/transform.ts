@@ -3,6 +3,7 @@ import { collectOxcExportsAndImports } from '../../utils/collectOxcExportsAndImp
 import { collectOxcImportMap } from '../../utils/oxcImportMap';
 import { emitOxcCommonJS, stripTypesAndJsxWithOxc } from '../../utils/oxcEmit';
 import { runOxcPreevalStage } from '../../utils/oxcPreevalStage';
+import { deferOxcPreevalCode } from '../../utils/oxcPreevalStage/deferredCode';
 import { shakeOxcToESM } from '../../utils/oxcShaker';
 import type { Entrypoint } from '../Entrypoint';
 import type {
@@ -132,9 +133,13 @@ const ensureOxcPreevalResult = (
 
     const preevalResult: IPreevalResult = {
       baseCode: result.baseCode,
-      code: result.code,
+      get code() {
+        return result.code;
+      },
       dependencyNames: result.dependencyNames,
-      evalCode: result.code,
+      get evalCode() {
+        return result.code;
+      },
       metadata: result.metadata,
       processorClassNames: result.processorClassNames,
       pureCallHints: result.pureCallHints,
@@ -147,6 +152,8 @@ const ensureOxcPreevalResult = (
       staticValueCache: result.staticValueCache,
       staticValueCandidates: result.staticValueCandidates,
     };
+    deferOxcPreevalCode(preevalResult, 'code', () => result.code);
+    deferOxcPreevalCode(preevalResult, 'evalCode', () => result.code);
 
     if (result.finalizeEvaltimeReplacements) {
       let evaltimeReplacementsFinalized = false;
@@ -163,8 +170,8 @@ const ensureOxcPreevalResult = (
           staticValueCache ?? preevalResult.staticValueCache
         );
         preevalResult.baseCode = result.baseCode;
-        preevalResult.code = result.code;
-        preevalResult.evalCode = result.code;
+        deferOxcPreevalCode(preevalResult, 'code', () => result.code);
+        deferOxcPreevalCode(preevalResult, 'evalCode', () => result.code);
         preevalResult.metadata = result.metadata;
         preevalResult.staticValueCache = result.staticValueCache;
         preevalResult.staticValueCandidates = result.staticValueCandidates;
@@ -424,6 +431,22 @@ function* resolveAndProcessOxcPreparedImports(
   return nextCode;
 }
 
+const prepareStaticEntrypointCode = (
+  entrypoint: Entrypoint,
+  services: Services
+): string => {
+  const [preparedCode] = prepareCode(services, entrypoint, null);
+  const { loadedAndParsed } = entrypoint;
+  const filename =
+    loadedAndParsed.evaluator === 'ignored'
+      ? entrypoint.name
+      : loadedAndParsed.evalConfig.filename ?? entrypoint.name;
+  return services.eventEmitter.perf(
+    'transform:emitCommonJS',
+    () => emitOxcCommonJS(preparedCode, filename).code
+  );
+};
+
 export function* internalTransform(
   this: ITransformAction,
   prepareFn: PrepareCodeFn
@@ -441,6 +464,26 @@ export function* internalTransform(
 
   ensureOxcPreevalResult(this.services, this.entrypoint);
   yield* resolveStaticOxcPreevalValues.call(this);
+
+  const preevalResult = this.entrypoint.getPreevalResult();
+  if (
+    prepareFn === prepareCode &&
+    this.entrypoint.parents.length === 0 &&
+    isPrevalOnly(only) &&
+    preevalResult?.metadata &&
+    (preevalResult.dependencyNames?.length ?? 0) === 0 &&
+    this.services.options.pluginOptions.eval?.strategy !== 'execute'
+  ) {
+    emitCurrentStaticPlanDebug(this, null);
+    log(
+      '<< (%o) executable preparation deferred; values resolved statically',
+      only
+    );
+    return {
+      prepareCode: prepareStaticEntrypointCode,
+      metadata: preevalResult.metadata,
+    };
+  }
 
   let [preparedCode, imports, metadata] = prepareFn(
     this.services,

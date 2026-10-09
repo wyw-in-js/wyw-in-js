@@ -636,6 +636,44 @@ export const whiteColor = '#fff';`);
     expect(result.code).toBe(`/* @flow */\n\nexport const value = 1;`);
   });
 
+  it('preserves blank lines after comments while collapsing other blank runs', () => {
+    const result = collectOxcRuntime(
+      [
+        '',
+        'export const first = 1;',
+        '',
+        '  ',
+        '// Keep this comment separated from the following declaration.',
+        '',
+        '',
+        'export const second = 2;',
+        '',
+        '/* Keep this block comment separated too. */',
+        '',
+        '\t',
+        'export const third = 3;',
+        '',
+        '',
+      ].join('\n'),
+      filename,
+      __dirname,
+      createOptions(),
+      new Map()
+    );
+
+    expect(result.code).toBe(
+      [
+        'export const first = 1;',
+        '// Keep this comment separated from the following declaration.',
+        '',
+        'export const second = 2;',
+        '/* Keep this block comment separated too. */',
+        '',
+        'export const third = 3;',
+      ].join('\n')
+    );
+  });
+
   it('does not append a semicolon after exported function declarations', () => {
     const result = collectOxcRuntime(
       dedent`
