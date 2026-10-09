@@ -24,9 +24,3 @@ export type OxcCollectResult = {
   map: RawSourceMap;
   metadata: WYWTransformMetadata | null;
 };
-
-export type RuntimeReplacement = {
-  end: number;
-  start: number;
-  value: string;
-};

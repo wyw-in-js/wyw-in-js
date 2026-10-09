@@ -1,6 +1,6 @@
 /* eslint-disable require-yield */
 import { EventEmitter } from '../../../utils/EventEmitter';
-import { syncActionRunner } from '../../actions/actionRunner';
+import { asyncActionRunner } from '../../actions/actionRunner';
 import type {
   IProcessEntrypointAction,
   SyncScenarioForAction,
@@ -13,7 +13,7 @@ import {
 import { processImports } from '../processImports';
 
 describe('processImports', () => {
-  it('reprocesses fresh transformed dependencies during __wywPreval prepare stage', () => {
+  it('reprocesses fresh transformed dependencies during __wywPreval prepare stage', async () => {
     const services = createServices();
     const parent = createEntrypoint(
       services,
@@ -55,7 +55,7 @@ describe('processImports', () => {
       null
     );
 
-    syncActionRunner(action, handlers);
+    await asyncActionRunner(action, handlers);
 
     expect(freshnessSpy).not.toHaveBeenCalled();
     expect(createChildSpy).toHaveBeenCalledWith(
@@ -67,7 +67,7 @@ describe('processImports', () => {
     expect(handlers.processEntrypoint).toHaveBeenCalledTimes(1);
   });
 
-  it('reuses fresh transformed dependencies outside __wywPreval prepare stage', () => {
+  it('reuses fresh transformed dependencies outside __wywPreval prepare stage', async () => {
     const services = createServices();
     const parent = createEntrypoint(
       services,
@@ -109,7 +109,7 @@ describe('processImports', () => {
       null
     );
 
-    syncActionRunner(action, handlers);
+    await asyncActionRunner(action, handlers);
 
     expect(freshnessSpy).toHaveBeenCalledWith(depPath, depPath);
     expect(createChildSpy).not.toHaveBeenCalled();
@@ -117,7 +117,7 @@ describe('processImports', () => {
     expect(depEntrypoint.parents).toContain(parent);
   });
 
-  it('reuses evaluated dependencies during __wywPreval prepare stage when the module has no __wywPreval export', () => {
+  it('reuses evaluated dependencies during __wywPreval prepare stage when the module has no __wywPreval export', async () => {
     const services = createServices();
     const parent = createEntrypoint(
       services,
@@ -160,7 +160,7 @@ describe('processImports', () => {
       null
     );
 
-    syncActionRunner(action, handlers);
+    await asyncActionRunner(action, handlers);
 
     expect(freshnessSpy).toHaveBeenCalledWith(depPath, depPath);
     expect(createChildSpy).not.toHaveBeenCalled();
@@ -168,7 +168,7 @@ describe('processImports', () => {
     expect(evaluated.parents).toContain(parent);
   });
 
-  it('reprocesses evaluated dependencies during __wywPreval prepare stage when the module exports __wywPreval', () => {
+  it('reprocesses evaluated dependencies during __wywPreval prepare stage when the module exports __wywPreval', async () => {
     const services = createServices();
     const parent = createEntrypoint(
       services,
@@ -212,7 +212,7 @@ describe('processImports', () => {
       null
     );
 
-    syncActionRunner(action, handlers);
+    await asyncActionRunner(action, handlers);
 
     expect(freshnessSpy).not.toHaveBeenCalled();
     expect(createChildSpy).toHaveBeenCalledWith(
@@ -224,7 +224,7 @@ describe('processImports', () => {
     expect(handlers.processEntrypoint).toHaveBeenCalledTimes(1);
   });
 
-  it('reprocesses evaluated dependencies when freshness check invalidates them', () => {
+  it('reprocesses evaluated dependencies when freshness check invalidates them', async () => {
     const services = createServices();
     const parent = createEntrypoint(
       services,
@@ -266,7 +266,7 @@ describe('processImports', () => {
       null
     );
 
-    syncActionRunner(action, handlers);
+    await asyncActionRunner(action, handlers);
 
     expect(createChildSpy).toHaveBeenCalledWith(
       depPath,
@@ -276,7 +276,7 @@ describe('processImports', () => {
     );
     expect(handlers.processEntrypoint).toHaveBeenCalledTimes(1);
   });
-  it('continues on the successor when a dependency is superseded while it is processed', () => {
+  it('continues on the successor when a dependency is superseded while it is processed', async () => {
     const services = createServices();
     const parent = createEntrypoint(
       services,
@@ -341,7 +341,7 @@ describe('processImports', () => {
       null
     );
 
-    expect(() => syncActionRunner(action, handlers)).not.toThrow();
+    await expect(asyncActionRunner(action, handlers)).resolves.toBeUndefined();
     expect(processed).toEqual([
       ['__wywPreval', 'value'],
       ['__wywPreval', 'other', 'value'],

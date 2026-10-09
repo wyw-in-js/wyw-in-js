@@ -1,7 +1,7 @@
 import type { ExpressionValue } from '@wyw-in-js/shared';
 import { ValueType } from '@wyw-in-js/shared';
 import type { Expression, Program } from 'oxc-parser';
-import { applyOxcReplacements } from '../oxc/replacements';
+import { applyOxcEdits } from '../oxc/fileEdits';
 import { createOxcLocationLookup } from '../oxc/sourceLocations';
 import { collectEagerIdentifierMutationTargets } from './expressionReplacements';
 import { resolveBindingAt, getSourceLocation } from './scopeAnalysis';
@@ -259,7 +259,7 @@ export const createExpressionExtractor = ({
     });
 
     return {
-      code: applyOxcReplacements(code, ctx.replacements),
+      code: applyOxcEdits(code, ctx.replacements),
       dependencyNames: [...ctx.dependencyNames],
       expressionValues: ctx.expressionValues,
       pureCallHints,

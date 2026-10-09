@@ -9,6 +9,8 @@ import type {
   StrictOptions,
 } from '@wyw-in-js/shared';
 
+import type { EvalRunnerConditions } from '../eval/protocol';
+
 import { parseRequest } from './parseRequest';
 
 const CJS_DEFAULT_CONDITIONS = ['require', 'node', 'default'] as const;
@@ -50,6 +52,38 @@ export const expandNativeResolverConditions = (
   return unique(result);
 };
 
+const getConfiguredConditionNames = (
+  conditionNames: readonly string[] | undefined,
+  oxcOptions: OxcOptions | undefined
+): readonly string[] | undefined => {
+  if (conditionNames) return conditionNames;
+  const configured = (oxcOptions?.resolver as NapiResolveOptions | undefined)
+    ?.conditionNames;
+  return Array.isArray(configured) ? configured : undefined;
+};
+
+/**
+ * Conditions the eval runner uses for the specifiers it resolves itself (a
+ * `require()` reached by evaluated code, re-resolution of an extensionless id,
+ * a bare external id): the same lists `resolveWithNativeResolver` uses for
+ * that edge kind. Returns `undefined` when nothing is configured, so the
+ * runner keeps Node's own defaults.
+ */
+export const getEvalRunnerConditions = ({
+  conditionNames,
+  oxcOptions,
+}: Pick<NativeResolverParams, 'conditionNames' | 'oxcOptions'>):
+  | EvalRunnerConditions
+  | undefined => {
+  const names = getConfiguredConditionNames(conditionNames, oxcOptions);
+  if (!names?.length) return undefined;
+
+  return {
+    import: expandNativeResolverConditions('import', names),
+    require: expandNativeResolverConditions('require', names),
+  };
+};
+
 const createResolverOptions = ({
   conditionNames,
   extensions,
@@ -64,11 +98,6 @@ const createResolverOptions = ({
     configuredResolver,
     'tsconfig'
   );
-  const configuredConditionNames = Array.isArray(
-    configuredResolver.conditionNames
-  )
-    ? configuredResolver.conditionNames
-    : undefined;
   const configuredExtensions = Array.isArray(configuredResolver.extensions)
     ? configuredResolver.extensions
     : [];
@@ -78,7 +107,7 @@ const createResolverOptions = ({
     ...(hasConfiguredTsconfig ? {} : { tsconfig: 'auto' }),
     conditionNames: expandNativeResolverConditions(
       kind,
-      conditionNames ?? configuredConditionNames
+      getConfiguredConditionNames(conditionNames, oxcOptions)
     ),
     extensions: unique([
       ...configuredExtensions,

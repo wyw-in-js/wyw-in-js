@@ -2191,6 +2191,64 @@ describe('EvalBroker', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  it('applies conditionNames to require() reached by evaluated code', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wyw-eval-broker-'));
+    const entry = join(root, 'entry.js');
+    const pkgDir = join(root, 'node_modules', '@test', 'conditional');
+    const source = [
+      'export const __wywPreval = {',
+      "  value: () => require('@test/conditional').value,",
+      '};',
+    ].join('\n');
+
+    mkdirSync(pkgDir, { recursive: true });
+    writeFileSync(entry, source);
+    writeFileSync(
+      join(pkgDir, 'package.json'),
+      JSON.stringify({
+        name: '@test/conditional',
+        exports: {
+          '.': {
+            '@test/source': './source.js',
+            default: './default.js',
+          },
+        },
+      })
+    );
+    writeFileSync(
+      join(pkgDir, 'source.js'),
+      'module.exports = { value: "source" };'
+    );
+    writeFileSync(
+      join(pkgDir, 'default.js'),
+      'module.exports = { value: "default" };'
+    );
+
+    const services = createServices(root, entry, {
+      conditionNames: ['@test/source', '...'],
+      eval: { require: 'warn-and-run' },
+    });
+    const broker = new EvalBroker(
+      services,
+      jest.fn(async () => null)
+    );
+
+    try {
+      const entrypoint = Entrypoint.createRoot(
+        services,
+        entry,
+        ['__wywPreval'],
+        source
+      );
+      const result = await broker.evaluate(entrypoint, services);
+
+      expect(result.values?.get('value')).toBe('source');
+    } finally {
+      broker.dispose();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('dedupes in-flight load calls', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wyw-eval-broker-'));
     const importer = join(root, 'entry.js');

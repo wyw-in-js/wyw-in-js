@@ -2,7 +2,7 @@
 
 import type { Program } from 'oxc-parser';
 
-import { applyOxcReplacements } from '../../../utils/oxc/replacements';
+import { applyOxcEdits } from '../../../utils/oxc/fileEdits';
 import { parseProgram } from './environment';
 import { findExportTarget } from './exportTargets';
 import { collectWYWMetaExtendsExpressionsDeep } from './processorStaticModel';
@@ -56,9 +56,9 @@ export const prepareProcessorTarget = (
     const replacements = opaqueExtendsExpressions.map((extendsExpression) => ({
       end: extendsExpression.end,
       start: extendsExpression.start,
-      text: 'null',
+      value: 'null',
     }));
-    const evaluationCode = applyOxcReplacements(code, replacements);
+    const evaluationCode = applyOxcEdits(code, replacements);
     const evaluationProgram = parseProgram(evaluationCode, filename);
     const evaluationTarget = findExportTarget(evaluationProgram, exportedName);
     if (!evaluationTarget || evaluationTarget.kind === 'import') {

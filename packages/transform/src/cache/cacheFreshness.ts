@@ -7,13 +7,13 @@ import { LoadedSources } from './loadedSource';
 import {
   createDependencySnapshot,
   getEffectiveInvalidationDependencies,
-  hashContent,
   type IBaseCachedEntrypoint,
   isEntrypointGraphIncomplete,
   isMissingFileError,
   type EntrypointDependencySnapshot,
   type DependencyToCheck,
 } from './cacheTypes';
+import { hashContent } from '../utils/contentHash';
 import { stripQueryAndHash } from '../utils/parseRequest';
 
 const cacheLogger = logger.extend('cache');

@@ -12,6 +12,8 @@ import type {
 
 import { oxcShaker } from '../../shaker';
 import { collectOxcExportsAndImports } from '../../utils/collectOxcExportsAndImports';
+import { createOxcFileEdits } from '../../utils/oxc/fileEdits';
+import { parseOxcProgramCached } from '../../utils/parseOxc';
 import { analyzeOxcBarrelFile } from '../oxcBarrelManifest';
 import { Entrypoint } from '../Entrypoint';
 import type { IEntrypointDependency } from '../Entrypoint.types';
@@ -24,7 +26,6 @@ import type {
   BarrelResolvedBinding,
   RawBarrelManifest,
 } from '../barrelManifest.types';
-import { parseRewrittenBarrel } from './parse-rewritten-barrel';
 import {
   createOxcBarrelAnalysisServices as analysisScope,
   publishOxcBarrelDependencies as publishDependencies,
@@ -87,12 +88,6 @@ type RewrittenExportSpecifier =
 
 type IneligibleBarrelEntry = Exclude<BarrelManifestCacheEntry, BarrelManifest>;
 
-type Replacement = {
-  end: number;
-  start: number;
-  value: string;
-};
-
 const addBinding = (
   manifest: Record<string, BarrelManifestExport>,
   exported: string,
@@ -143,23 +138,6 @@ const addImport = (
   }
 
   imports.set(source, bucket);
-};
-
-const applyReplacements = (
-  code: string,
-  replacements: Replacement[]
-): string => {
-  let result = code;
-  replacements
-    .sort((a, b) => b.start - a.start)
-    .forEach((replacement) => {
-      result =
-        result.slice(0, replacement.start) +
-        replacement.value +
-        result.slice(replacement.end);
-    });
-
-  return result;
 };
 
 const buildResolvedDependencyMap = (
@@ -302,7 +280,7 @@ function collectOptimizedImports(
   filename: string
 ): Map<string, string[]> {
   const imports = new Map<string, string[]>();
-  const program = parseRewrittenBarrel(code, filename);
+  const program = parseOxcProgramCached(filename, code, 'module');
 
   for (const statement of program.body as Statement[]) {
     if (statement.type === 'ImportDeclaration') {
@@ -1312,8 +1290,8 @@ export function* rewriteOptimizedOxcBarrelImports(
 ): Generator<any, RewriteResult, any> {
   const dependencies = buildResolvedDependencyMap(resolvedImports);
   const analysisServices = analysisScope(this.services, this.cacheEpoch);
-  const program = parseRewrittenBarrel(code, filename);
-  const replacements: Replacement[] = [];
+  const program = parseOxcProgramCached(filename, code, 'module');
+  const edits = createOxcFileEdits(code);
   const generatedSources = new Set<string>();
   let optimizedCount = 0;
   const sourceModes = new Map<string, Exclude<RewriteMode, 'unchanged'>>();
@@ -1398,16 +1376,11 @@ export function* rewriteOptimizedOxcBarrelImports(
     );
 
     if (statementChanged) {
-      replacements.push({
-        end: statement.end,
-        start: statement.start,
-        value: next,
-      });
+      edits.replace(statement.start, statement.end, next);
     }
   }
 
-  const rewrittenCode =
-    replacements.length > 0 ? applyReplacements(code, replacements) : code;
+  const rewrittenCode = edits.apply();
   const imports = collectOptimizedImports(rewrittenCode, filename);
   const preResolvedImports = Array.from(imports.entries()).flatMap(
     ([source, only]) => {

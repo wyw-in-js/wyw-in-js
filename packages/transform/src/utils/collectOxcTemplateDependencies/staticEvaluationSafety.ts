@@ -30,6 +30,7 @@ import {
   resolveBindingAt,
   toMutationBindingKey,
 } from './scopeAnalysis';
+import { isFallbackUndefinedRead, type StaticResult } from './staticOutcome';
 import type {
   Binding,
   ExtractionContext,
@@ -439,37 +440,37 @@ export const isProcessEnvValueAccess = (
   );
 };
 
-export const isDeterministicUndefinedExpression = (
+/**
+ * Legacy fallback rules. In the fallback positions of the static evaluator
+ * (`typeof`, `??`/`||`/`&&` left operands, comparison operands and
+ * function-local initializers) these unknown reads count as `undefined`:
+ * - a direct `process.env.X` read (build-time environment policy);
+ * - a `var` read before its declaration;
+ * - a function-local variable initialized from one of them.
+ * Everywhere else they stay unknown and are left to runtime evaluation.
+ */
+export const readsAsFallbackUndefined = (
   expression: Expression,
+  result: StaticResult,
   ctx: ExtractionContext,
   env: ReadonlyMap<string, unknown>
 ): boolean => {
-  if (isProcessEnvValueAccess(expression, ctx, env)) {
-    return true;
-  }
-
-  if (expression.type === 'UnaryExpression' && expression.operator === 'void') {
-    return true;
+  if (!isFallbackUndefinedRead(result)) {
+    return false;
   }
 
   if (expression.type === 'Identifier') {
     if (env.has(expression.name)) {
-      return env.get(expression.name) === undefined;
+      return isFallbackUndefinedRead(env.get(expression.name));
     }
 
     const binding = resolveBindingAt(ctx, expression.name, expression.start);
-    if (
+    return (
       binding?.declarationKind === 'var' &&
-      binding.declarator &&
+      !!binding.declarator &&
       ctx.currentExpressionStart < binding.declarator.end
-    ) {
-      return true;
-    }
+    );
   }
 
-  return (
-    expression.type === 'Identifier' &&
-    expression.name === 'undefined' &&
-    !resolveBindingAt(ctx, expression.name, expression.start)
-  );
+  return isProcessEnvValueAccess(expression, ctx, env);
 };

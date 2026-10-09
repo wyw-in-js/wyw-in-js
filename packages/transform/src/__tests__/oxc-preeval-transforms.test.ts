@@ -3,9 +3,9 @@ import { runInNewContext } from 'vm';
 
 import { emitOxcCommonJS, stripTypesAndJsxWithOxc } from '../utils/oxcEmit';
 import { removeDangerousCodeWithOxc } from '../utils/dangerousCodeRemoval';
+import { applyOxcEdits } from '../utils/oxc/fileEdits';
 import {
   addRequireFallbackWithOxc,
-  applyReplacements,
   collectDangerousCodeReplacementsWithOxc,
   replaceImportMetaEnvWithOxc,
   rewriteDynamicImportsWithOxc,
@@ -157,6 +157,123 @@ describe('oxc preeval transforms', () => {
         'function load() { const require = makeRequire(); require(dep); }'
       );
     });
+
+    describe('specifier folding', () => {
+      const fold = (lines: string[]) =>
+        addRequireFallbackWithOxc(lines.join('\n'), filename).split('\n');
+
+      it('folds const bindings referenced from nested functions and blocks', () => {
+        expect(
+          fold([
+            "const dir = './__fixtures__';",
+            "const file = dir + '/foo.js';",
+            'function load() { { return require(file); } }',
+          ])
+        ).toEqual([
+          "const dir = './__fixtures__';",
+          "const file = dir + '/foo.js';",
+          'function load() { { return require("./__fixtures__/foo.js"); } }',
+        ]);
+      });
+
+      it('does not fold reassigned let bindings', () => {
+        expect(
+          fold(["let p = './a.js';", "p = './b.js';", 'require(p);'])
+        ).toEqual(["let p = './a.js';", "p = './b.js';", 'require(p, true);']);
+      });
+
+      it('does not fold var bindings reassigned inside a function', () => {
+        expect(
+          fold([
+            "var p = './a.js';",
+            "function next() { p = './b.js'; }",
+            'next();',
+            'require(p);',
+          ])
+        ).toEqual([
+          "var p = './a.js';",
+          "function next() { p = './b.js'; }",
+          'next();',
+          'require(p, true);',
+        ]);
+      });
+
+      it('evaluates initializers in the declaration scope', () => {
+        expect(
+          fold([
+            "const base = './a';",
+            "const p = base + '.js';",
+            "function load() { const base = './b'; return require(p); }",
+          ])
+        ).toEqual([
+          "const base = './a';",
+          "const p = base + '.js';",
+          'function load() { const base = \'./b\'; return require("./a.js"); }',
+        ]);
+      });
+
+      it('follows a name through bindings declared in different scopes', () => {
+        expect(
+          fold([
+            "const p = './a';",
+            "{ const q = p + '/'; { const p = q + 'b.js'; require(p); } }",
+          ])
+        ).toEqual([
+          "const p = './a';",
+          "{ const q = p + '/'; { const p = q + 'b.js'; require(\"./a/b.js\"); } }",
+        ]);
+      });
+
+      it('respects function-level shadowing by hoisted declarations', () => {
+        expect(
+          fold([
+            "const p = './a.js';",
+            "function viaVar() { if (x) { var p = './b.js'; } return require(p); }",
+            'function viaFunction() { function p() {} return require(p); }',
+            'function viaParam(p) { return require(p); }',
+          ])
+        ).toEqual([
+          "const p = './a.js';",
+          "function viaVar() { if (x) { var p = './b.js'; } return require(p, true); }",
+          'function viaFunction() { function p() {} return require(p, true); }',
+          'function viaParam(p) { return require(p, true); }',
+        ]);
+      });
+
+      it('respects block-level shadowing', () => {
+        expect(
+          fold([
+            "const p = './a.js';",
+            "{ let p = './b.js'; p = './c.js'; require(p); }",
+            "{ const p = './d.js'; require(p); }",
+            'try {} catch (p) { require(p); }',
+            'for (const p of list) require(p);',
+            'require(p);',
+          ])
+        ).toEqual([
+          "const p = './a.js';",
+          "{ let p = './b.js'; p = './c.js'; require(p, true); }",
+          '{ const p = \'./d.js\'; require("./d.js"); }',
+          'try {} catch (p) { require(p, true); }',
+          'for (const p of list) require(p, true);',
+          'require("./a.js");',
+        ]);
+      });
+
+      it('does not fold const bindings read before their declaration', () => {
+        expect(
+          fold([
+            'require(p);',
+            'function load() { return require(p); }',
+            "const p = './a.js';",
+          ])
+        ).toEqual([
+          'require(p, true);',
+          'function load() { return require("./a.js"); }',
+          "const p = './a.js';",
+        ]);
+      });
+    });
   });
 
   describe('dangerous code removal', () => {
@@ -186,7 +303,7 @@ describe('oxc preeval transforms', () => {
       const start = code.indexOf('$RefreshReg$');
       const ignoredSpans = [{ start, end: start + '$RefreshReg$'.length }];
       const removeWithIgnoredSpans = () =>
-        applyReplacements(
+        applyOxcEdits(
           code,
           collectDangerousCodeReplacementsWithOxc(code, filename, undefined, {
             ignoredSpans,
@@ -1005,5 +1122,73 @@ describe('oxc preeval transforms', () => {
         expect(() => stripTypesAndJsxWithOxc(code, filename)).not.toThrow();
       }
     );
+
+    describe('TypeScript runtime wrappers', () => {
+      it.each([
+        ['no wrapper', 'window.innerWidth'],
+        ['as', '(window as any).innerWidth'],
+        ['non-null', 'window!.innerWidth'],
+        ['satisfies', '(window satisfies object).innerWidth'],
+        ['type assertion', '(<any>window).innerWidth'],
+        ['as around non-null', '(window! as Window).innerWidth'],
+        ['non-null around as', '(window as Window | undefined)!.innerWidth'],
+        ['as around satisfies', '(window satisfies object as any).innerWidth'],
+        ['as chain', '(window as unknown as Window).innerWidth'],
+        ['as on document', '(document as Document).body'],
+        ['non-null on navigator', 'navigator!.userAgent'],
+      ])('stubs a browser global behind %s like bare access', (_, access) => {
+        const source = `export const out = ${access};`;
+
+        expect(removeDangerousCodeWithOxc(source, filename)).toBe(
+          'export const out = undefined;'
+        );
+        expect(evaluateOut(source)).toBeUndefined();
+      });
+
+      it('treats a binding initialized through a wrapper as browser-derived', () => {
+        const source = [
+          'const win = window as Window & { custom?: number };',
+          'export const out = win.custom;',
+        ].join('\n');
+
+        expect(removeDangerousCodeWithOxc(source, filename)).not.toContain(
+          'window'
+        );
+        expect(evaluateOut(source)).toBeUndefined();
+      });
+
+      it.each([
+        ['no wrapper', 'window.dataLayer'],
+        ['as', '(window as any).dataLayer'],
+        ['non-null', 'window!.dataLayer'],
+      ])(
+        'treats members assigned through %s window as browser globals',
+        (_, target) => {
+          const source = [
+            `${target} = [];`,
+            'export const out = dataLayer;',
+          ].join('\n');
+
+          expect(removeDangerousCodeWithOxc(source, filename)).toBe(
+            '\nexport const out = undefined;'
+          );
+          expect(evaluateOut(source)).toBeUndefined();
+        }
+      );
+
+      it('does not treat type positions inside or around wrappers as access', () => {
+        const source = [
+          'let element: typeof window | undefined;',
+          'type Win = typeof window;',
+          'interface Holder { doc: typeof document }',
+          'const create = factory<typeof window>;',
+          'const sized = measure<typeof window>(1) as typeof window.innerWidth;',
+          'const checked = config satisfies Partial<typeof navigator>;',
+          'export const keep = (1 as unknown as typeof window)!;',
+        ].join('\n');
+
+        expect(removeDangerousCodeWithOxc(source, filename)).toBe(source);
+      });
+    });
   });
 });
