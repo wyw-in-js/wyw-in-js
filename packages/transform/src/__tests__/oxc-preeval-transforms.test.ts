@@ -3,9 +3,9 @@ import { runInNewContext } from 'vm';
 
 import { emitOxcCommonJS, stripTypesAndJsxWithOxc } from '../utils/oxcEmit';
 import { removeDangerousCodeWithOxc } from '../utils/dangerousCodeRemoval';
+import { applyOxcEdits } from '../utils/oxc/fileEdits';
 import {
   addRequireFallbackWithOxc,
-  applyReplacements,
   collectDangerousCodeReplacementsWithOxc,
   replaceImportMetaEnvWithOxc,
   rewriteDynamicImportsWithOxc,
@@ -186,7 +186,7 @@ describe('oxc preeval transforms', () => {
       const start = code.indexOf('$RefreshReg$');
       const ignoredSpans = [{ start, end: start + '$RefreshReg$'.length }];
       const removeWithIgnoredSpans = () =>
-        applyReplacements(
+        applyOxcEdits(
           code,
           collectDangerousCodeReplacementsWithOxc(code, filename, undefined, {
             ignoredSpans,

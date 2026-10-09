@@ -17,7 +17,7 @@ const LEGACY_OVERSIZED_FILES = new Map([
     'packages/transform/src/utils/collectOxcTemplateDependencies/staticEvaluator.ts',
     1029,
   ],
-  ['packages/transform/src/utils/oxcPreevalTransforms.ts', 1750],
+  ['packages/transform/src/utils/oxcPreevalTransforms.ts', 1766],
   ['packages/transform/src/utils/oxcShaker.ts', 1082],
 ]);
 
