@@ -1,5 +1,5 @@
 ---
-'@wyw-in-js/cli': patch
+'@wyw-in-js/cli': minor
 '@wyw-in-js/transform': patch
 ---
 
