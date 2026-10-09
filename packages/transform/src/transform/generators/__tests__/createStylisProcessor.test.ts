@@ -1,5 +1,6 @@
 import dedent from 'dedent';
 import { compile, middleware, serialize, stringify } from 'stylis';
+import type { Element } from 'stylis';
 
 import {
   createStylisPreprocessor,
@@ -331,6 +332,121 @@ describe('createStylisPreprocessor', () => {
   });
 });
 
+describe('createStylisPreprocessor across rules', () => {
+  const filename = '/path/to/src/file.js';
+  const outputFilename = '/path/to/assets/file.css';
+
+  // Every rule exercises a different plugin of the chain. The same rule set is
+  // compiled through one preprocessor, so plugin state must not leak between
+  // rules: `.i` uses `spin` without defining it and must stay unsuffixed.
+  const corpus: [selector: string, text: string][] = [
+    ['.a', 'color: red; &:hover { color: blue; }'],
+    [
+      '.b',
+      'background: url(./image.png); mask: url("../mask.svg"); cursor: url(/abs.cur);',
+    ],
+    [
+      '.c',
+      ':global() { body { margin: 0; } } & :global(.dark) { color: white; }',
+    ],
+    ['.d', 'display: flex inline; align-items: center;'],
+    [
+      '.e',
+      '@keyframes spin { from { transform: rotate(0) } to { transform: rotate(360deg) } } & { animation: spin 1s linear infinite; }',
+    ],
+    [
+      '.f',
+      '& { animation::global(fade) 0s forwards; } @keyframes :global(fade) { from { opacity: 0 } }',
+    ],
+    [
+      '.g',
+      '@media (min-width: 100px) { @keyframes pulse { from { opacity: 0 } } animation-name: pulse; }',
+    ],
+    [
+      '.h',
+      '/* keep:me */ left: 0; /* drop */ &::placeholder { color: gray; } &:read-only { color: gray; }',
+    ],
+    [
+      '.e',
+      '@keyframes spin { from { opacity: 0 } } & { animation-name: spin; }',
+    ],
+    ['.i', '& { animation-name: spin; }'],
+  ];
+
+  const configs = {
+    default: { filename, outputFilename },
+    noPrefixer: { filename, outputFilename, prefixer: false },
+    noOutputFilename: { filename, keepComments: /keep:/ },
+  };
+
+  const compileCorpus = (options: (typeof configs)[keyof typeof configs]) => {
+    const preprocessor = createStylisPreprocessor(options);
+    return corpus.map(([selector, text]) => preprocessor(selector, text));
+  };
+
+  it('compiles every rule of the corpus', () => {
+    expect(compileCorpus(configs.default)).toMatchInlineSnapshot(`
+      [
+        ".a{color:red;}.a:hover{color:blue;}",
+        ".b{background:url(../src/image.png);mask:url("../mask.svg");cursor:url(/abs.cur);}",
+        "body {margin:0;}.dark .c{color:white;}",
+        ".d{display:flex inline;align-items:center;}",
+        "@-webkit-keyframes spin-e{from{transform:rotate(0);}to{transform:rotate(360deg);}}@keyframes spin-e{from{transform:rotate(0);}to{transform:rotate(360deg);}}.e{animation:spin-e 1s linear infinite;}",
+        ".f{animation:fade 0s forwards;}@-webkit-keyframes fade{from{opacity:0;}}@keyframes fade{from{opacity:0;}}",
+        "@media (min-width: 100px){.g{animation-name:pulse;}@-webkit-keyframes pulse-g{from{opacity:0;}}@keyframes pulse-g{from{opacity:0;}}}",
+        ".h{left:0;}.h::-webkit-input-placeholder{color:gray;}.h::-moz-placeholder{color:gray;}.h:-ms-input-placeholder{color:gray;}.h::placeholder{color:gray;}.h:-moz-read-only{color:gray;}.h:read-only{color:gray;}",
+        "@-webkit-keyframes spin-e{from{opacity:0;}}@keyframes spin-e{from{opacity:0;}}.e{animation-name:spin-e;}",
+        ".i{animation-name:spin;}",
+      ]
+    `);
+    expect(compileCorpus(configs.noPrefixer)).toMatchInlineSnapshot(`
+      [
+        ".a{color:red;}.a:hover{color:blue;}",
+        ".b{background:url(../src/image.png);mask:url("../mask.svg");cursor:url(/abs.cur);}",
+        "body {margin:0;}.dark .c{color:white;}",
+        ".d{display:flex inline;align-items:center;}",
+        "@keyframes spin-e{from{transform:rotate(0);}to{transform:rotate(360deg);}}.e{animation:spin-e 1s linear infinite;}",
+        ".f{animation:fade 0s forwards;}@keyframes fade{from{opacity:0;}}",
+        "@media (min-width: 100px){.g{animation-name:pulse;}@keyframes pulse-g{from{opacity:0;}}}",
+        ".h{left:0;}.h::placeholder{color:gray;}.h:read-only{color:gray;}",
+        "@keyframes spin-e{from{opacity:0;}}.e{animation-name:spin-e;}",
+        ".i{animation-name:spin;}",
+      ]
+    `);
+    expect(compileCorpus(configs.noOutputFilename)).toMatchInlineSnapshot(`
+      [
+        ".a{color:red;}.a:hover{color:blue;}",
+        ".b{background:url(./image.png);-webkit-mask:url("../mask.svg");mask:url("../mask.svg");cursor:url(/abs.cur);}",
+        "body {margin:0;}.dark .c{color:white;}",
+        ".d{display:-webkit-inline-box;display:-webkit-inline-flex;display:-ms-inline-flexbox;display:inline-flex;-webkit-align-items:center;-webkit-box-align:center;-ms-flex-align:center;align-items:center;}",
+        "@-webkit-keyframes spin-e{from{-webkit-transform:rotate(0);-moz-transform:rotate(0);-ms-transform:rotate(0);transform:rotate(0);}to{-webkit-transform:rotate(360deg);-moz-transform:rotate(360deg);-ms-transform:rotate(360deg);transform:rotate(360deg);}}@keyframes spin-e{from{-webkit-transform:rotate(0);-moz-transform:rotate(0);-ms-transform:rotate(0);transform:rotate(0);}to{-webkit-transform:rotate(360deg);-moz-transform:rotate(360deg);-ms-transform:rotate(360deg);transform:rotate(360deg);}}.e{-webkit-animation:spin-e 1s linear infinite;animation:spin-e 1s linear infinite;}",
+        ".f{-webkit-animation:fade 0s forwards;animation:fade 0s forwards;}@-webkit-keyframes fade{from{opacity:0;}}@keyframes fade{from{opacity:0;}}",
+        "@media (min-width: 100px){.g{-webkit-animation-name:pulse;animation-name:pulse;}@-webkit-keyframes pulse-g{from{opacity:0;}}@keyframes pulse-g{from{opacity:0;}}}",
+        ".h{/* keep:me */left:0;}.h::-webkit-input-placeholder{color:gray;}.h::-moz-placeholder{color:gray;}.h:-ms-input-placeholder{color:gray;}.h::placeholder{color:gray;}.h:-moz-read-only{color:gray;}.h:read-only{color:gray;}",
+        "@-webkit-keyframes spin-e{from{opacity:0;}}@keyframes spin-e{from{opacity:0;}}.e{-webkit-animation-name:spin-e;animation-name:spin-e;}",
+        ".i{-webkit-animation-name:spin;animation-name:spin;}",
+      ]
+    `);
+  });
+
+  it('does not depend on rules compiled earlier by the same preprocessor', () => {
+    Object.values(configs).forEach((options) => {
+      const isolated = corpus.map(([selector, text]) =>
+        createStylisPreprocessor(options)(selector, text)
+      );
+
+      const shared = createStylisPreprocessor(options);
+      const reversed = [...corpus]
+        .reverse()
+        .map(([selector, text]) => shared(selector, text))
+        .reverse();
+
+      expect(compileCorpus(options)).toEqual(isolated);
+      expect(reversed).toEqual(isolated);
+    });
+  });
+});
+
 describe('stylisUrlReplacePlugin', () => {
   const filename = '/path/to/src/file.js';
   const outputFilename = '/path/to/assets/file.css';
@@ -357,6 +473,26 @@ describe('stylisUrlReplacePlugin', () => {
 });
 
 describe('stylisGlobalPlugin', () => {
+  it('rejects an element of an unexpected shape in every environment', () => {
+    const malformedRuleset = {
+      type: 'rule',
+      props: '.component',
+      children: [],
+    } as unknown as Element;
+    const nodeEnv = process.env.NODE_ENV;
+
+    try {
+      ['production', 'development', 'test'].forEach((env) => {
+        process.env.NODE_ENV = env;
+        expect(() =>
+          stylisGlobalPlugin(malformedRuleset, 0, [], stringify)
+        ).toThrow('"element.props" has type "string"');
+      });
+    } finally {
+      process.env.NODE_ENV = nodeEnv;
+    }
+  });
+
   function compileRule(rule: string): string {
     return serialize(
       compile(rule),
