@@ -112,7 +112,14 @@ type ParsedOxc = {
 // 1000 evicted cross-file snippet entries once keys became filename-agnostic;
 // 4000 kept those entries hot in the measured build. This is a count bound;
 // retained bytes still depend on the source and AST sizes.
-const MAX_PARSE_CACHE_ENTRIES = 4000;
+export const MAX_PARSE_CACHE_ENTRIES = 4000;
+// A transform worker pool splits this budget between its workers, so N workers
+// keep about as many ASTs as one in-process cache would, not N times as many.
+let maxParseCacheEntries = MAX_PARSE_CACHE_ENTRIES;
+
+export const setParseCacheLimit = (limit: number): void => {
+  maxParseCacheEntries = Math.max(1, Math.floor(limit));
+};
 // Bucketed by parser semantics with the code string itself as the inner key:
 // building a key containing the code allocated a whole-file string per lookup
 // purely to feed the map hash.
@@ -157,7 +164,7 @@ const setCachedParse = (
   }
   bucket.set(code, value);
   commentsByProgram.set(value.program, value.comments);
-  if (parseCacheSize > MAX_PARSE_CACHE_ENTRIES) {
+  while (parseCacheSize > maxParseCacheEntries) {
     // Evict the oldest entry of the largest bucket; the bucket set is small.
     let largest: Map<string, ParsedOxc> | null = null;
     for (const candidate of parseCache.values()) {
@@ -166,10 +173,9 @@ const setCachedParse = (
       }
     }
     const oldestCode = largest?.keys().next().value;
-    if (largest && oldestCode !== undefined) {
-      largest.delete(oldestCode);
-      parseCacheSize -= 1;
-    }
+    if (!largest || oldestCode === undefined) break;
+    largest.delete(oldestCode);
+    parseCacheSize -= 1;
   }
 
   return value;

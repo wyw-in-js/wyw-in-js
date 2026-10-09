@@ -9,11 +9,13 @@ import { resolveSync, Transpiler } from 'bun';
 import { asyncResolveFallback } from '@wyw-in-js/shared';
 import type {
   IFileReporterOptions,
+  ParallelTransformsOption,
   PluginOptions,
   Preprocessor,
 } from '@wyw-in-js/transform';
 import {
   createFileReporter,
+  createParallelTransforms,
   slugify,
   transform,
   TransformCacheCollection,
@@ -26,6 +28,11 @@ export type BunPluginOptions = {
   include?: FilterPattern;
   keepComments?: boolean | RegExp;
   nodeModules?: boolean;
+  /**
+   * Run transforms in worker threads: `true` uses up to four workers, a number
+   * sets the count. Function options must be defined in a wyw-in-js config file.
+   */
+  parallel?: ParallelTransformsOption;
   prefixer?: boolean;
   preprocessor?: Preprocessor;
   sourceMap?: boolean;
@@ -85,6 +92,7 @@ export default function wywInJS({
   transformLibraries,
   sourceMap,
   keepComments,
+  parallel,
   prefixer,
   preprocessor,
   ...rest
@@ -100,6 +108,14 @@ export default function wywInJS({
       const emittedWarnings = new Set<string>();
 
       const { emitter, onDone } = createFileReporter(debug ?? false);
+      const parallelTransforms = createParallelTransforms({
+        onFallback: (message) => {
+          // eslint-disable-next-line no-console
+          console.warn(`[wyw-in-js] ${message}`);
+        },
+        parallel,
+        unsupported: debug ? 'the `debug` option is set' : null,
+      });
 
       const transpilers = new Map<
         JavaScriptLoader,
@@ -147,8 +163,11 @@ export default function wywInJS({
         console.warn(message);
       };
 
-      build.onEnd(() => {
+      // Workers load the transform pipeline while Bun reads the entries.
+      parallelTransforms?.start();
+      build.onEnd(async () => {
         onDone(process.cwd());
+        await parallelTransforms?.dispose();
       });
 
       build.onResolve({ filter: /\.wyw\.css$/ }, (args) => ({
@@ -200,7 +219,22 @@ export default function wywInJS({
           eventEmitter: emitter,
         };
 
-        const result = await transform(transformServices, code, asyncResolve);
+        const workerScope = parallelTransforms?.scope('bun', () => ({
+          asyncResolveKey: 'bun',
+          keepComments,
+          pluginOptions: rest,
+          prefixer,
+          preprocessor,
+          root: process.cwd(),
+        }));
+        const result = workerScope
+          ? await workerScope.transform({
+              asyncResolve,
+              code,
+              emitWarning,
+              filename: args.path,
+            })
+          : await transform(transformServices, code, asyncResolve);
 
         const { cssText } = result;
 

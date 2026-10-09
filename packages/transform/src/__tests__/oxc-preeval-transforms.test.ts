@@ -5,6 +5,8 @@ import { emitOxcCommonJS, stripTypesAndJsxWithOxc } from '../utils/oxcEmit';
 import { removeDangerousCodeWithOxc } from '../utils/dangerousCodeRemoval';
 import {
   addRequireFallbackWithOxc,
+  applyReplacements,
+  collectDangerousCodeReplacementsWithOxc,
   replaceImportMetaEnvWithOxc,
   rewriteDynamicImportsWithOxc,
 } from '../utils/oxcPreevalTransforms';
@@ -158,6 +160,46 @@ describe('oxc preeval transforms', () => {
   });
 
   describe('dangerous code removal', () => {
+    it.each(['fetch', 'window.fetch', '$RefreshReg$'])(
+      'propagates %s through reverse-order aliases while preserving sibling local bindings',
+      (global) => {
+        const code = removeDangerousCodeWithOxc(
+          [
+            'export const Alias = Middle;',
+            'const Middle = Source;',
+            `const Source = { browser: ${global}, later: (fetch) => fetch("local") };`,
+            'export const keep = ((fetch) => fetch("local"))((value) => value);',
+          ].join('\n'),
+          filename
+        );
+
+        expect(code).toContain('export const Alias = undefined;');
+        expect(code).toContain(
+          'export const keep = ((fetch) => fetch("local"))((value) => value);'
+        );
+        expect(() => stripTypesAndJsxWithOxc(code, filename)).not.toThrow();
+      }
+    );
+
+    it('keeps ignored refresh identifiers specific to each removal plan for a cached program', () => {
+      const code = 'const Source = $RefreshReg$; export const Alias = Source;';
+      const start = code.indexOf('$RefreshReg$');
+      const ignoredSpans = [{ start, end: start + '$RefreshReg$'.length }];
+      const removeWithIgnoredSpans = () =>
+        applyReplacements(
+          code,
+          collectDangerousCodeReplacementsWithOxc(code, filename, undefined, {
+            ignoredSpans,
+          })
+        );
+
+      expect(removeWithIgnoredSpans()).toBe(code);
+      expect(removeDangerousCodeWithOxc(code, filename)).toContain(
+        'export const Alias = undefined;'
+      );
+      expect(removeWithIgnoredSpans()).toBe(code);
+    });
+
     it('replaces SSR typeof checks with undefined literals', () => {
       expect(
         removeDangerousCodeWithOxc(
