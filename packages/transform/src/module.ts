@@ -22,7 +22,6 @@ import { invariant } from 'ts-invariant';
 import { isFeatureEnabled } from '@wyw-in-js/shared';
 import type {
   Debugger,
-  EvalOptionsV2,
   EvalResolverKind,
   EvalWarning,
   ImportLoaderContext,
@@ -36,6 +35,7 @@ import {
   ensureVmModules,
   ModuleEvaluation,
 } from './module-evaluation';
+import { warnModuleDeprecation } from './module-deprecation';
 import { Entrypoint } from './transform/Entrypoint';
 import {
   getStack,
@@ -45,6 +45,7 @@ import {
 import type { IEvaluatedEntrypoint } from './transform/EvaluatedEntrypoint';
 import type { IEntrypointDependency } from './transform/Entrypoint.types';
 import type { Services } from './transform/types';
+import { getEvalOptions } from './utils/evalOptions';
 import {
   applyImportOverrideToOnly,
   getImportOverride,
@@ -170,20 +171,7 @@ type NativeFallbackOptions = {
   warnOnFallback: boolean;
 };
 
-const defaultEvalOptions: Required<
-  Pick<EvalOptionsV2, 'errors' | 'require' | 'resolver'>
-> = {
-  errors: 'strict',
-  require: 'warn-and-run',
-  resolver: 'bundler',
-};
-
 const warnedUnknownImportsByServices = new WeakMap<Services, Set<string>>();
-
-const getEvalOptions = (services: Services): EvalOptionsV2 => ({
-  ...defaultEvalOptions,
-  ...(services.options.pluginOptions.eval ?? {}),
-});
 
 function emitWarning(services: Services, message: string) {
   if (services.emitWarning) {
@@ -307,6 +295,7 @@ export class Module {
     parentModule?: Module,
     private moduleImpl: HiddenModuleMembers = DefaultModuleImplementation
   ) {
+    warnModuleDeprecation();
     this.cache = services.cache;
     this.cacheEpoch = services.cacheEpoch ?? services.cache.getCurrentEpoch();
     this.cache.assertEpoch(this.cacheEpoch);

@@ -11,6 +11,10 @@ import type {
 
 import { createOxcStaticCallableValue } from '../../../utils/collectOxcTemplateDependencies';
 import { getOxcNodeChildren } from '../../../utils/oxc/ast';
+import {
+  isTypeOnlyImport,
+  isTypeOnlyImportSpecifier,
+} from '../../../utils/oxc/typeOnlyImport';
 import { parseProgram } from './environment';
 import type {
   AnyNode,
@@ -172,7 +176,7 @@ export const isSafeStaticExpression = (
   if (unwrapped.type === 'ObjectExpression') {
     return unwrapped.properties.every((property) => {
       if (property.type === 'SpreadElement') {
-        return isSafeStaticExpression(property.argument);
+        return isSafeStaticExpression(property.argument, options);
       }
 
       const propertyNode = property as AnyNode;
@@ -201,18 +205,6 @@ export const isSafeStaticExpression = (
   }
 
   return false;
-};
-
-export const isTypeOnlyImport = (statement: ImportDeclaration): boolean => {
-  if (statement.importKind === 'type') {
-    return true;
-  }
-
-  return statement.specifiers.every(
-    (specifier) =>
-      specifier.type === 'ImportSpecifier' &&
-      (specifier as ImportSpecifier).importKind === 'type'
-  );
 };
 
 export const getImportBinding = (
@@ -247,10 +239,7 @@ export const getImportBinding = (
     return null;
   }
 
-  if (
-    statement.importKind === 'type' ||
-    (specifier as ImportSpecifier).importKind === 'type'
-  ) {
+  if (isTypeOnlyImportSpecifier(statement, specifier)) {
     return null;
   }
 

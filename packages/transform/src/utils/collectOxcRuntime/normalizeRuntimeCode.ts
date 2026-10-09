@@ -1,9 +1,10 @@
 /* eslint-disable no-restricted-syntax */
 
-import type { Node, Program } from 'oxc-parser';
+import { visitorKeys, type Node, type Program } from 'oxc-parser';
 
+import { isOxcNode } from '../oxc/ast';
+import { createOxcFileEdits } from '../oxc/fileEdits';
 import { parseOxcProgramCached } from '../parseOxc';
-import type { RuntimeReplacement } from './types';
 
 type AnyNode = Node & Record<string, unknown>;
 type AnyProperty = AnyNode & {
@@ -16,23 +17,6 @@ type AnyProperty = AnyNode & {
 
 const parseOxc = (code: string, filename: string): Program => {
   return parseOxcProgramCached(filename, code, 'module');
-};
-
-const applyReplacements = (
-  code: string,
-  replacements: RuntimeReplacement[]
-): string => {
-  let result = code;
-  replacements
-    .sort((a, b) => b.start - a.start)
-    .forEach((replacement) => {
-      result =
-        result.slice(0, replacement.start) +
-        replacement.value +
-        result.slice(replacement.end);
-    });
-
-  return result;
 };
 
 const shouldTerminateWithSemicolon = (
@@ -81,25 +65,21 @@ const getChildren = (node: Node): Array<{ key: string | null; node: Node }> => {
   const result: Array<{ key: string | null; node: Node }> = [];
   const record = node as Node & Record<string, unknown>;
 
-  Object.keys(record).forEach((key) => {
-    if (key === 'type' || key === 'start' || key === 'end' || key === 'range') {
-      return;
-    }
-
+  const keys = visitorKeys[node.type] ?? [];
+  for (let idx = 0; idx < keys.length; idx += 1) {
+    const key = keys[idx]!;
     const value = record[key];
-    if (value && typeof value === 'object' && 'type' in (value as object)) {
-      result.push({ key, node: value as Node });
-      return;
-    }
-
-    if (Array.isArray(value)) {
-      value.forEach((item) => {
-        if (item && typeof item === 'object' && 'type' in (item as object)) {
-          result.push({ key, node: item as Node });
+    if (isOxcNode(value)) {
+      result.push({ key, node: value });
+    } else if (Array.isArray(value)) {
+      for (let itemIdx = 0; itemIdx < value.length; itemIdx += 1) {
+        const item = value[itemIdx];
+        if (isOxcNode(item)) {
+          result.push({ key, node: item });
         }
-      });
+      }
     }
-  });
+  }
 
   return result;
 };
@@ -177,7 +157,7 @@ const formatRuntimeObjectLiterals = (
   code: string,
   filename: string
 ): string => {
-  const replacements: RuntimeReplacement[] = [];
+  const edits = createOxcFileEdits(code);
 
   const walk = (node: Node, parent: Node | null = null): void => {
     if (node.type === 'ObjectExpression') {
@@ -186,15 +166,15 @@ const formatRuntimeObjectLiterals = (
         parent?.type === 'CallExpression';
 
       if (shouldFormat) {
-        replacements.push({
-          end: node.end,
-          start: node.start,
-          value: printFormattedObjectExpression(
+        edits.replace(
+          node.start,
+          node.end,
+          printFormattedObjectExpression(
             node,
             code,
             getLineIndent(code, node.start)
-          ),
-        });
+          )
+        );
         return;
       }
     }
@@ -203,7 +183,7 @@ const formatRuntimeObjectLiterals = (
   };
 
   walk(parseOxc(code, filename));
-  return replacements.length > 0 ? applyReplacements(code, replacements) : code;
+  return edits.apply();
 };
 
 const collapseRuntimeBlankLines = (code: string): string => {
@@ -220,12 +200,8 @@ const collapseRuntimeBlankLines = (code: string): string => {
         nextIdx += 1;
       }
 
-      const previousNonEmpty = [...result]
-        .reverse()
-        .find((entry) => entry.trim() !== '');
-      const nextNonEmpty = lines
-        .slice(nextIdx)
-        .find((entry) => entry.trim() !== '');
+      const previousNonEmpty = result.at(-1);
+      const nextNonEmpty = lines[nextIdx];
 
       if (previousNonEmpty && nextNonEmpty) {
         const trimmedPrevious = previousNonEmpty.trim();
@@ -248,7 +224,7 @@ const ensureBlankLineAfterLeadingBlockComment = (code: string): string =>
   code.replace(/^(\/\*[\s\S]*?\*\/)\n(?!\n)/, '$1\n\n');
 
 const insertMissingSemicolons = (code: string, filename: string): string => {
-  const replacements: RuntimeReplacement[] = [];
+  const edits = createOxcFileEdits(code);
   const hasTrailingSemicolon = (node: Node): boolean =>
     code.slice(node.start, node.end).trimEnd().endsWith(';');
 
@@ -261,18 +237,14 @@ const insertMissingSemicolons = (code: string, filename: string): string => {
       shouldTerminateWithSemicolon(node, parent, key) &&
       !hasTrailingSemicolon(node)
     ) {
-      replacements.push({
-        end: node.end,
-        start: node.end,
-        value: ';',
-      });
+      edits.insert(node.end, ';');
     }
 
     getChildren(node).forEach((child) => walk(child.node, node, child.key));
   };
 
   walk(parseOxc(code, filename));
-  return replacements.length > 0 ? applyReplacements(code, replacements) : code;
+  return edits.apply();
 };
 
 export const normalizeRuntimeCode = (code: string, filename: string): string =>

@@ -1,6 +1,11 @@
 import fs from 'fs';
 import path from 'path';
 
+import type {
+  NativeResolveRequest,
+  ResolveTrace,
+  ResolveTraceEvent,
+} from '../resolve/resolvePolicy';
 import { stripQueryAndHash } from '../utils/parseRequest';
 import type { DebugEvalFileValues } from './protocol';
 import type { SerializedValue } from './serialize';
@@ -133,3 +138,60 @@ export const flushDebugStreams = () => {
   debugActionStream?.end();
   debugActionStream = null;
 };
+
+const logEvalResolveTrace = (
+  { importer: importerId, kind, specifier }: NativeResolveRequest,
+  event: ResolveTraceEvent
+) => {
+  /* eslint-disable no-console */
+  switch (event.step) {
+    case 'custom':
+      console.warn('[wyw-eval:resolve:custom]', {
+        specifier,
+        importerId,
+        resolved: event.id,
+        normalized: event.normalized,
+        external: event.external,
+      });
+      return;
+    case 'native':
+    case 'native-fallback':
+      console.warn(`[wyw-eval:resolve:${event.step}]`, {
+        specifier,
+        importerId,
+        resolved: event.id,
+      });
+      return;
+    case 'native-miss':
+      console.warn('[wyw-eval:resolve:native-miss]', {
+        specifier,
+        importerId,
+        kind,
+        error: event.error,
+      });
+      return;
+    case 'normalize-miss':
+      console.warn('[wyw-eval:resolve:native-normalize-miss]', {
+        specifier,
+        importerId,
+        kind,
+        error: event.error,
+      });
+      return;
+    case 'bundler':
+      console.warn('[wyw-eval:resolve:async]', {
+        specifier,
+        importerId,
+        resolved: event.id,
+        normalized: event.normalized,
+      });
+      return;
+    default:
+      console.warn('[wyw-eval:resolve:none]', { specifier, importerId });
+  }
+  /* eslint-enable no-console */
+};
+
+/** `WYW_DEBUG_EVAL_RESOLVE` logs every step of the eval resolve policy. */
+export const getEvalResolveTrace = (): ResolveTrace | undefined =>
+  process.env.WYW_DEBUG_EVAL_RESOLVE ? logEvalResolveTrace : undefined;

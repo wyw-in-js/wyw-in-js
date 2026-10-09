@@ -10,7 +10,7 @@ import type {
   VariableDeclarator,
 } from 'oxc-parser';
 
-import type { OxcValueReplacement } from '../oxc/replacements';
+import type { OxcEdit } from '../oxc/fileEdits';
 import type { OxcFunctionLike } from '../oxc/runtimeSemantics';
 import type { OxcLocationLookup } from '../oxc/sourceLocations';
 import type { RecursiveProofState } from './recursiveProof';
@@ -38,8 +38,6 @@ export type BindingIndex = {
   readonly bindingsByName: ReadonlyMap<string, readonly Binding[]>;
   readonly referenceScopesByStart: ReadonlyMap<number, Scope>;
 };
-
-export type Replacement = OxcValueReplacement;
 
 export type SpanLookup = Set<string> | null;
 
@@ -127,7 +125,7 @@ export type TemplateExtractionResult = {
   dependencyNames: string[];
   expressionValues: Omit<ExpressionValue, 'buildCodeFrameError'>[];
   pureCallHints: OxcPureCallHint[];
-  replacements: OxcValueReplacement[];
+  replacements: OxcEdit[];
   staticValueCandidates: OxcStaticValueCandidate[];
   staticValues: OxcStaticValue[];
 };
@@ -187,7 +185,7 @@ export type ExtractionContext = {
   processorManagedExpressionSpans: Set<string>;
   program: Program;
   pureAnnotatedInvocationSpans: Set<string>;
-  replacements: Replacement[];
+  replacements: OxcEdit[];
   rootMutationHazardGuardsByBinding: MutationHazardGuardMap;
   rootMutationHazardsByBinding: MutationTimelineLookup;
   rootMutationsByBinding: MutationTimelineMap<

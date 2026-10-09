@@ -2,6 +2,7 @@ import type { SourceLocation } from '@wyw-in-js/processor-utils';
 import type { Program } from 'oxc-parser';
 
 import { printOxcAstServiceImport, type AddedImport } from '../oxcAstService';
+import { createOxcFileEdits } from '../oxc/fileEdits';
 import { parseOxcProgram } from '../oxc/parse';
 import {
   createOxcSourceLocation,
@@ -36,23 +37,10 @@ export const insertAddedImports = (
     ).values(),
   ];
   const importBlock = uniqueImports.map(printOxcAstServiceImport).join('\n');
-  const lastImport = [...program.body]
-    .reverse()
-    .find((statement) => statement.type === 'ImportDeclaration');
-  const hashbangEnd = code.startsWith('#!')
-    ? (() => {
-        const newline = code.indexOf('\n');
-        return newline === -1 ? code.length : newline + 1;
-      })()
-    : 0;
-  const insertionPoint = lastImport?.end ?? hashbangEnd;
-  const prefix = code.slice(0, insertionPoint);
-  const suffix = code.slice(insertionPoint);
-  const leadingBreak = prefix.length > 0 && !prefix.endsWith('\n') ? '\n' : '';
-  const trailingBreak =
-    suffix.length > 0 && !suffix.startsWith('\n') ? '\n' : '';
 
-  return `${prefix}${leadingBreak}${importBlock}${trailingBreak}${suffix}`;
+  return createOxcFileEdits(code, program)
+    .insert('after-imports', importBlock, { ownLine: true })
+    .apply();
 };
 
 export const getSourceLocation = (

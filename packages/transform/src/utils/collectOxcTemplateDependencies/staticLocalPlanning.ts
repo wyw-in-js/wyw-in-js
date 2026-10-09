@@ -3,6 +3,7 @@
 import type { Expression, Node } from 'oxc-parser';
 
 import { getOxcNodeChildren } from '../oxc/ast';
+import { applyOxcEditsInRange, type OxcEdit } from '../oxc/fileEdits';
 import { collectOxcPatternRuntimeExpressions } from '../oxc/patterns';
 import {
   isOxcFunctionLike,
@@ -11,7 +12,6 @@ import {
 import { toOxcBindingIdentity } from './bindingIdentity';
 import { findResolvedReferences as getReferences } from './bindingResolution';
 import {
-  applyExpressionReplacements,
   collectIdentifierReferenceReplacements,
   getConstantReplacement,
 } from './expressionReplacements';
@@ -38,7 +38,6 @@ import type {
   Binding,
   ExtractionContext,
   OxcStaticImportReference,
-  Replacement,
   StaticLocalExpression,
 } from './types';
 
@@ -66,7 +65,7 @@ export const replaceStaticLocalReferences = (
   expression: Expression,
   replacements: ReadonlyMap<string, string>,
   ctx: ExtractionContext,
-  extraReplacements: Replacement[] = [],
+  extraReplacements: OxcEdit[] = [],
   exactReplacements: ReadonlyMap<number, string> = new Map()
 ): string => {
   if (expression.type === 'Identifier' && extraReplacements.length === 0) {
@@ -86,8 +85,8 @@ export const replaceStaticLocalReferences = (
     parenthesizedExact.set(key, parenthesizeStaticReplacement(value));
   });
 
-  return applyExpressionReplacements(
-    expression,
+  return applyOxcEditsInRange(
+    ctx.code,
     [
       ...extraReplacements,
       ...collectIdentifierReferenceReplacements(
@@ -96,7 +95,7 @@ export const replaceStaticLocalReferences = (
         parenthesizedExact
       ),
     ],
-    ctx.code
+    expression
   );
 };
 
@@ -788,7 +787,7 @@ function collectStaticDestructuringProjection(
 
   const importedFrom = new Set(initializer.importedFrom);
   const imports = [...initializer.imports];
-  const patternReplacements: Replacement[] = [];
+  const patternReplacements: OxcEdit[] = [];
   const localBindingNames = new Set(bindingNames.keys());
   for (const expression of collectOxcPatternRuntimeExpressions(declarator.id)) {
     if (
@@ -824,10 +823,10 @@ function collectStaticDestructuringProjection(
     });
   }
 
-  const patternSource = applyExpressionReplacements(
-    declarator.id,
+  const patternSource = applyOxcEditsInRange(
+    ctx.code,
     patternReplacements,
-    ctx.code
+    declarator.id
   );
 
   return {

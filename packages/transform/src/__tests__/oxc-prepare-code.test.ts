@@ -2,12 +2,13 @@
 /* eslint-env jest */
 
 import { join } from 'path';
+import vm from 'vm';
 
 import dedent from 'dedent';
 
 import { oxcShaker } from '../shaker';
 import { Entrypoint } from '../transform/Entrypoint';
-import { syncActionRunner } from '../transform/actions/actionRunner';
+import { asyncActionRunner } from '../transform/actions/actionRunner';
 import {
   prepareCode,
   prepareCodeForEvalRuntime,
@@ -152,7 +153,7 @@ describe('prepareCode with explicit oxcShaker action', () => {
     expect(metadata?.processors).toHaveLength(1);
   });
 
-  it('feeds Oxc import metadata into the existing resolve/process actions', () => {
+  it('feeds Oxc import metadata into the existing resolve/process actions', async () => {
     const root = __dirname;
     const filename = join(root, 'side-effect-source.js');
     const source = dedent`
@@ -220,14 +221,58 @@ describe('prepareCode with explicit oxcShaker action', () => {
       transform: transformAction,
     });
 
-    const result = syncActionRunner(
+    const result = await asyncActionRunner(
       entrypoint.createAction('transform', undefined, null),
       handlers
     );
 
-    expect(result.code).toContain('require("./side-effect.js")');
+    const code = result.prepareCode
+      ? result.prepareCode(entrypoint, services)
+      : result.code;
+    expect(code).toContain('require("./side-effect.js")');
     expect(resolveImports).toHaveBeenCalledTimes(1);
     expect(handlers.processImports).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps template literal contents in prepared CommonJS code', async () => {
+    const root = __dirname;
+    const filename = join(root, 'literal-source.js');
+    const literal = ['line1', '', '', 'const x = 1,', '}'].join('\n');
+    const source = [
+      `const text = \`${literal}\`;`,
+      `export const value = \`${literal}\`;`,
+      'export const object = {',
+      '  text,',
+      '};',
+    ].join('\n');
+    const services = createServices(filename, root);
+    const entrypoint = Entrypoint.createRoot(
+      services,
+      filename,
+      ['value', 'object'],
+      source
+    );
+
+    if (entrypoint.ignored) {
+      throw new Error('Ignored');
+    }
+
+    const result = await asyncActionRunner(
+      entrypoint.createAction('transform', undefined, null),
+      getHandlers<'sync'>({ transform: transformAction })
+    );
+    const code = result.prepareCode
+      ? result.prepareCode(entrypoint, services)
+      : result.code;
+    const exports: Record<string, unknown> = {};
+    vm.runInNewContext(code, {
+      exports,
+      module: { exports },
+      require: () => ({}),
+    });
+
+    expect(exports.value).toBe(literal);
+    expect(exports.object).toEqual({ text: literal });
   });
 
   it('strips TypeScript when eval runtime short-circuits modules without metadata', () => {
@@ -253,8 +298,7 @@ describe('prepareCode with explicit oxcShaker action', () => {
 
     const [code, imports, metadata] = prepareCodeForEvalRuntime(
       services,
-      entrypoint,
-      null
+      entrypoint
     );
 
     expect(code).toContain('export const helper =');
@@ -295,8 +339,7 @@ describe('prepareCode with explicit oxcShaker action', () => {
 
     const [code, imports, metadata] = prepareCodeForEvalRuntime(
       services,
-      entrypoint,
-      null
+      entrypoint
     );
 
     expect(code).toContain('export const __wywPreval');
@@ -338,8 +381,7 @@ describe('prepareCode with explicit oxcShaker action', () => {
 
     const [code, imports, metadata] = prepareCodeForEvalRuntime(
       services,
-      entrypoint,
-      null
+      entrypoint
     );
 
     expect(code).toContain('export const __wywPreval =');

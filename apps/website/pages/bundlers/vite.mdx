@@ -63,6 +63,28 @@ export default defineConfig(() => ({
 }));
 ```
 
+### Running transforms in worker threads
+
+Transforms run on Vite's main thread by default. Set `parallel` to run them in worker threads:
+
+```js
+export default defineConfig(() => ({
+  // ...
+  plugins: [wyw({ parallel: true })],
+}));
+```
+
+`true` starts up to four workers, leaving at least one CPU core free; a number sets the count. A file is always
+transformed by the same worker, and each worker keeps its own cache, so a module imported by many files is evaluated
+once per worker.
+
+Each worker starts with a 1.5 GB heap limit and is restarted with a larger one if it runs out of memory. An explicit
+`--max-old-space-size` (for example in `NODE_OPTIONS`) applies to every worker instead of that limit.
+
+Options are sent to the workers as data, so they cannot contain functions. Define function options, such as
+`tagResolver` or a `classNameSlug` function, in a [config file](/configuration): every worker loads it. If an option
+cannot be sent, or `debug` is set, the plugin warns and runs transforms on the main thread.
+
 ### Preserving generated CSS paths
 
 When `build.rollupOptions.output.preserveModules` is enabled, older Rollup versions (used by Vite 3/4) flatten asset names

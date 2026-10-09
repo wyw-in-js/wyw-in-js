@@ -1,15 +1,16 @@
 import type { CodeRemoverOptions } from '@wyw-in-js/shared';
 
 import {
-  applyReplacements,
-  collectDangerousCodeReplacementsWithOxc,
-  type Replacement,
-} from './oxcPreevalTransforms';
+  applyOxcEdits,
+  type OxcEdit,
+  type OxcEditRange,
+} from './oxc/fileEdits';
+import { collectDangerousCodeReplacementsWithOxc } from './oxcPreevalTransforms';
 
 export type DangerousCodePlan = {
-  runtimeOnlyProcessorSpans: Array<Pick<Replacement, 'end' | 'start'>>;
-  removedSpans: Array<Pick<Replacement, 'end' | 'start'>>;
-  replacements: Replacement[];
+  runtimeOnlyProcessorSpans: OxcEditRange[];
+  removedSpans: OxcEditRange[];
+  replacements: OxcEdit[];
 };
 
 export const createDangerousCodePlanWithOxc = (
@@ -17,7 +18,7 @@ export const createDangerousCodePlanWithOxc = (
   filename: string,
   options?: CodeRemoverOptions,
   planningOptions?: {
-    ignoredSpans?: Array<Pick<Replacement, 'end' | 'start'>>;
+    ignoredSpans?: OxcEditRange[];
     preserveImportMetaEnv?: boolean;
   }
 ): DangerousCodePlan => {
@@ -42,7 +43,7 @@ export const removeDangerousCodeWithOxc = (
   filename: string,
   options?: CodeRemoverOptions
 ): string =>
-  applyReplacements(
+  applyOxcEdits(
     code,
     createDangerousCodePlanWithOxc(code, filename, options).replacements
   );

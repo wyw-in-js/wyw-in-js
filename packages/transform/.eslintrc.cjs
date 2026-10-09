@@ -1,12 +1,40 @@
 const path = require('node:path');
 
+const singleParseEntryMessage =
+  'Parse through src/utils/parseOxc.ts (parseOxcCached/parseOxcProgramCached, or parseOxcProgramFresh for a caller-owned AST): it owns the parse cache, the .js JSX fallback, raw-transfer recovery and parse telemetry.';
+
 module.exports = {
   extends: ['@wyw-in-js/eslint-config/library'],
   ignorePatterns: ['src/__tests__/legacy-babel-reference/**'],
   rules: {
     '@typescript-eslint/member-ordering': 'off',
+    'no-restricted-imports': [
+      'error',
+      {
+        paths: [
+          {
+            name: 'oxc-parser',
+            importNames: ['parse', 'parseSync'],
+            message: singleParseEntryMessage,
+          },
+        ],
+        patterns: [
+          {
+            group: ['**/parseOxc'],
+            importNames: ['parseOxcSync'],
+            message: singleParseEntryMessage,
+          },
+        ],
+      },
+    ],
   },
   overrides: [
+    {
+      files: ['src/utils/parseOxc.ts'],
+      rules: {
+        'no-restricted-imports': 'off',
+      },
+    },
     {
       files: [
         'src/**/*.test.ts',
@@ -22,6 +50,8 @@ module.exports = {
             packageDir: [__dirname, path.resolve(__dirname, '../..')],
           },
         ],
+        // Tests compare against reference parses and spy on the raw parser.
+        'no-restricted-imports': 'off',
       },
     },
   ],

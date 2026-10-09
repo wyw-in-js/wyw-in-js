@@ -14,7 +14,6 @@ import type {
 } from '../collectOxcTemplateDependencies';
 import type { TemplateExtractionResult } from '../collectOxcTemplateDependencies/types';
 import type { OxcAstService } from '../oxcAstService';
-import type { OxcValueReplacement } from '../oxc/replacements';
 import type { OxcLocationLookup } from '../oxc/sourceLocations';
 import type { ProcessorClass } from '../../processors/processorLookup';
 import type { DeclarativeProcessorSemantics } from '../../processors/declarativeSemantics';
@@ -24,8 +23,6 @@ export type DefinedProcessor = [
   { imported: string; source: string },
   { declarativeSemantics: DeclarativeProcessorSemantics | null }?,
 ];
-
-export type Replacement = OxcValueReplacement;
 
 export type StaticPlanFacts = {
   importedNeeds: Array<{ name: string; source: string }>;

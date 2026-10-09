@@ -134,6 +134,75 @@ describe('collectOxcExportsAndImports', () => {
     ).toMatchObject([{ imported: '*', source: 'unknown-package' }]);
   });
 
+  describe('namespace import used in object and pattern positions', () => {
+    const namespaceImports = (body: string) =>
+      comparable(
+        collectOxcExportsAndImports(
+          [`import * as tokens from './tokens';`, body].join('\n'),
+          join(fixturesFolder, 'inline-namespace-positions.input.ts')
+        )
+      ).imports;
+
+    const wholeNamespace = [{ imported: '*', source: './tokens' }];
+    const sideEffectOnly = [{ imported: 'side-effect', source: './tokens' }];
+
+    it.each([
+      ['an object property value', 'export const theme = { colors: tokens };'],
+      [
+        'a nested object property value',
+        'export const theme = { palette: { colors: tokens } };',
+      ],
+      ['a shorthand object property', 'export const theme = { tokens };'],
+      [
+        'a property value that repeats the namespace name as its key',
+        'export const theme = { tokens: tokens };',
+      ],
+      ['an array element', 'export const theme = [tokens];'],
+      [
+        'the source of a destructuring assignment',
+        'let colors; export const pick = () => { ({ colors } = tokens); return colors; };',
+      ],
+      // Writes reference the existing binding: a pattern target counts the
+      // same way as a plain assignment target.
+      [
+        'the target of a destructuring assignment',
+        'export const pick = (x) => { ({ colors: tokens } = x); return x; };',
+      ],
+      [
+        'the target of a plain assignment',
+        'export const reset = (x) => { tokens = x; };',
+      ],
+    ])('treats %s as a use of the whole namespace', (_, body) => {
+      expect(namespaceImports(body)).toEqual(wholeNamespace);
+    });
+
+    it('collects a destructured declaration from the namespace as named imports', () => {
+      expect(
+        namespaceImports(
+          'export const pick = () => { const { colors: palette } = tokens; return palette; };'
+        )
+      ).toEqual([{ imported: 'colors', source: './tokens' }]);
+    });
+
+    it.each([
+      [
+        'a declaration pattern that shadows the namespace',
+        'export const pick = (x) => { const { colors: tokens } = x; return tokens; };',
+      ],
+      [
+        'a parameter pattern that shadows the namespace',
+        'export const pick = ({ colors: tokens }) => tokens;',
+      ],
+      ['a non-computed object key', 'export const theme = { tokens: 1 };'],
+      [
+        'a non-computed member property',
+        'export const theme = (x) => x.tokens;',
+      ],
+    ])('does not treat %s as a namespace use', (_, body) => {
+      expect(namespaceImports(body)).toEqual(sideEffectOnly);
+    });
+  });
+
   it('collects require forms used by the compiled CommonJS corpus', () => {
     expect(runFixture('require_default.input.ts').imports).toMatchObject([
       { imported: 'default', source: 'unknown-package' },
