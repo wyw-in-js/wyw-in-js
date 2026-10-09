@@ -1,3 +1,5 @@
+import path from 'path';
+
 import { Transformer } from '@parcel/plugin';
 import * as SourceMapModule from '@parcel/source-map';
 import type SourceMapInstance from '@parcel/source-map';
@@ -8,6 +10,7 @@ import {
   transform,
   TransformCacheCollection,
 } from '@wyw-in-js/transform';
+import type { Result } from '@wyw-in-js/transform';
 
 // Parcel exposes no transformer-dispose hook. Reuse one child runner while
 // source transforms overlap or arrive in a burst, then release it after idle.
@@ -27,6 +30,57 @@ const SourceMapValue =
   sourceMapDefault.default ??
   SourceMapModule;
 const SourceMap = SourceMapValue as unknown as SourceMapCtor;
+
+const PLUGIN_ORIGIN = '@wyw-in-js/parcel-transformer';
+
+type ResolveDependency = (
+  what: string,
+  importer: string,
+  stack: string[]
+) => Promise<string>;
+
+// Parcel's `invalidateOnFileChange` expects file paths, but
+// `result.dependencies` mixes resolved files (from static evaluation) with
+// import specifiers such as `./theme` (from evaluation). Map specifiers to the
+// paths the transform already resolved and resolve the rest with the same
+// resolver it used.
+const resolveDependencyFilePaths = async (
+  result: Result,
+  importer: string,
+  resolveDependency: ResolveDependency
+) => {
+  const resolutions = new Map(
+    (result.dependencyResolutions ?? []).map(({ resolved, source }) => [
+      source,
+      resolved,
+    ])
+  );
+
+  return Promise.all(
+    (result.dependencies ?? []).map(async (dependency) => {
+      if (path.isAbsolute(dependency)) {
+        return { dependency, filePath: dependency };
+      }
+
+      const recorded = resolutions.get(dependency);
+      if (recorded && path.isAbsolute(recorded)) {
+        return { dependency, filePath: recorded };
+      }
+
+      try {
+        const resolved = await resolveDependency(dependency, importer, [
+          importer,
+        ]);
+        return {
+          dependency,
+          filePath: path.isAbsolute(resolved) ? resolved : null,
+        };
+      } catch {
+        return { dependency, filePath: null };
+      }
+    })
+  );
+};
 
 export default new Transformer({
   async transform({ asset, logger, options, resolve }) {
@@ -59,12 +113,28 @@ export default new Transformer({
           }
         : undefined;
 
+      const resolveDependency: ResolveDependency = async (
+        what,
+        importer,
+        stack
+      ) => {
+        try {
+          return await resolve(importer, what, { specifierType: 'esm' });
+        } catch (error) {
+          try {
+            return await asyncResolveFallback(what, importer, stack);
+          } catch {
+            throw error;
+          }
+        }
+      };
+
       const result = await transform(
         {
           cache,
           evalBrokerScope,
           emitWarning: (message: string) => {
-            logger.warn({ message, origin: '@wyw-in-js/parcel-transformer' });
+            logger.warn({ message, origin: PLUGIN_ORIGIN });
           },
           options: {
             filename: asset.filePath,
@@ -73,22 +143,22 @@ export default new Transformer({
           },
         },
         originalCode,
-        async (what: string, importer: string, stack: string[]) => {
-          try {
-            return await resolve(importer, what, { specifierType: 'esm' });
-          } catch (error) {
-            try {
-              return await asyncResolveFallback(what, importer, stack);
-            } catch {
-              throw error;
-            }
-          }
-        }
+        resolveDependency
       );
 
-      if (result.dependencies) {
-        for (const dependency of result.dependencies) {
-          asset.invalidateOnFileChange(dependency);
+      const dependencyFilePaths = await resolveDependencyFilePaths(
+        result,
+        asset.filePath,
+        resolveDependency
+      );
+      for (const { dependency, filePath } of dependencyFilePaths) {
+        if (filePath) {
+          asset.invalidateOnFileChange(filePath);
+        } else {
+          logger.warn({
+            message: `Cannot resolve "${dependency}" imported by ${asset.filePath} to a file path. Changes to it will not rebuild this file in watch mode.`,
+            origin: PLUGIN_ORIGIN,
+          });
         }
       }
 
