@@ -36,6 +36,7 @@ import {
   ensureVmModules,
   ModuleEvaluation,
 } from './module-evaluation';
+import { warnModuleDeprecation } from './module-deprecation';
 import { Entrypoint } from './transform/Entrypoint';
 import {
   getStack,
@@ -307,6 +308,7 @@ export class Module {
     parentModule?: Module,
     private moduleImpl: HiddenModuleMembers = DefaultModuleImplementation
   ) {
+    warnModuleDeprecation();
     this.cache = services.cache;
     this.cacheEpoch = services.cacheEpoch ?? services.cache.getCurrentEpoch();
     this.cache.assertEpoch(this.cacheEpoch);

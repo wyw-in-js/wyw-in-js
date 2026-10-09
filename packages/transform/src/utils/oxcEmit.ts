@@ -17,9 +17,7 @@ import type {
   VariableDeclarator,
 } from 'oxc-parser';
 
-import { recordPipelineUncachedParse } from '../debug/pipelineTelemetry';
-
-import { parseOxcSync } from './parseOxc';
+import { parseOxcProgramCached } from './parseOxc';
 
 type Replacement = {
   end: number;
@@ -246,32 +244,10 @@ const applyReplacements = (
   return result;
 };
 
-const parseJsModule = (code: string, filename: string): Program => {
-  let parsed: ReturnType<typeof parseOxcSync>;
-  try {
-    parsed = parseOxcSync(
-      filename,
-      code,
-      {
-        astType: 'js',
-        range: true,
-        sourceType: 'module',
-      },
-      'uncached'
-    );
-  } catch (error) {
-    recordPipelineUncachedParse(filename, code, 'module', 'js', true);
-    throw error;
-  }
-  const fatalError = parsed.errors.find((error) => error.severity === 'Error');
-  if (fatalError) {
-    recordPipelineUncachedParse(filename, code, 'module', 'js', true);
-    throw new Error(fatalError.message);
-  }
-  recordPipelineUncachedParse(filename, code, 'module', 'js', false);
-
-  return parsed.program as Program;
-};
+// Emission reads the JS-shaped AST for every file; for TS-family files that is
+// a separate bucket of the shared parse cache.
+const parseJsModule = (code: string, filename: string): Program =>
+  parseOxcProgramCached(filename, code, 'module', 'js');
 
 const tryParseJsModule = (code: string, filename: string): Program | null => {
   try {
@@ -548,9 +524,6 @@ const collectPredeclaredExports = (statement: Statement): string[] => {
   return [];
 };
 
-const stripLegacyCodegenTrailingCommas = (code: string): string =>
-  code.replace(/,\n(\s*})/g, '\n$1');
-
 const stripLeadingBlankLines = (code: string): string =>
   code.replace(/^(?:[ \t]*\n)+/, '');
 
@@ -741,10 +714,9 @@ export const emitOxcCommonJS = (
     }
   });
 
-  const commonjs = stripLegacyCodegenTrailingCommas(
+  const commonjs = stripLeadingBlankLines(
     applyReplacements(source.code, replacements)
   );
-  const normalizedCommonjs = stripLeadingBlankLines(commonjs);
   const predeclared = [...predeclaredExports]
     .map((name) => `exports${propertyAccess(name)} = void 0;`)
     .join('\n');
@@ -763,6 +735,6 @@ export const emitOxcCommonJS = (
     : '"use strict";\n';
 
   return {
-    code: `${preamble}${normalizedCommonjs}`,
+    code: `${preamble}${commonjs}`,
   };
 };
