@@ -1,6 +1,5 @@
 import type {
   ExportNamedDeclaration,
-  ImportDeclaration,
   Node,
   Program,
   VariableDeclaration,
@@ -8,6 +7,7 @@ import type {
 } from 'oxc-parser';
 
 import { recordPipelineUncachedParse } from '../debug/pipelineTelemetry';
+import { isTypeOnlyImport } from '../utils/oxc/typeOnlyImport';
 import { parseOxcSync } from '../utils/parseOxc';
 
 const isNode = (value: unknown): value is Node =>
@@ -45,21 +45,6 @@ const parseOxc = (code: string, filename: string): Program => {
   recordPipelineUncachedParse(filename, code, 'unambiguous', astType, false);
 
   return parsed.program as Program;
-};
-
-const isTypeOnlyImport = (statement: ImportDeclaration): boolean => {
-  if (statement.importKind === 'type') {
-    return true;
-  }
-
-  return Array.isArray(statement.specifiers)
-    ? statement.specifiers.every(
-        (specifier) =>
-          isNode(specifier) &&
-          specifier.type === 'ImportSpecifier' &&
-          specifier.importKind === 'type'
-      )
-    : false;
 };
 
 const isTypeOnlyReExport = (statement: ExportNamedDeclaration): boolean =>
