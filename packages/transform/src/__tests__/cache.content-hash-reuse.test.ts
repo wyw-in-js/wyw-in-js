@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 
 import { TransformCacheCollection } from '../cache';
-import * as cacheTypes from '../cache/cacheTypes';
+import * as contentHash from '../utils/contentHash';
 
 type MockEntrypoint = {
   dependencies: Map<string, { resolved: string }>;
@@ -26,7 +26,7 @@ describe('TransformCacheCollection: source hash reuse', () => {
   beforeEach(() => {
     leafCode = initialLeafCode;
     leafMtime = 100;
-    hashContent = jest.spyOn(cacheTypes, 'hashContent');
+    hashContent = jest.spyOn(contentHash, 'hashContent');
     readFileSync = jest.spyOn(fs, 'readFileSync').mockImplementation((name) => {
       if (name === rootName) return rootCode;
       if (name === leafName) return leafCode;

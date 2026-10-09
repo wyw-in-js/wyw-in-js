@@ -12,7 +12,6 @@ import {
   finishPipelineCleanup,
   finishPipelineDangerousCode,
   finishPipelineShake,
-  getPipelineCodeSha256Hex,
   PIPELINE_TELEMETRY_SCHEMA,
   recordPipelineCacheRequest,
   recordPipelineCacheClear,
@@ -43,6 +42,7 @@ import type { CodeMeasurementCache } from '../debug/pipelineTelemetry.types';
 import { transform } from '../transform';
 import { parseFile } from '../transform/Entrypoint.helpers';
 import { removeUnusedAfterReplacement } from '../utils/applyOxcProcessors/cleanup-after-replacement';
+import { ContentHashMemo } from '../utils/contentHash';
 import { parseOxcCached } from '../utils/parseOxc';
 
 const createEmitter = () =>
@@ -90,7 +90,12 @@ const runTransform = async (
   );
 
 describe('pipeline telemetry boundary', () => {
-  it('reuses the exact SHA-256 digest across cache and telemetry encodings', async () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('keys parse revisions by the digests the transform cache stores', async () => {
+    const memoHash = jest.spyOn(ContentHashMemo.prototype, 'hash');
     const emitter = createEmitter();
     const summaries: PipelineTelemetrySummary[] = [];
     const unregister = registerPipelineTelemetryReporter(emitter, (summary) =>
@@ -98,31 +103,32 @@ describe('pipeline telemetry boundary', () => {
     );
     const code = 'export const greeting = "γειά 👋";';
     const samples = ['plain ascii', 'nul\0byte', 'emoji 👋', '\ud800'];
+    const createCache = () =>
+      new TransformCacheCollection<{
+        dependencies: Map<string, { resolved: string | null }>;
+        initialCode: string;
+      }>();
 
-    expect(getPipelineCodeSha256Hex(code)).toBeUndefined();
-    await runWithPipelineTelemetry(
-      emitter,
-      () => ({ filename: '/project/digest.ts' }),
-      async () => {
-        const cache = new TransformCacheCollection<{
-          dependencies: Map<string, { resolved: string | null }>;
-          initialCode: string;
-        }>();
-        [...samples, code].forEach((content, index) => {
-          const filename = `/project/digest-${index}.ts`;
-          cache.add('entrypoints', filename, {
-            dependencies: new Map(),
-            initialCode: content,
+    try {
+      await runWithPipelineTelemetry(
+        emitter,
+        () => ({ filename: '/project/digest.ts' }),
+        async () => {
+          const cache = createCache();
+          [...samples, code].forEach((content, index) => {
+            const filename = `/project/digest-${index}.ts`;
+            cache.add('entrypoints', filename, {
+              dependencies: new Map(),
+              initialCode: content,
+            });
+            expect(cache.invalidateIfChanged(filename, content)).toBe(false);
           });
-          expect(getPipelineCodeSha256Hex(content)).toBe(
-            createHash('sha256').update(content).digest('hex')
-          );
-          expect(cache.invalidateIfChanged(filename, content)).toBe(false);
-        });
-        parseFile(undefined, '/project/digest.ts', code);
-      }
-    );
-    unregister();
+          parseFile(undefined, '/project/digest.ts', code);
+        }
+      );
+    } finally {
+      unregister();
+    }
 
     expect(summaries).toHaveLength(1);
     expect(summaries[0].parse.revisions).toEqual([
@@ -132,7 +138,17 @@ describe('pipeline telemetry boundary', () => {
         revision: revisionOf(code),
       }),
     ]);
-    expect(getPipelineCodeSha256Hex(code)).toBeUndefined();
+    // Cache freshness and telemetry revisions share one digest memo while the
+    // reporter is registered; it is not consulted once the reporter is gone.
+    expect(memoHash).toHaveBeenCalledWith(code);
+    memoHash.mockClear();
+    const cache = createCache();
+    cache.add('entrypoints', '/project/after.ts', {
+      dependencies: new Map(),
+      initialCode: code,
+    });
+    expect(cache.invalidateIfChanged('/project/after.ts', code)).toBe(false);
+    expect(memoHash).not.toHaveBeenCalled();
   });
 
   it('keeps distinct revisions that collide in the numeric lookup fingerprint', async () => {

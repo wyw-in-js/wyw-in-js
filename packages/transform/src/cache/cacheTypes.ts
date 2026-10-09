@@ -1,10 +1,3 @@
-import { createHash } from 'crypto';
-
-import {
-  getPipelineCodeSha256Hex,
-  primePipelineCodeSha256Hex,
-} from '../debug/pipelineTelemetry';
-
 export interface DependencyToCheck {
   resolved: string | null;
   readOnly?: boolean;
@@ -49,15 +42,6 @@ export const createDependencySnapshot = (
       entrypoint.invalidateOnDependencyChange ?? []
     ),
   };
-};
-
-export const hashContent = (content: string): string => {
-  const cached = getPipelineCodeSha256Hex(content);
-  if (cached) return cached;
-
-  const sha256Hex = createHash('sha256').update(content).digest('hex');
-  primePipelineCodeSha256Hex(content, sha256Hex);
-  return sha256Hex;
 };
 
 export const isEntrypointGraphIncomplete = (
