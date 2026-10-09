@@ -5,6 +5,8 @@ import type {
 } from '@wyw-in-js/shared';
 
 import type { Services } from './types';
+import type { Entrypoint } from './Entrypoint';
+import type { ITransformFileResult } from '../types';
 import type { WYWTransformMetadata } from '../utils/TransformMetadata';
 import type {
   OxcProcessorAnalysisPlan,
@@ -14,8 +16,22 @@ import type { OxcPureCallHint } from '../utils/collectOxcTemplateDependencies';
 
 export type ParsedAst = unknown;
 
+export type TransformCodeFactory = (
+  entrypoint: Entrypoint,
+  services: Services
+) => string;
+
+export type EntrypointTransformResult =
+  | (ITransformFileResult & { prepareCode?: never })
+  | {
+      code?: never;
+      metadata: WYWTransformMetadata | null;
+      prepareCode: TransformCodeFactory;
+    };
+
 export interface IEntrypointCode {
-  readonly ast: ParsedAst;
+  /** Not produced by the Oxc pipeline; custom `loadAndParseFn` may set it. */
+  readonly ast?: ParsedAst;
   code: string;
   evalConfig: TransformEngineOptions;
   evaluator: Evaluator;
@@ -36,7 +52,8 @@ export interface IEntrypointDependency {
 }
 
 export interface IPreevalResult {
-  ast: ParsedAst | null;
+  /** Not produced by the Oxc pipeline. */
+  ast?: ParsedAst | null;
   baseCode?: string;
   code: string;
   dependencyNames?: string[];

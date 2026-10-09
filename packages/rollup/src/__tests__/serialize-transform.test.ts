@@ -776,4 +776,83 @@ describe('@wyw-in-js/rollup serializeTransform', () => {
     expect(second?.code).toContain('import "/abs/a.css";');
     expect(plugin.load?.call(ctx, '/abs/a.css')).toBe('.a{color:blue}');
   });
+
+  describe('transform result', () => {
+    const sourceMap = {
+      file: '/abs/a.ts',
+      mappings: 'AAAA',
+      names: [],
+      sources: ['/abs/a.ts'],
+      version: 3,
+    };
+
+    it('returns nothing when WyW did not transform the file', async () => {
+      const { default: wywInJS } = await import('../index');
+      const plugin = wywInJS();
+      const ctx = createContext();
+
+      transformMock.mockResolvedValueOnce({
+        code: 'export const x = 1;',
+        sourceMap: null,
+      });
+
+      const result = await plugin.transform!.call(
+        ctx,
+        'export const x = 1;',
+        '/abs/a.ts'
+      );
+
+      expect(result).toBeUndefined();
+      expect(slugifyMock).not.toHaveBeenCalled();
+    });
+
+    it('returns transformed code and its source map when no CSS was extracted', async () => {
+      const { default: wywInJS } = await import('../index');
+      const plugin = wywInJS();
+      const ctx = createContext();
+
+      transformMock.mockResolvedValueOnce({
+        code: 'const className = "c1";',
+        cssText: '',
+        sourceMap,
+      });
+
+      const result = await plugin.transform!.call(
+        ctx,
+        'import { css } from "pkg";\nconst className = css``;',
+        '/abs/a.ts'
+      );
+
+      expect(result).toEqual({
+        code: 'const className = "c1";',
+        map: sourceMap,
+      });
+      expect(slugifyMock).not.toHaveBeenCalled();
+      expect(plugin.resolveId!.call(ctx, '/abs/a_slug.css')).toBeUndefined();
+    });
+
+    it('imports the extracted CSS from the transformed code', async () => {
+      const { default: wywInJS } = await import('../index');
+      const plugin = wywInJS();
+      const ctx = createContext();
+
+      transformMock.mockResolvedValueOnce({
+        code: 'export const className = "c1";',
+        cssText: '.c1{color:red}',
+        sourceMap,
+      });
+
+      const result = await plugin.transform!.call(
+        ctx,
+        'export const className = css`color:red`;',
+        '/abs/a.ts'
+      );
+
+      expect(result).toEqual({
+        code: 'export const className = "c1";\nimport "/abs/a_slug.css";\n',
+        map: sourceMap,
+      });
+      expect(plugin.load!.call(ctx, '/abs/a_slug.css')).toBe('.c1{color:red}');
+    });
+  });
 });

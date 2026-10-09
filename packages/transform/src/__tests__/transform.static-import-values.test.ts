@@ -891,7 +891,8 @@ describe('transform static import value inlining', () => {
       expect(result.cssText).toContain('color:red');
       expect(result.code).not.toContain('./tokens.js');
       expect(result.dependencies).toContain(depFile);
-      expect(perf.counts.get('transform:evaluator') ?? 0).toBe(1);
+      expect(perf.counts.get('transform:evaluator') ?? 0).toBe(0);
+      expect(perf.counts.get('transform:emitCommonJS') ?? 0).toBe(0);
       expect(perf.counts.get('transform:evalFile') ?? 0).toBe(0);
     } finally {
       rmSync(root, { recursive: true, force: true });

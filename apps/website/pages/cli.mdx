@@ -57,6 +57,8 @@ The CLI options below are based on `wyw-in-js --help`.
 - `--transform`, `-t`: replace template tags with evaluated values (used when updating compiled JS output).
 - `--source-maps`, `-s`: generate `.map` files for extracted CSS.
 - `--parallel`, `-p`: run extraction in parallel.
+- `--workers`: number of worker threads for extraction; implies `--parallel`. Function options must be defined in the
+  config file passed with `--config`.
 - `--ignore`, `-x`: glob pattern to exclude files (passed to `glob`).
 - `--debug`, `-d`: write debug output into a directory. The log analyzer reads `actions.jsonl`,
   `dependencies.jsonl`, `entrypoints.jsonl`, and optional `eval-files.jsonl` / `perf-spans.jsonl`.

@@ -360,6 +360,16 @@ const main = async () => {
       fixturePath: path.resolve(PKG_DIR, 'fixture.css'),
       pluginOptions: { eval: { resolver: 'hybrid' } },
     },
+    {
+      name: 'parallel',
+      fixturePath: path.resolve(PKG_DIR, 'fixture.css'),
+      pluginOptions: { parallel: 2 },
+    },
+    {
+      name: 'parallelKeepComments',
+      fixturePath: path.resolve(PKG_DIR, 'fixture.keep-comments.css'),
+      pluginOptions: { keepComments: true, parallel: 2 },
+    },
   ];
 
   for (const testCase of testCases) {

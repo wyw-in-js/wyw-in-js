@@ -8,7 +8,7 @@ import dedent from 'dedent';
 
 import { oxcShaker } from '../shaker';
 import { Entrypoint } from '../transform/Entrypoint';
-import { syncActionRunner } from '../transform/actions/actionRunner';
+import { asyncActionRunner } from '../transform/actions/actionRunner';
 import {
   prepareCode,
   prepareCodeForEvalRuntime,
@@ -153,7 +153,7 @@ describe('prepareCode with explicit oxcShaker action', () => {
     expect(metadata?.processors).toHaveLength(1);
   });
 
-  it('feeds Oxc import metadata into the existing resolve/process actions', () => {
+  it('feeds Oxc import metadata into the existing resolve/process actions', async () => {
     const root = __dirname;
     const filename = join(root, 'side-effect-source.js');
     const source = dedent`
@@ -221,7 +221,7 @@ describe('prepareCode with explicit oxcShaker action', () => {
       transform: transformAction,
     });
 
-    const result = syncActionRunner(
+    const result = await asyncActionRunner(
       entrypoint.createAction('transform', undefined, null),
       handlers
     );
@@ -292,8 +292,7 @@ describe('prepareCode with explicit oxcShaker action', () => {
 
     const [code, imports, metadata] = prepareCodeForEvalRuntime(
       services,
-      entrypoint,
-      null
+      entrypoint
     );
 
     expect(code).toContain('export const helper =');
@@ -334,8 +333,7 @@ describe('prepareCode with explicit oxcShaker action', () => {
 
     const [code, imports, metadata] = prepareCodeForEvalRuntime(
       services,
-      entrypoint,
-      null
+      entrypoint
     );
 
     expect(code).toContain('export const __wywPreval');
@@ -377,8 +375,7 @@ describe('prepareCode with explicit oxcShaker action', () => {
 
     const [code, imports, metadata] = prepareCodeForEvalRuntime(
       services,
-      entrypoint,
-      null
+      entrypoint
     );
 
     expect(code).toContain('export const __wywPreval =');

@@ -17,7 +17,7 @@ import type {
   YieldArg,
 } from '../../types';
 import type { BaseAction } from '../BaseAction';
-import { asyncActionRunner, syncActionRunner } from '../actionRunner';
+import { asyncActionRunner } from '../actionRunner';
 import { AbortError } from '../AbortError';
 import { markCacheRecoveryFenceError } from '../isCacheRecoveryControlError';
 import { EventEmitter } from '../../../utils/EventEmitter';
@@ -31,10 +31,9 @@ describe('actionRunner', () => {
 
   it('should be defined', () => {
     expect(asyncActionRunner).toBeDefined();
-    expect(syncActionRunner).toBeDefined();
   });
 
-  it('should run action', () => {
+  it('should run action', async () => {
     const handlers = getHandlers<'sync'>({});
 
     const entrypoint = createEntrypoint(services, '/foo/bar.js', ['default']);
@@ -44,41 +43,34 @@ describe('actionRunner', () => {
       null
     );
 
-    syncActionRunner(action, handlers);
+    await asyncActionRunner(action, handlers);
     expect(handlers.processEntrypoint).toHaveBeenCalled();
   });
 
-  it.each([false, true])(
-    'catches child creation abort: %s',
-    async (asyncMode) => {
-      const parent = createEntrypoint(services, '/foo/parent.js', ['default']);
-      const child = createEntrypoint(services, '/foo/child.js', ['first']);
-      const replacement = createEntrypoint(services, child.name, ['second']);
-      const observed = jest.fn();
-      const handlers = getHandlers<'sync'>({
-        *workflow(
-          this: IWorkflowAction
-        ): SyncScenarioForAction<IWorkflowAction> {
-          try {
-            yield ['processEntrypoint', child, undefined, null];
-          } catch (error) {
-            observed(error);
-            yield ['processEntrypoint', replacement, undefined, null];
-          }
-          return { code: 'current', sourceMap: null };
-        },
-      });
-      const action = parent.createAction('workflow', undefined, null);
-      const result = asyncMode
-        ? await asyncActionRunner(action, handlers)
-        : syncActionRunner(action, handlers);
-      expect(result).toEqual({ code: 'current', sourceMap: null });
-      expect(observed).toHaveBeenCalledWith(expect.any(AbortError));
-      expect(handlers.processEntrypoint).toHaveBeenCalledTimes(1);
-    }
-  );
+  it('catches child creation abort', async () => {
+    const parent = createEntrypoint(services, '/foo/parent.js', ['default']);
+    const child = createEntrypoint(services, '/foo/child.js', ['first']);
+    const replacement = createEntrypoint(services, child.name, ['second']);
+    const observed = jest.fn();
+    const handlers = getHandlers<'sync'>({
+      *workflow(this: IWorkflowAction): SyncScenarioForAction<IWorkflowAction> {
+        try {
+          yield ['processEntrypoint', child, undefined, null];
+        } catch (error) {
+          observed(error);
+          yield ['processEntrypoint', replacement, undefined, null];
+        }
+        return { code: 'current', sourceMap: null };
+      },
+    });
+    const action = parent.createAction('workflow', undefined, null);
+    const result = await asyncActionRunner(action, handlers);
+    expect(result).toEqual({ code: 'current', sourceMap: null });
+    expect(observed).toHaveBeenCalledWith(expect.any(AbortError));
+    expect(handlers.processEntrypoint).toHaveBeenCalledTimes(1);
+  });
 
-  it('does not return an action superseded by its actionCreated callback', () => {
+  it('does not return an action superseded by its actionCreated callback', async () => {
     const name = '/foo/reentrant-action-created.js';
     const entrypoint = createEntrypoint(services, name, ['default']);
     const handlerSideEffect = jest.fn();
@@ -100,14 +92,16 @@ describe('actionRunner', () => {
       },
     });
 
-    expect(() => {
-      const action = entrypoint.createAction('workflow', undefined, null);
-      syncActionRunner(action, handlers);
-    }).toThrow(AbortError);
+    await expect(
+      (async () => {
+        const action = entrypoint.createAction('workflow', undefined, null);
+        await asyncActionRunner(action, handlers);
+      })()
+    ).rejects.toBeInstanceOf(AbortError);
     expect(handlerSideEffect).not.toHaveBeenCalled();
   });
 
-  it('does not enter a sync handler superseded by its action start callback', () => {
+  it('does not enter a handler superseded by its action start callback', async () => {
     const name = '/foo/reentrant-action-start.js';
     const entrypoint = createEntrypoint(services, name, ['default']);
     const action = entrypoint.createAction('workflow', undefined, null);
@@ -131,11 +125,13 @@ describe('actionRunner', () => {
       },
     });
 
-    expect(() => syncActionRunner(action, handlers)).toThrow(AbortError);
+    await expect(asyncActionRunner(action, handlers)).rejects.toBeInstanceOf(
+      AbortError
+    );
     expect(handlerSideEffect).not.toHaveBeenCalled();
   });
 
-  it('does not accept a result superseded by its action finish callback', () => {
+  it('does not accept a result superseded by its action finish callback', async () => {
     const name = '/foo/reentrant-action-finish.js';
     const entrypoint = createEntrypoint(services, name, ['default']);
     const action = entrypoint.createAction('workflow', undefined, null);
@@ -157,11 +153,13 @@ describe('actionRunner', () => {
       },
     });
 
-    expect(() => syncActionRunner(action, handlers)).toThrow(AbortError);
+    await expect(asyncActionRunner(action, handlers)).rejects.toBeInstanceOf(
+      AbortError
+    );
     expect(action.result).not.toEqual({ code: 'stale', sourceMap: null });
   });
 
-  it('does not deliver a child finish fence error to the parent catch', () => {
+  it('does not deliver a child finish fence error to the parent catch', async () => {
     const name = '/foo/reentrant-child-finish.js';
     const entrypoint = createEntrypoint(services, name, ['default']);
     const parentCaught = jest.fn();
@@ -205,168 +203,143 @@ describe('actionRunner', () => {
       },
     });
 
-    expect(() =>
-      syncActionRunner(
+    await expect(
+      asyncActionRunner(
         entrypoint.createAction('workflow', undefined, null),
         handlers
       )
-    ).toThrow(AbortError);
+    ).rejects.toBeInstanceOf(AbortError);
     expect(parentResumed).not.toHaveBeenCalled();
     expect(parentCaught).not.toHaveBeenCalled();
     expect(parentClosed).toHaveBeenCalledTimes(1);
   });
 
-  it.each([false, true])(
-    'delivers a foreign child finish supersede to the parent catch: async %s',
-    async (asyncMode) => {
-      const parent = createEntrypoint(services, '/foo/foreign-parent.js', [
-        'default',
-      ]);
-      const child = createEntrypoint(services, '/foo/foreign-child.js', [
-        'first',
-      ]);
-      const observed = jest.fn();
-      let nextActionId = 0;
-      let childActionId: number | null = null;
-      let reentered = false;
-      services.eventEmitter = new EventEmitter(
-        () => {},
-        (...args) => {
-          if (args[0] === 'start') {
-            const id = nextActionId;
-            nextActionId += 1;
-            if (args[2] === 'resolveImports') childActionId = id;
-            return id;
+  it('delivers a foreign child finish supersede to the parent catch', async () => {
+    const parent = createEntrypoint(services, '/foo/foreign-parent.js', [
+      'default',
+    ]);
+    const child = createEntrypoint(services, '/foo/foreign-child.js', [
+      'first',
+    ]);
+    const observed = jest.fn();
+    let nextActionId = 0;
+    let childActionId: number | null = null;
+    let reentered = false;
+    services.eventEmitter = new EventEmitter(
+      () => {},
+      (...args) => {
+        if (args[0] === 'start') {
+          const id = nextActionId;
+          nextActionId += 1;
+          if (args[2] === 'resolveImports') childActionId = id;
+          return id;
+        }
+        if (args[0] === 'finish' && args[2] === childActionId && !reentered) {
+          reentered = true;
+          createEntrypoint(services, child.name, ['second']);
+        }
+        return undefined;
+      },
+      () => {}
+    );
+    const handlers = getHandlers<'sync'>({
+      *workflow(this: IWorkflowAction): SyncScenarioForAction<IWorkflowAction> {
+        try {
+          yield ['resolveImports', child, undefined, null];
+        } catch (error) {
+          observed(error);
+          const successor = child.supersededWith;
+          if (!successor) {
+            throw error;
           }
-          if (args[0] === 'finish' && args[2] === childActionId && !reentered) {
-            reentered = true;
-            createEntrypoint(services, child.name, ['second']);
-          }
-          return undefined;
-        },
-        () => {}
-      );
-      const handlers = getHandlers<'sync'>({
-        *workflow(
-          this: IWorkflowAction
-        ): SyncScenarioForAction<IWorkflowAction> {
-          try {
-            yield ['resolveImports', child, undefined, null];
-          } catch (error) {
-            observed(error);
-            const successor = child.supersededWith;
-            if (!successor) {
-              throw error;
-            }
-            yield ['resolveImports', successor, undefined, null];
-          }
-          return { code: 'current', sourceMap: null };
-        },
-        *resolveImports() {
-          return [];
-        },
-      });
-      const action = parent.createAction('workflow', undefined, null);
-      const result = asyncMode
-        ? await asyncActionRunner(action, handlers)
-        : syncActionRunner(action, handlers);
-      expect(result).toEqual({ code: 'current', sourceMap: null });
-      expect(observed).toHaveBeenCalledWith(expect.any(AbortError));
-      expect(parent.supersededWith).toBeNull();
-    }
-  );
+          yield ['resolveImports', successor, undefined, null];
+        }
+        return { code: 'current', sourceMap: null };
+      },
+      *resolveImports() {
+        return [];
+      },
+    });
+    const action = parent.createAction('workflow', undefined, null);
+    const result = await asyncActionRunner(action, handlers);
+    expect(result).toEqual({ code: 'current', sourceMap: null });
+    expect(observed).toHaveBeenCalledWith(expect.any(AbortError));
+    expect(parent.supersededWith).toBeNull();
+  });
 
-  it.each([false, true])(
-    'keeps a non-abort fence error away from the parent catch: async %s',
-    async (asyncMode) => {
-      const parent = createEntrypoint(services, '/foo/fence-parent.js', [
-        'default',
-      ]);
-      const child = createEntrypoint(services, '/foo/fence-child.js', [
-        'first',
-      ]);
-      const parentCaught = jest.fn();
-      const fence = markCacheRecoveryFenceError(new Error('retired'));
-      const handlers = getHandlers<'sync'>({
-        *workflow(
-          this: IWorkflowAction
-        ): SyncScenarioForAction<IWorkflowAction> {
-          try {
-            yield ['resolveImports', child, undefined, null];
-          } catch (error) {
-            parentCaught(error);
-          }
-          return { code: 'stale fallback', sourceMap: null };
-        },
-        *resolveImports() {
-          throw fence;
-        },
-      });
-      const action = parent.createAction('workflow', undefined, null);
-      const run = () =>
-        asyncMode
-          ? asyncActionRunner(action, handlers)
-          : Promise.resolve().then(() => syncActionRunner(action, handlers));
-      await expect(run()).rejects.toBe(fence);
-      expect(parentCaught).not.toHaveBeenCalled();
-    }
-  );
+  it('keeps a non-abort fence error away from the parent catch', async () => {
+    const parent = createEntrypoint(services, '/foo/fence-parent.js', [
+      'default',
+    ]);
+    const child = createEntrypoint(services, '/foo/fence-child.js', ['first']);
+    const parentCaught = jest.fn();
+    const fence = markCacheRecoveryFenceError(new Error('retired'));
+    const handlers = getHandlers<'sync'>({
+      *workflow(this: IWorkflowAction): SyncScenarioForAction<IWorkflowAction> {
+        try {
+          yield ['resolveImports', child, undefined, null];
+        } catch (error) {
+          parentCaught(error);
+        }
+        return { code: 'stale fallback', sourceMap: null };
+      },
+      *resolveImports() {
+        throw fence;
+      },
+    });
+    const action = parent.createAction('workflow', undefined, null);
+    await expect(asyncActionRunner(action, handlers)).rejects.toBe(fence);
+    expect(parentCaught).not.toHaveBeenCalled();
+  });
 
-  it.each([false, true])(
-    'keeps a foreign child supersede fenced once the parent is superseded too: async %s',
-    async (asyncMode) => {
-      const parentName = '/foo/both-parent.js';
-      const parent = createEntrypoint(services, parentName, ['default']);
-      const child = createEntrypoint(services, '/foo/both-child.js', ['first']);
-      const parentCaught = jest.fn();
-      let nextActionId = 0;
-      let childActionId: number | null = null;
-      let reentered = false;
-      services.eventEmitter = new EventEmitter(
-        () => {},
-        (...args) => {
-          if (args[0] === 'start') {
-            const id = nextActionId;
-            nextActionId += 1;
-            if (args[2] === 'resolveImports') childActionId = id;
-            return id;
-          }
-          if (args[0] === 'finish' && args[2] === childActionId && !reentered) {
-            reentered = true;
-            createEntrypoint(services, child.name, ['second']);
-            createEntrypoint(services, parentName, ['replacement']);
-          }
-          return undefined;
-        },
-        () => {}
-      );
-      const handlers = getHandlers<'sync'>({
-        *workflow(
-          this: IWorkflowAction
-        ): SyncScenarioForAction<IWorkflowAction> {
-          try {
-            yield ['resolveImports', child, undefined, null];
-          } catch (error) {
-            parentCaught(error);
-          }
-          return { code: 'stale fallback', sourceMap: null };
-        },
-        *resolveImports() {
-          return [];
-        },
-      });
-      const action = parent.createAction('workflow', undefined, null);
-      const run = () =>
-        asyncMode
-          ? asyncActionRunner(action, handlers)
-          : Promise.resolve().then(() => syncActionRunner(action, handlers));
-      await expect(run()).rejects.toBeInstanceOf(AbortError);
-      expect(parentCaught).not.toHaveBeenCalled();
-      expect(parent.supersededWith).not.toBeNull();
-    }
-  );
+  it('keeps a foreign child supersede fenced once the parent is superseded too', async () => {
+    const parentName = '/foo/both-parent.js';
+    const parent = createEntrypoint(services, parentName, ['default']);
+    const child = createEntrypoint(services, '/foo/both-child.js', ['first']);
+    const parentCaught = jest.fn();
+    let nextActionId = 0;
+    let childActionId: number | null = null;
+    let reentered = false;
+    services.eventEmitter = new EventEmitter(
+      () => {},
+      (...args) => {
+        if (args[0] === 'start') {
+          const id = nextActionId;
+          nextActionId += 1;
+          if (args[2] === 'resolveImports') childActionId = id;
+          return id;
+        }
+        if (args[0] === 'finish' && args[2] === childActionId && !reentered) {
+          reentered = true;
+          createEntrypoint(services, child.name, ['second']);
+          createEntrypoint(services, parentName, ['replacement']);
+        }
+        return undefined;
+      },
+      () => {}
+    );
+    const handlers = getHandlers<'sync'>({
+      *workflow(this: IWorkflowAction): SyncScenarioForAction<IWorkflowAction> {
+        try {
+          yield ['resolveImports', child, undefined, null];
+        } catch (error) {
+          parentCaught(error);
+        }
+        return { code: 'stale fallback', sourceMap: null };
+      },
+      *resolveImports() {
+        return [];
+      },
+    });
+    const action = parent.createAction('workflow', undefined, null);
+    await expect(asyncActionRunner(action, handlers)).rejects.toBeInstanceOf(
+      AbortError
+    );
+    expect(parentCaught).not.toHaveBeenCalled();
+    expect(parent.supersededWith).not.toBeNull();
+  });
 
-  it('does not enter a sync action after its start event retires the epoch', () => {
+  it('does not enter an action after its start event retires the epoch', async () => {
     const sideEffect = jest.fn();
     const staleRecover = jest.fn();
     const entrypoint = createEntrypoint(services, '/foo/reentrant.js', [
@@ -399,7 +372,7 @@ describe('actionRunner', () => {
 
     let thrown: unknown;
     try {
-      syncActionRunner(
+      await asyncActionRunner(
         entrypoint.createAction('workflow', undefined, null),
         handlers
       );
@@ -413,43 +386,7 @@ describe('actionRunner', () => {
     expect(staleRecover).not.toHaveBeenCalled();
   });
 
-  it('does not enter an async action after its start event retires the epoch', async () => {
-    const sideEffect = jest.fn();
-    const entrypoint = createEntrypoint(services, '/foo/reentrant.js', [
-      'default',
-    ]);
-    const { cacheEpoch } = entrypoint;
-    let controlError: Error | null = null;
-    services.eventEmitter = new EventEmitter(
-      () => {},
-      (phase) => {
-        if (phase === 'start' && !controlError) {
-          services.cache.beginSupersedeStormRecovery(
-            new Error('reentrant action recovery')
-          );
-          controlError = services.cache.getEpochError(cacheEpoch);
-        }
-        return 0;
-      },
-      () => {}
-    );
-    const handlers = getHandlers({
-      *workflow() {
-        sideEffect();
-        return { code: '', sourceMap: null };
-      },
-    });
-
-    const running = asyncActionRunner(
-      entrypoint.createAction('workflow', undefined, null),
-      handlers
-    );
-
-    await expect(running).rejects.toBe(controlError);
-    expect(sideEffect).not.toHaveBeenCalled();
-  });
-
-  it('fences a distinct sync action-services epoch before entering the handler', () => {
+  it('fences a distinct action-services epoch before entering the handler', async () => {
     const entrypointServices = createServices();
     const entrypoint = createEntrypoint(
       entrypointServices,
@@ -492,7 +429,7 @@ describe('actionRunner', () => {
 
     let thrown: unknown;
     try {
-      syncActionRunner(action, handlers);
+      await asyncActionRunner(action, handlers);
     } catch (error) {
       thrown = error;
     }
@@ -501,49 +438,6 @@ describe('actionRunner', () => {
     expect(sideEffect).not.toHaveBeenCalled();
     expect(workflow.recover).not.toHaveBeenCalled();
     expect(staleRecover).not.toHaveBeenCalled();
-  });
-
-  it('fences a distinct async action-services epoch before entering the handler', async () => {
-    const entrypointServices = createServices();
-    const entrypoint = createEntrypoint(
-      entrypointServices,
-      '/foo/cross-owner-async.js',
-      ['default']
-    );
-    const serviceEpoch = services.cache.getCurrentEpoch();
-    const sideEffect = jest.fn();
-    let controlError: Error | null = null;
-    services.eventEmitter = new EventEmitter(
-      () => {},
-      (phase) => {
-        if (phase === 'start' && !controlError) {
-          services.cache.beginSupersedeStormRecovery(
-            new Error('cross-owner async action recovery')
-          );
-          controlError = services.cache.getEpochError(serviceEpoch);
-        }
-        return 0;
-      },
-      () => {}
-    );
-    const handlers = getHandlers({
-      *workflow() {
-        sideEffect();
-        return { code: '', sourceMap: null };
-      },
-    });
-    const action = entrypoint.createAction(
-      'workflow',
-      undefined,
-      null,
-      undefined,
-      services
-    );
-
-    await expect(asyncActionRunner(action, handlers)).rejects.toBe(
-      controlError
-    );
-    expect(sideEffect).not.toHaveBeenCalled();
   });
 
   it('prefers the retired services epoch over a later async iterator rejection', async () => {
@@ -570,7 +464,7 @@ describe('actionRunner', () => {
     expect(controlError).not.toBe(lateError);
   });
 
-  it('separates cached nested actions by their service scope', () => {
+  it('separates cached nested actions by their service scope', async () => {
     const analysisServices = createServices();
     const rootEntrypoint = createEntrypoint(services, '/foo/root.js', [
       'default',
@@ -600,7 +494,7 @@ describe('actionRunner', () => {
       },
     });
 
-    syncActionRunner(
+    await asyncActionRunner(
       rootEntrypoint.createAction('workflow', undefined, null),
       handlers
     );
@@ -693,7 +587,7 @@ describe('actionRunner', () => {
     expect(valueCatcher).toBeCalledWith(resolvedImports);
   });
 
-  it('should throw if action was aborted', () => {
+  it('should throw if action was aborted', async () => {
     const abortController = new AbortController();
     abortController.abort();
 
@@ -717,7 +611,7 @@ describe('actionRunner', () => {
     const entrypoint = createEntrypoint(services, '/foo/bar.js', ['default']);
     const action = entrypoint.createAction('workflow', undefined, null);
 
-    expect(() => syncActionRunner(action, handlers)).toThrowError(
+    await expect(asyncActionRunner(action, handlers)).rejects.toThrow(
       /^workflow@\d{5}#1$/
     );
   });
@@ -745,7 +639,7 @@ describe('actionRunner', () => {
     expect(handlerSideEffect).not.toHaveBeenCalled();
   });
 
-  it('should call recover', () => {
+  it('should call recover', async () => {
     const abortController = new AbortController();
     abortController.abort();
 
@@ -785,7 +679,7 @@ describe('actionRunner', () => {
     const entrypoint = createEntrypoint(services, '/foo/bar.js', ['default']);
     const action = entrypoint.createAction('workflow', undefined, null);
 
-    expect(() => syncActionRunner(action, handlers)).toThrowError(
+    await expect(asyncActionRunner(action, handlers)).rejects.toThrow(
       /^workflow@\d{5}#1$/
     );
 
@@ -799,7 +693,7 @@ describe('actionRunner', () => {
     expect(shouldNotBeCalled).not.toHaveBeenCalled();
   });
 
-  it('should recover', () => {
+  it('should recover', async () => {
     const abortController = new AbortController();
     abortController.abort();
 
@@ -843,12 +737,12 @@ describe('actionRunner', () => {
     const entrypoint = createEntrypoint(services, '/foo/bar.js', ['default']);
     const action = entrypoint.createAction('workflow', undefined, null);
 
-    syncActionRunner(action, handlers);
+    await asyncActionRunner(action, handlers);
     expect(processEntrypointMock.recover).toHaveBeenCalled();
     expect(shouldBeCalled).toHaveBeenCalledTimes(1);
   });
 
-  it('should process triple superseded entrypoint', () => {
+  it('should process triple superseded entrypoint', async () => {
     const fooBarDefault = createEntrypoint(services, '/foo/bar.js', [
       'default',
     ]);
@@ -875,10 +769,10 @@ describe('actionRunner', () => {
       null
     );
 
-    syncActionRunner(action, handlers);
+    await asyncActionRunner(action, handlers);
   });
 
-  it('drains finally yields without scheduling cleanup actions', () => {
+  it('drains finally yields without scheduling cleanup actions', async () => {
     let recoveryError: Error | undefined;
     let thrown: unknown;
     const cleanupStarted = jest.fn();
@@ -922,7 +816,7 @@ describe('actionRunner', () => {
     });
 
     try {
-      syncActionRunner(
+      await asyncActionRunner(
         entrypoint.createAction('workflow', undefined, null),
         handlers
       );
@@ -937,7 +831,7 @@ describe('actionRunner', () => {
     expect(actionStarts).toBe(1);
   });
 
-  it('bounds sync cleanup that keeps yielding for a child result', () => {
+  it('bounds sync generator cleanup that keeps yielding for a child result', async () => {
     let recoveryError: Error | undefined;
     let cleanupYields = 0;
     const entrypoint = createEntrypoint(services, '/foo/bounded-close.js', [
@@ -967,7 +861,7 @@ describe('actionRunner', () => {
 
     let thrown: unknown;
     try {
-      syncActionRunner(
+      await asyncActionRunner(
         entrypoint.createAction('workflow', undefined, null),
         handlers
       );
@@ -1101,7 +995,7 @@ describe('actionRunner', () => {
     expect(Date.now() - startedAt).toBeLessThan(1000);
   });
 
-  it('does not resume stale catch continuations after an epoch failure', () => {
+  it('does not resume stale catch continuations after an epoch failure', async () => {
     let recoveryError: Error | undefined;
     let thrown: unknown;
     const continuationStarted = jest.fn();
@@ -1141,7 +1035,7 @@ describe('actionRunner', () => {
     });
 
     try {
-      syncActionRunner(
+      await asyncActionRunner(
         entrypoint.createAction('workflow', undefined, null),
         handlers
       );

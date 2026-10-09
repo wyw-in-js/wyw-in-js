@@ -61,6 +61,22 @@ wyw({
 });
 ```
 
+### Running transforms in worker threads
+
+Transforms run on the main thread by default. Set `parallel` to run them in worker threads:
+
+```js
+wyw({
+  parallel: true,
+});
+```
+
+`true` starts up to four workers, leaving at least one CPU core free; a number sets the count.
+
+Options are sent to the workers as data, so they cannot contain functions. Define function options, such as
+`tagResolver` or a `classNameSlug` function, in a [config file](/configuration): every worker loads it. If an option
+cannot be sent, or `debug` is set, the plugin warns and runs transforms on the main thread.
+
 ### Disabling vendor prefixing
 
 Stylis adds vendor-prefixed CSS by default. To disable it (and reduce CSS size), pass `prefixer: false`:

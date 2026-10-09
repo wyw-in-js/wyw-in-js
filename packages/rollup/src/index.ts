@@ -487,7 +487,16 @@ export default function wywInJS({
           emptyConfig
         );
 
-        if (!result.cssText) return;
+        // `cssText` distinguishes three outcomes:
+        // - undefined: the file was not transformed, Rollup keeps its code;
+        // - empty: the code was transformed but produced no styles;
+        // - non-empty: the transformed code also needs its CSS module.
+        if (result.cssText === undefined) return;
+
+        if (result.cssText === '') {
+          /* eslint-disable-next-line consistent-return */
+          return { code: result.code, map: result.sourceMap };
+        }
 
         let { cssText } = result;
 
