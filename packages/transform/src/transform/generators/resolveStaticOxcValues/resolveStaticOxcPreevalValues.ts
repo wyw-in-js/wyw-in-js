@@ -2,7 +2,7 @@
 
 import { isAbsolute } from 'path';
 
-import { appendOxcWywPreval } from '../../../utils/oxcPreevalStage';
+import { getEvalStrategy } from '../../../utils/evalStrategy';
 import { stripQueryAndHash } from '../../../utils/parseRequest';
 import { remapPureCallHints } from '../../../utils/pureCallHintSourceMap';
 import type { ITransformAction, SyncScenarioFor } from '../../types';
@@ -10,9 +10,9 @@ import {
   resolveCandidateValue,
   resolveOpaqueRuntimeCandidateValue,
 } from './candidateResolver';
+import { deferStaticPreevalCode } from './deferredCode';
 import {
   debugStaticResolve,
-  getEvalStrategy,
   getStaticStrategyFailure,
   parseProgram,
 } from './environment';
@@ -24,7 +24,6 @@ import {
   collectWYWMetaExtendsHelperNames,
   createSameFileStaticWYWMetaHelperResolver,
 } from './processorStaticModel';
-import { pruneStaticPreevalCode } from './prune';
 import { resolveExecuteOxcSideEffectProvenance } from './resolveExecuteOxcSideEffectProvenance';
 import { runtimeCallbackPlaceholder } from './staticExpression';
 import type { StaticExportResult } from './types';
@@ -57,7 +56,7 @@ export function* resolveStaticOxcPreevalValues(
       ? this.entrypoint.name
       : this.entrypoint.loadedAndParsed.evalConfig.filename ??
         this.entrypoint.name;
-  const evalStrategy = getEvalStrategy(this);
+  const evalStrategy = getEvalStrategy(this.services.options.pluginOptions);
   if (evalStrategy === 'execute') {
     finalizeEvaltimeReplacements();
     candidates = preevalResult.staticValueCandidates ?? candidates;
@@ -136,7 +135,9 @@ export function* resolveStaticOxcPreevalValues(
   const staticImportLocals = new Set<string>(
     preevalResult.staticImportLocals ?? []
   );
-  const sideEffectImportLocals = new Set<string>();
+  const sideEffectImportLocals = new Set<string>(
+    preevalResult.staticSideEffectImportLocals ?? []
+  );
   const staticNullWYWMetaExtendsHelpers = new Set(
     preevalResult.staticNullWYWMetaExtendsHelpers ?? []
   );
@@ -371,7 +372,6 @@ export function* resolveStaticOxcPreevalValues(
   preevalResult.runtimeOnlyStaticValueNames = [...runtimeOnlyCandidateNames];
   preevalResult.staticValuesApplied = true;
 
-  const originalBaseCode = preevalResult.baseCode ?? preevalResult.code;
   const prunableStaticValueNames = new Set(
     [...staticValueCache.keys()].filter(
       (name) => !runtimeOnlyCandidateNames.has(name)
@@ -387,31 +387,13 @@ export function* resolveStaticOxcPreevalValues(
       staticExtendsHelperValues.set(name, null);
     }
   });
-  const baseCode = pruneStaticPreevalCode(
-    originalBaseCode,
+  deferStaticPreevalCode(
+    preevalResult,
     filename,
     prunableStaticValueNames,
     staticImportLocals,
     staticExtendsHelperValues,
     sideEffectImportLocals
-  );
-  const evalBaseCode =
-    sideEffectImportLocals.size > 0
-      ? pruneStaticPreevalCode(
-          originalBaseCode,
-          filename,
-          prunableStaticValueNames,
-          staticImportLocals,
-          staticExtendsHelperValues,
-          new Set()
-        )
-      : baseCode;
-  preevalResult.baseCode = baseCode;
-  preevalResult.code = appendOxcWywPreval(baseCode, filename, dependencyNames);
-  preevalResult.evalCode = appendOxcWywPreval(
-    evalBaseCode,
-    filename,
-    dependencyNames
   );
   preevalResult.staticImportLocals = [...staticImportLocals];
   preevalResult.staticSideEffectImportLocals = [...sideEffectImportLocals];

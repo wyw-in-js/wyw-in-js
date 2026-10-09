@@ -380,7 +380,8 @@ function innerCreateEntrypoint(
 
     reusedEntrypoint.reuseTransformResult(
       cached.transformResultCode,
-      cached.hasWywMetadata
+      cached.hasWywMetadata,
+      cached.transformCodeFactory ?? null
     );
     if (
       'preevalResult' in cached &&

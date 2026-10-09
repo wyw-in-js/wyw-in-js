@@ -185,6 +185,63 @@ describe('explicit Oxc workflow', () => {
     ).rejects.toThrow('Unexpected JSX expression');
   });
 
+  it('evaluates .js dependencies with JSX through the eval broker', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wyw-oxc-workflow-jsx-dep-'));
+    const entryFile = join(root, 'entry.js');
+    const depFile = join(root, 'dep.js');
+
+    writeFileSync(
+      depFile,
+      dedent`
+        export const color = ['gr', 'een'].join('');
+        export const Badge = () => <span className="badge" />;
+      `
+    );
+    writeFileSync(
+      entryFile,
+      dedent`
+        import { css } from 'test-css-processor';
+        import { color } from './dep';
+
+        export const className = css\`
+          color: ${'${color}'};
+        \`;
+      `
+    );
+
+    const asyncResolve = async (what: string, importer: string) => {
+      if (what === 'test-css-processor') {
+        return processorFile;
+      }
+
+      if (what.startsWith('.')) {
+        return resolveWithExtensions(join(importer, '..', what));
+      }
+
+      return null;
+    };
+
+    try {
+      const result = await transformFile(
+        {
+          emitWarning: () => {},
+          options: {
+            filename: entryFile,
+            preprocessor: 'none',
+            root,
+            pluginOptions: createPluginOptions(),
+          },
+        },
+        readFileSync(entryFile, 'utf8'),
+        asyncResolve
+      );
+
+      expect(result.cssText).toContain('color: green');
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  });
+
   it('keeps non-JSX syntax errors fatal in .js files', async () => {
     const filename = join(__dirname, 'invalid-source.js');
     await expect(
@@ -444,7 +501,7 @@ describe('explicit Oxc workflow', () => {
       const result = await evaluate(services, entrypoint);
       const base = result.values?.get('_exp');
 
-      expect(preparedEntry.code).toContain('var _exp = () => Base;');
+      expect(preparedEntry.code).toContain('const _exp = () => Base;');
       expect(preparedEntry.code).toContain(
         'export const __wywPreval = { _exp };'
       );

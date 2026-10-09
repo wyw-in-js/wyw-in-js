@@ -3,6 +3,7 @@ import type { Entrypoint } from '../Entrypoint';
 import type { IEvaluatedEntrypoint } from '../EvaluatedEntrypoint';
 
 import { AbortError } from './AbortError';
+import { EntrypointEvictedError } from './EntrypointEvictedError';
 
 // Fences poll the publication on every action step. The cache version lets
 // them skip the keyed lookup while nothing in the entrypoints map changed.
@@ -28,7 +29,13 @@ export class PublicationFence {
     if (version === this.version) {
       return;
     }
-    if (this.cache.get('entrypoints', this.name) !== this.publication) {
+    const current = this.cache.get('entrypoints', this.name);
+    if (current !== this.publication) {
+      // A removed publication is an eviction, which the transform owning this
+      // root may restart. Replacements remain plain supersedes.
+      if (current === undefined && this.publication?.evaluated === false) {
+        throw new EntrypointEvictedError(this.publication as Entrypoint);
+      }
       throw new AbortError('superseded');
     }
     this.version = version;

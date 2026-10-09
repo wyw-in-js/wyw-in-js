@@ -231,12 +231,20 @@ function replaceSpecifier(match, prefix, quote, value, filename, extension) {
 }
 
 function rewriteSpecifier(value, filename, extension) {
-  if (
-    !value ||
-    !isRelative(value) ||
-    hasKnownExtension(value) ||
-    hasQueryOrHash(value)
-  ) {
+  if (!value || !isRelative(value) || hasQueryOrHash(value)) {
+    return null;
+  }
+
+  // TypeScript's nodenext resolution requires `.js` specifiers for sibling
+  // `.ts` sources; point them at the extension this build emits.
+  if (extension !== '.js' && value.endsWith('.js')) {
+    const source = path.resolve(path.dirname(filename), value.slice(0, -3));
+    if (existsSync(`${source}.ts`) || existsSync(`${source}.tsx`)) {
+      return `${value.slice(0, -3)}${extension}`;
+    }
+  }
+
+  if (hasKnownExtension(value)) {
     return null;
   }
 

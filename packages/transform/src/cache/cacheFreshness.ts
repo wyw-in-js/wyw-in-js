@@ -7,13 +7,13 @@ import { LoadedSources } from './loadedSource';
 import {
   createDependencySnapshot,
   getEffectiveInvalidationDependencies,
-  hashContent,
   type IBaseCachedEntrypoint,
   isEntrypointGraphIncomplete,
   isMissingFileError,
   type EntrypointDependencySnapshot,
   type DependencyToCheck,
 } from './cacheTypes';
+import { hashContent } from '../utils/contentHash';
 import { stripQueryAndHash } from '../utils/parseRequest';
 
 const cacheLogger = logger.extend('cache');
@@ -397,7 +397,8 @@ export abstract class CacheFreshness<
       new Map(),
       false,
       unknownDependencyGraphs,
-      graphTraversalToken
+      graphTraversalToken,
+      sourceHash
     );
     return { changed, unknownDependencyGraphs };
   }
@@ -411,7 +412,8 @@ export abstract class CacheFreshness<
     dependencyChangeMemo: Map<string, boolean>,
     forceContentCheck: boolean,
     unknownDependencyGraphs: Set<string>,
-    graphTraversalToken?: object
+    graphTraversalToken?: object,
+    knownContentHash?: string
   ): boolean {
     if (changedFiles.has(filename)) return true;
 
@@ -479,7 +481,9 @@ export abstract class CacheFreshness<
 
     const existing = this.contentHashes.get(filename);
     const previousHash = existing?.[source];
-    const newHash = hashContent(content);
+    // The details entry point already hashed these exact bytes for pending
+    // graph recovery. Recursive dependency checks still hash their own bytes.
+    const newHash = knownContentHash ?? hashContent(content);
     const otherSource = source === 'fs' ? 'loaded' : 'fs';
     const otherHash = existing?.[otherSource];
     const pendingSynchronization =

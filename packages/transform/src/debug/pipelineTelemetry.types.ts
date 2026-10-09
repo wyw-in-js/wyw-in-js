@@ -37,7 +37,6 @@ export type ProcessorCounter = {
 export type CodeMeasurement = {
   bytes: number;
   revision?: string;
-  sha256Hex?: string;
 };
 
 export type CodeMeasurementEntry = {
