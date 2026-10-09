@@ -189,7 +189,8 @@ async function processFiles(files: (number | string)[], options: Options) {
   // eslint-disable-next-line no-restricted-syntax
   for (const filename of resolvedFiles) {
     if (fs.lstatSync(filename).isDirectory()) {
-      return;
+      // eslint-disable-next-line no-continue
+      continue;
     }
 
     const outputFilename = resolveOutputFilename(
