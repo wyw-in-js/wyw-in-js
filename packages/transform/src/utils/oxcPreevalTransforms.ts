@@ -22,6 +22,11 @@ import { getOxcNodeChildren } from './oxc/ast';
 import { isInOxcTypeContext } from './oxc/lexicalScopes';
 import { unwrapOxcRuntimeExpression } from './oxc/runtimeSemantics';
 import {
+  applyOxcEdits,
+  createOxcFileEdits,
+  type OxcEdit,
+} from './oxc/fileEdits';
+import {
   isControlStatement,
   removeEmptyControlStatements,
   removeOwner,
@@ -32,13 +37,7 @@ import { parseOxcProgramCached } from './parseOxc';
 
 type AnyNode = Node & Record<string, unknown>;
 
-export type Replacement = {
-  end: number;
-  start: number;
-  value: string;
-};
-
-export type DangerousCodeReplacement = Replacement & {
+export type DangerousCodeEdit = OxcEdit & {
   kind?: 'component';
 };
 
@@ -183,23 +182,6 @@ const isLiteralRequireArg = (node: Expression): boolean => {
   }
 
   return false;
-};
-
-export const applyReplacements = (
-  code: string,
-  replacements: Replacement[]
-): string => {
-  let result = code;
-  replacements
-    .sort((a, b) => b.start - a.start)
-    .forEach((replacement) => {
-      result =
-        result.slice(0, replacement.start) +
-        replacement.value +
-        result.slice(replacement.end);
-    });
-
-  return result;
 };
 
 const isIdentifierNamed = (value: unknown, name: string): boolean =>
@@ -416,21 +398,17 @@ export const replaceImportMetaEnvWithOxc = (
     return code;
   }
 
-  const replacements: Replacement[] = [];
+  const edits = createOxcFileEdits(code);
 
   visit(parseOxc(code, filename), createScope(null, 'root'), (node) => {
     if (!isImportMetaEnv(node)) {
       return;
     }
 
-    replacements.push({
-      end: node.end,
-      start: node.start,
-      value: '__wyw_import_meta_env',
-    });
+    edits.replace(node.start, node.end, '__wyw_import_meta_env');
   });
 
-  return applyReplacements(code, replacements);
+  return edits.apply();
 };
 
 type CombinedSyntaxRewriteOptions = {
@@ -443,7 +421,7 @@ function collectDynamicImportAndRequireFallbackReplacements(
   code: string,
   filename: string,
   options: CombinedSyntaxRewriteOptions
-): Replacement[] {
+): OxcEdit[] {
   const eventEmitter = options.eventEmitter ?? EventEmitter.dummy;
   const dynamicImportCandidates: ImportExpression[] = [];
   const requireFallbackCandidates: CallExpression[] = [];
@@ -486,7 +464,7 @@ function collectDynamicImportAndRequireFallbackReplacements(
     }
   );
 
-  const replacements: Replacement[] = [];
+  const replacements: OxcEdit[] = [];
 
   eventEmitter.perf('transform:preeval:dynamicImport', () => {
     dynamicImportCandidates.forEach((importExpression) => {
@@ -558,7 +536,7 @@ export const rewriteDynamicImportsWithOxc = (
     }
   );
 
-  return applyReplacements(code, replacements);
+  return applyOxcEdits(code, replacements);
 };
 
 export const addRequireFallbackWithOxc = (
@@ -574,7 +552,7 @@ export const addRequireFallbackWithOxc = (
     }
   );
 
-  return applyReplacements(code, replacements);
+  return applyOxcEdits(code, replacements);
 };
 
 export const rewriteDynamicImportsAndAddRequireFallbackWithOxc = (
@@ -588,7 +566,7 @@ export const rewriteDynamicImportsAndAddRequireFallbackWithOxc = (
     options
   );
 
-  return applyReplacements(code, replacements);
+  return applyOxcEdits(code, replacements);
 };
 
 const isBindingPosition = (node: Node, parent: Node | null): boolean => {
@@ -1246,7 +1224,7 @@ const isInDeferredFunctionScope = (ancestors: Node[]): boolean => {
 
 const findFunctionReplacement = (
   ancestors: Node[]
-): DangerousCodeReplacement | null => {
+): DangerousCodeEdit | null => {
   const renderMethod = findLastAncestor(
     ancestors,
     (ancestor) =>
@@ -1306,12 +1284,12 @@ const findFunctionReplacement = (
 };
 
 const normalizeReplacements = (
-  replacements: DangerousCodeReplacement[]
-): DangerousCodeReplacement[] => {
+  replacements: DangerousCodeEdit[]
+): DangerousCodeEdit[] => {
   const sorted = [...replacements].sort((a, b) =>
     a.start === b.start ? b.end - a.end : a.start - b.start
   );
-  const result: DangerousCodeReplacement[] = [];
+  const result: DangerousCodeEdit[] = [];
 
   sorted.forEach((replacement) => {
     const last = result[result.length - 1];
@@ -1337,8 +1315,8 @@ export const collectDangerousCodeReplacementsWithOxc = (
     ignoredSpans?: Array<{ end: number; start: number }>;
     preserveImportMetaEnv?: boolean;
   }
-): DangerousCodeReplacement[] => {
-  const replacements: DangerousCodeReplacement[] = [];
+): DangerousCodeEdit[] => {
+  const replacements: DangerousCodeEdit[] = [];
   const controlStatements: ControlStatement[] = [];
   const ignoredSpans = [...(planningOptions?.ignoredSpans ?? [])]
     .sort((a, b) => a.start - b.start)

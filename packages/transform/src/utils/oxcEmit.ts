@@ -17,13 +17,8 @@ import type {
   VariableDeclarator,
 } from 'oxc-parser';
 
+import { createOxcFileEdits } from './oxc/fileEdits';
 import { parseOxcProgramCached } from './parseOxc';
-
-type Replacement = {
-  end: number;
-  start: number;
-  value: string;
-};
 
 type SourceMap = {
   file?: string;
@@ -225,23 +220,6 @@ const loadOxcTransform = (): OxcTransform => {
   }
 
   return oxcTransform;
-};
-
-const applyReplacements = (
-  code: string,
-  replacements: Replacement[]
-): string => {
-  let result = code;
-  replacements
-    .sort((a, b) => b.start - a.start)
-    .forEach((replacement) => {
-      result =
-        result.slice(0, replacement.start) +
-        replacement.value +
-        result.slice(replacement.end);
-    });
-
-  return result;
 };
 
 // Emission reads the JS-shaped AST for every file; for TS-family files that is
@@ -654,18 +632,14 @@ export const emitOxcCommonJS = (
         };
       })();
 
-  const replacements: Replacement[] = [];
+  const edits = createOxcFileEdits(source.code);
   let needsEsModuleMarker = false;
   const predeclaredExports = new Set<string>();
 
   source.program.body.forEach((statement, index) => {
     const node = statement as Statement;
     if (node.type === 'ImportDeclaration') {
-      replacements.push({
-        end: node.end,
-        start: node.start,
-        value: emitImportDeclaration(node, index),
-      });
+      edits.replace(node.start, node.end, emitImportDeclaration(node, index));
       return;
     }
 
@@ -674,11 +648,11 @@ export const emitOxcCommonJS = (
       collectPredeclaredExports(node).forEach((name) =>
         predeclaredExports.add(name)
       );
-      replacements.push({
-        end: node.end,
-        start: node.start,
-        value: emitNamedExportDeclaration(source.code, node, index),
-      });
+      edits.replace(
+        node.start,
+        node.end,
+        emitNamedExportDeclaration(source.code, node, index)
+      );
       return;
     }
 
@@ -687,36 +661,34 @@ export const emitOxcCommonJS = (
       collectPredeclaredExports(node).forEach((name) =>
         predeclaredExports.add(name)
       );
-      replacements.push({
-        end: node.end,
-        start: node.start,
-        value: emitDefaultExportDeclaration(source.code, node),
-      });
+      edits.replace(
+        node.start,
+        node.end,
+        emitDefaultExportDeclaration(source.code, node)
+      );
       return;
     }
 
     if (node.type === 'ExportAllDeclaration') {
       needsEsModuleMarker = true;
-      replacements.push({
-        end: node.end,
-        start: node.start,
-        value: emitExportAllDeclaration(node, index),
-      });
+      edits.replace(
+        node.start,
+        node.end,
+        emitExportAllDeclaration(node, index)
+      );
       return;
     }
 
     if (node.type === 'VariableDeclaration' && node.declarations.length > 1) {
-      replacements.push({
-        end: node.end,
-        start: node.start,
-        value: emitVariableDeclaration(source.code, node),
-      });
+      edits.replace(
+        node.start,
+        node.end,
+        emitVariableDeclaration(source.code, node)
+      );
     }
   });
 
-  const commonjs = stripLeadingBlankLines(
-    applyReplacements(source.code, replacements)
-  );
+  const commonjs = stripLeadingBlankLines(edits.apply());
   const predeclared = [...predeclaredExports]
     .map((name) => `exports${propertyAccess(name)} = void 0;`)
     .join('\n');

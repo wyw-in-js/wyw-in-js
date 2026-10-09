@@ -1,9 +1,7 @@
 import type { Node } from 'oxc-parser';
 
-import type {
-  DangerousCodeReplacement,
-  Replacement,
-} from './oxcPreevalTransforms';
+import type { OxcEdit } from './oxc/fileEdits';
+import type { DangerousCodeEdit } from './oxcPreevalTransforms';
 
 type ControlStatementNode = Extract<
   Node,
@@ -63,7 +61,7 @@ const isSoleStatementBody = (owner: Node, parent: Node | null): boolean => {
   }
 };
 
-export const removeOwner = (node: Node, ancestors: Node[]): Replacement => {
+export const removeOwner = (node: Node, ancestors: Node[]): OxcEdit => {
   let owner: Node = node;
   // The visited node is not on the stack yet; promise-callback owners are.
   let ownerAncestorIndex = ancestors.lastIndexOf(node);
@@ -104,9 +102,9 @@ const emptyBody: BodyState = { empty: true, removed: false };
 const removedBody: BodyState = { empty: true, removed: true };
 
 export const removeEmptyControlStatements = (
-  replacements: DangerousCodeReplacement[],
+  replacements: DangerousCodeEdit[],
   controlStatements: ControlStatement[]
-): DangerousCodeReplacement[] => {
+): DangerousCodeEdit[] => {
   const result = [...replacements];
   const byStart = new Map(
     result.map((replacement) => [replacement.start, replacement])

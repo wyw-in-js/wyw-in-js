@@ -3,14 +3,14 @@
 import type { ImportDeclaration, Node, Program } from 'oxc-parser';
 
 import { getOxcNodeChildren } from '../../../utils/oxc/ast';
-import { applyOxcReplacements } from '../../../utils/oxc/replacements';
+import { applyOxcEdits, type OxcEdit } from '../../../utils/oxc/fileEdits';
 import { parseProgram } from './environment';
 import { collectImportBindings, unwrapExpression } from './staticExpression';
 import {
   findWYWMetaExtendsExpression,
   staticWYWMetaExtendsReplacementCode,
 } from './processorStaticModel';
-import type { Range, Replacement } from './types';
+import type { Range } from './types';
 
 export const isIdentifierBindingPosition = (
   node: Node,
@@ -144,7 +144,7 @@ export const removeStaticHelperDeclarations = (
   collectImportBindings(program).forEach((_, local) => importLocals.add(local));
   const removedImportLocals = new Set<string>();
   const ranges: Range[] = [];
-  const replacements: Replacement[] = [];
+  const replacements: OxcEdit[] = [];
 
   program.body.forEach((statement) => {
     if (
@@ -187,13 +187,13 @@ export const removeStaticHelperDeclarations = (
     replacements.push({
       end: statement.end,
       start: statement.start,
-      text: `${statement.kind} ${keptDeclarations.join(', ')};`,
+      value: `${statement.kind} ${keptDeclarations.join(', ')};`,
     });
   });
 
   return {
-    code: applyOxcReplacements(code, [
-      ...ranges.map((range) => ({ ...range, text: '' })),
+    code: applyOxcEdits(code, [
+      ...ranges.map((range) => ({ ...range, value: '' })),
       ...replacements,
     ]),
     removed: removableNames,
@@ -219,7 +219,7 @@ export const removeUnusedStaticImports = (
   const program = parseProgram(code, filename);
   const used = collectUsedIdentifierNames(program);
   const ranges: Range[] = [];
-  const replacements: Replacement[] = [];
+  const replacements: OxcEdit[] = [];
   const importSourceByLocal = new Map<string, string>();
   const removedSideEffectImportRanges: Range[] = [];
   const keptImportRangesBySource = new Map<string, Range>();
@@ -314,7 +314,7 @@ export const removeUnusedStaticImports = (
       replacements.push({
         end: position,
         start: position,
-        text: `${pendingImports.join('\n')}\n`,
+        value: `${pendingImports.join('\n')}\n`,
       });
       pendingImports.length = 0;
     };
@@ -348,14 +348,14 @@ export const removeUnusedStaticImports = (
         replacements.push({
           end: insertionAfterLastKept,
           start: insertionAfterLastKept,
-          text: `\n${pendingImports.join('\n')}`,
+          value: `\n${pendingImports.join('\n')}`,
         });
       } else if (firstRemoved) {
         usedFirstRemovedRange = true;
         replacements.push({
           end: firstRemoved.end,
           start: firstRemoved.start,
-          text: pendingImports.join('\n'),
+          value: pendingImports.join('\n'),
         });
       }
     }
@@ -367,8 +367,8 @@ export const removeUnusedStaticImports = (
     ranges.sort((a, b) => a.start - b.start);
   }
 
-  return applyOxcReplacements(code, [
-    ...ranges.map((range) => ({ ...range, text: '' })),
+  return applyOxcEdits(code, [
+    ...ranges.map((range) => ({ ...range, value: '' })),
     ...replacements,
   ]);
 };
@@ -383,7 +383,7 @@ export const replaceStaticWYWMetaExtendsHelpers = (
   }
 
   const program = parseProgram(code, filename);
-  const replacements: Replacement[] = [];
+  const replacements: OxcEdit[] = [];
 
   const visit = (node: Node): void => {
     if (node.type === 'ObjectExpression') {
@@ -403,7 +403,7 @@ export const replaceStaticWYWMetaExtendsHelpers = (
             replacements.push({
               end: extendsExpression.end,
               start: extendsExpression.start,
-              text: replacement,
+              value: replacement,
             });
           }
         }
@@ -414,7 +414,7 @@ export const replaceStaticWYWMetaExtendsHelpers = (
   };
 
   visit(program);
-  return applyOxcReplacements(code, replacements);
+  return applyOxcEdits(code, replacements);
 };
 
 export const pruneStaticPreevalCode = (

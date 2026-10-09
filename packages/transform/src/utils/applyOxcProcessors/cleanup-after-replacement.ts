@@ -1,6 +1,6 @@
 import type { Program } from 'oxc-parser';
 
-import { applyOxcReplacements } from '../oxc/replacements';
+import { applyOxcEdits, mergeOxcRemovals } from '../oxc/fileEdits';
 import {
   collectRemovableNamesFromStatements,
   collectTopLevelBindingsFromStatements,
@@ -14,7 +14,6 @@ import {
   collectUnusedImportRemovals,
   collectUnusedScopedDeclarationRemovals,
   collectUnusedTopLevelDeclarationRemovals,
-  mergeEmptyRemovalRanges,
 } from './cleanupRemovals';
 import { parseOxc } from './shared';
 import {
@@ -92,7 +91,7 @@ export const removeUnusedAfterReplacement = (
         current,
         program
       );
-      const removals = mergeEmptyRemovalRanges([
+      const removals = mergeOxcRemovals([
         ...scopedDeclarationRemovals,
         ...topLevelDeclarationRemovals,
         ...generatedHelperRemovals,
@@ -118,7 +117,7 @@ export const removeUnusedAfterReplacement = (
         return current;
       }
 
-      const next = applyOxcReplacements(current, removals);
+      const next = applyOxcEdits(current, removals);
       try {
         program = parseOxc(next, filename);
         recordPipelineCleanupIteration(

@@ -11,6 +11,11 @@ import { collectOxcExportsAndImportsFromProgram } from '../collectOxcExportsAndI
 import type { OxcCollectedImport } from '../collectOxcExportsAndImports';
 import { getImportOverride, toImportKey } from '../importOverrides';
 import { isOxcNode as isNode } from '../oxc/ast';
+import {
+  applyOxcEdits,
+  mergeOxcRemovals,
+  type OxcEdit,
+} from '../oxc/fileEdits';
 import { toOxcImportMap } from '../oxcImportMap';
 import { collectOxcPatternIdentifierNames as collectPatternNames } from '../oxc/patterns';
 import { parseOxcCached } from '../parseOxc';
@@ -18,12 +23,6 @@ import { stripQueryAndHash } from '../parseRequest';
 import { collectModuleReferences } from './executableIndex';
 
 type AnyNode = Node & Record<string, unknown>;
-
-export type Replacement = {
-  end: number;
-  start: number;
-  value: string;
-};
 
 type ModuleRewriteOptions = {
   importOverrides?: ImportOverrides;
@@ -68,23 +67,6 @@ export const parseShakerModule = (
   }
 };
 
-const applyReplacements = (
-  code: string,
-  replacements: Replacement[]
-): string => {
-  let result = code;
-  replacements
-    .sort((a, b) => b.start - a.start)
-    .forEach((replacement) => {
-      result =
-        result.slice(0, replacement.start) +
-        replacement.value +
-        result.slice(replacement.end);
-    });
-
-  return result;
-};
-
 const collectImportLocalNames = (node: Node): string[] => {
   if (node.type !== 'ImportDeclaration') {
     return [];
@@ -104,7 +86,7 @@ const expandImportRemovalRange = (
   code: string,
   start: number,
   end: number
-): Replacement => {
+): OxcEdit => {
   let removalStart = start;
   while (
     removalStart > 0 &&
@@ -142,7 +124,7 @@ const expandImportSpecifierRemovalRange = (
   code: string,
   start: number,
   end: number
-): Replacement => {
+): OxcEdit => {
   let removalStart = start;
   let removalEnd = end;
 
@@ -198,32 +180,6 @@ const expandImportSpecifierRemovalRange = (
   };
 };
 
-const mergeEmptyRemovalRanges = (removals: Replacement[]): Replacement[] => {
-  if (removals.length <= 1) {
-    return removals;
-  }
-
-  const sorted = [...removals].sort((a, b) => a.start - b.start);
-  const merged: Replacement[] = [];
-
-  sorted.forEach((removal) => {
-    const previous = merged[merged.length - 1];
-    if (
-      previous &&
-      previous.value === '' &&
-      removal.value === '' &&
-      removal.start <= previous.end
-    ) {
-      previous.end = Math.max(previous.end, removal.end);
-      return;
-    }
-
-    merged.push({ ...removal });
-  });
-
-  return merged;
-};
-
 const removeUnusedImportSpecifiers = (
   code: string,
   filename: string
@@ -242,7 +198,7 @@ const removeUnusedImportSpecifiers = (
     );
   });
 
-  const removals: Replacement[] = [];
+  const removals: OxcEdit[] = [];
   program.body.forEach((statement) => {
     if (statement.type !== 'ImportDeclaration') {
       return;
@@ -285,8 +241,7 @@ const removeUnusedImportSpecifiers = (
     };
   }
 
-  const mergedRemovals = mergeEmptyRemovalRanges(removals);
-  const nextCode = applyReplacements(code, mergedRemovals);
+  const nextCode = applyOxcEdits(code, mergeOxcRemovals(removals));
 
   try {
     return {
@@ -468,7 +423,7 @@ const warnDynamicImports = (
 export const removeExportKeyword = (
   code: string,
   node: Node
-): Replacement | null => {
+): OxcEdit | null => {
   if (
     node.type !== 'ExportNamedDeclaration' ||
     !node.declaration ||
@@ -488,7 +443,7 @@ export const splitExportedVariableDeclaration = (
   code: string,
   node: Node,
   requested: Set<string>
-): Replacement | null => {
+): OxcEdit | null => {
   if (
     node.type !== 'ExportNamedDeclaration' ||
     !node.declaration ||
@@ -527,11 +482,11 @@ export const splitExportedVariableDeclaration = (
 export const finalizeShakenModule = (
   code: string,
   filename: string,
-  replacements: Replacement[],
+  replacements: OxcEdit[],
   options: ModuleRewriteOptions
 ): { code: string; imports: Map<string, string[]> } => {
   const cleaned = removeUnusedImportSpecifiers(
-    applyReplacements(code, replacements),
+    applyOxcEdits(code, replacements),
     filename
   );
   const nextCode = cleaned.code;

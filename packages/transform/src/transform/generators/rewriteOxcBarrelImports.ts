@@ -12,6 +12,7 @@ import type {
 
 import { oxcShaker } from '../../shaker';
 import { collectOxcExportsAndImports } from '../../utils/collectOxcExportsAndImports';
+import { createOxcFileEdits } from '../../utils/oxc/fileEdits';
 import { parseOxcProgramCached } from '../../utils/parseOxc';
 import { analyzeOxcBarrelFile } from '../oxcBarrelManifest';
 import { Entrypoint } from '../Entrypoint';
@@ -87,12 +88,6 @@ type RewrittenExportSpecifier =
 
 type IneligibleBarrelEntry = Exclude<BarrelManifestCacheEntry, BarrelManifest>;
 
-type Replacement = {
-  end: number;
-  start: number;
-  value: string;
-};
-
 const addBinding = (
   manifest: Record<string, BarrelManifestExport>,
   exported: string,
@@ -143,23 +138,6 @@ const addImport = (
   }
 
   imports.set(source, bucket);
-};
-
-const applyReplacements = (
-  code: string,
-  replacements: Replacement[]
-): string => {
-  let result = code;
-  replacements
-    .sort((a, b) => b.start - a.start)
-    .forEach((replacement) => {
-      result =
-        result.slice(0, replacement.start) +
-        replacement.value +
-        result.slice(replacement.end);
-    });
-
-  return result;
 };
 
 const buildResolvedDependencyMap = (
@@ -1313,7 +1291,7 @@ export function* rewriteOptimizedOxcBarrelImports(
   const dependencies = buildResolvedDependencyMap(resolvedImports);
   const analysisServices = analysisScope(this.services, this.cacheEpoch);
   const program = parseOxcProgramCached(filename, code, 'module');
-  const replacements: Replacement[] = [];
+  const edits = createOxcFileEdits(code);
   const generatedSources = new Set<string>();
   let optimizedCount = 0;
   const sourceModes = new Map<string, Exclude<RewriteMode, 'unchanged'>>();
@@ -1398,16 +1376,11 @@ export function* rewriteOptimizedOxcBarrelImports(
     );
 
     if (statementChanged) {
-      replacements.push({
-        end: statement.end,
-        start: statement.start,
-        value: next,
-      });
+      edits.replace(statement.start, statement.end, next);
     }
   }
 
-  const rewrittenCode =
-    replacements.length > 0 ? applyReplacements(code, replacements) : code;
+  const rewrittenCode = edits.apply();
   const imports = collectOptimizedImports(rewrittenCode, filename);
   const preResolvedImports = Array.from(imports.entries()).flatMap(
     ([source, only]) => {

@@ -15,7 +15,11 @@ import {
 import { EventEmitter } from '../EventEmitter';
 import type { AddedImport } from '../oxcAstService';
 import { isOxcNode } from '../oxc/ast';
-import { applyOxcReplacementLayers } from '../oxc/replacements';
+import {
+  applyOxcEdits,
+  createOxcFileEdits,
+  type OxcEdit,
+} from '../oxc/fileEdits';
 import {
   buildOxcCodeFrameError,
   createOxcLocationLookup,
@@ -51,7 +55,6 @@ import type {
   DefinedProcessor,
   OxcProcessorAnalysisPlan,
   ProcessorUsage,
-  Replacement,
   SameFileProcessorObject,
   StaticPlanFacts,
 } from './types';
@@ -162,9 +165,7 @@ export const applyOxcProcessors = (
     return evaltimeCodePlan;
   };
   const buildUnprocessedCode = () =>
-    applyOxcReplacementLayers(workingCode, [
-      getEvaltimeCodePlan().replacements,
-    ]);
+    applyOxcEdits(workingCode, getEvaltimeCodePlan().replacements);
   const definedProcessors = new Map<string, DefinedProcessor>();
   const removableImportLocals = new Set(
     reusablePlan?.removableImportLocals ?? []
@@ -342,7 +343,7 @@ export const applyOxcProcessors = (
     reusablePlan?.usedNames ??
     eventEmitter.perf(perfLabel('usedNames'), () => collectUsedNames(program));
   const addedImports: AddedImport[] = [];
-  const replacements: Replacement[] = [];
+  const replacements: OxcEdit[] = [];
   const createdProcessors: CreatedProcessor[] = [];
   const processors: BaseProcessor[] = [];
   const processorClassNamesByLocal = new Map<string, string>();
@@ -513,11 +514,15 @@ export const applyOxcProcessors = (
   const currentSameFileProcessorStaticValues =
     collectCurrentSameFileProcessorStaticValues();
 
-  const replacedCode = applyOxcReplacementLayers(workingCode, [
-    replacements,
-    evaltimeCodeReplacements,
-    extracted.replacements,
-  ]);
+  // Processor edits win over evaltime removals, which win over extracted
+  // expression edits, when two of them cover the same range.
+  const applyFileEdits = (): string =>
+    createOxcFileEdits(workingCode)
+      .add(replacements)
+      .add(evaltimeCodeReplacements)
+      .add(extracted.replacements)
+      .apply();
+  const replacedCode = applyFileEdits();
   const metadataExtendsHelperNames =
     collectWYWMetaExtendsHelperNames(replacedCode);
   const staticValueCandidates = extracted.staticValueCandidates.filter(
@@ -528,13 +533,8 @@ export const applyOxcProcessors = (
   let callbacksApplied = !deferProcessorCallbacks;
 
   const buildCode = (): string => {
-    const nextReplacedCode = applyOxcReplacementLayers(workingCode, [
-      replacements,
-      evaltimeCodeReplacements,
-      extracted.replacements,
-    ]);
     const codeWithAddedImports = insertAddedImports(
-      nextReplacedCode,
+      applyFileEdits(),
       filename,
       addedImports
     );
