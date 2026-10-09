@@ -161,6 +161,25 @@ export class Entrypoint extends BaseEntrypoint {
     return this.#supersededWith?.supersededWith ?? this.#supersededWith;
   }
 
+  /** Whether `candidate` is this entrypoint or any generation superseding it. */
+  public isSelfOrSuccessor(candidate: Entrypoint): boolean {
+    if (candidate === this) {
+      return true;
+    }
+
+    for (
+      let current = this.#supersededWith;
+      current;
+      current = current.#supersededWith
+    ) {
+      if (current === candidate) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   public get transformedCode(): string | null {
     if (this.#transformResultCode !== null) {
       return this.#transformResultCode;
