@@ -35,6 +35,7 @@ import {
   type OxcCollectedState,
   type OxcLocal,
 } from './collectOxcExportsAndImportsCache';
+import { isOxcRuntimeReferenceIdentifier } from './oxc/lexicalScopes';
 import {
   isTypeOnlyImport,
   isTypeOnlyImportSpecifier,
@@ -72,12 +73,8 @@ type Scope = {
   parent: Scope | null;
 };
 
-type ChildContext = {
-  key: string;
+type VisitContext = {
   parent: Node | null;
-};
-
-type VisitContext = ChildContext & {
   scope: Scope;
 };
 
@@ -91,6 +88,9 @@ type Destructed = {
 };
 
 type AnalyzerState = {
+  // Ancestors of the node being visited, nearest last; shared with the
+  // oxc/lexicalScopes predicates, which classify identifiers by their path.
+  ancestors: Node[];
   code: string;
   namespaces: NamespaceBinding[];
   requireSources: Map<string, string>;
@@ -882,7 +882,7 @@ const collectFromNamespaceReference = (
     return;
   }
 
-  if (isBindingPosition(node, parent, ctx.key)) {
+  if (!isOxcRuntimeReferenceIdentifier(node, parent, state.ancestors)) {
     return;
   }
 
@@ -924,50 +924,6 @@ const collectFromNamespaceReference = (
     source: binding.source,
     type: binding.type,
   });
-};
-
-const isBindingPosition = (
-  node: Node,
-  parent: Node | null,
-  key: string
-): boolean => {
-  if (!parent) {
-    return false;
-  }
-
-  if (parent.type === 'ImportNamespaceSpecifier' && key === 'local') {
-    return true;
-  }
-
-  if (
-    (parent.type === 'ImportSpecifier' ||
-      parent.type === 'ImportDefaultSpecifier') &&
-    key === 'local'
-  ) {
-    return true;
-  }
-
-  if (parent.type === 'VariableDeclarator' && key === 'id') {
-    return true;
-  }
-
-  if (parent.type === 'FunctionDeclaration' && key === 'id') {
-    return true;
-  }
-
-  if (parent.type === 'ClassDeclaration' && key === 'id') {
-    return true;
-  }
-
-  if (
-    parent.type === 'Property' &&
-    parent.value === node &&
-    parent.key !== node
-  ) {
-    return true;
-  }
-
-  return false;
 };
 
 const isTypeNode = (node: Node | null): boolean =>
@@ -1281,13 +1237,15 @@ const visit = (
     collectFromNamespaceReference(node, ctx.parent, { ...ctx, scope }, state);
   }
 
+  state.ancestors.push(node);
   for (const child of getChildren(node)) {
-    visit(child.node, { key: child.key, parent: node, scope }, state, mode);
+    visit(child, { parent: node, scope }, state, mode);
   }
+  state.ancestors.pop();
 };
 
-const getChildren = (node: Node): { key: string; node: Node }[] => {
-  const result: { key: string; node: Node }[] = [];
+const getChildren = (node: Node): Node[] => {
+  const result: Node[] = [];
   const record = node as AnyNode;
 
   Object.keys(record).forEach((key) => {
@@ -1297,14 +1255,14 @@ const getChildren = (node: Node): { key: string; node: Node }[] => {
 
     const value = record[key];
     if (isNode(value)) {
-      result.push({ key, node: value });
+      result.push(value);
       return;
     }
 
     if (Array.isArray(value)) {
       value.forEach((item) => {
         if (isNode(item)) {
-          result.push({ key, node: item });
+          result.push(item);
         }
       });
     }
@@ -1330,9 +1288,7 @@ const precollectRequireSources = (node: Node, state: AnalyzerState): void => {
     }
   }
 
-  getChildren(node).forEach((child) =>
-    precollectRequireSources(child.node, state)
-  );
+  getChildren(node).forEach((child) => precollectRequireSources(child, state));
 };
 
 const addUnusedNamespaceSideEffects = (state: AnalyzerState): void => {
@@ -1360,6 +1316,7 @@ export function collectOxcExportsAndImportsFromProgram(
 
   const rootScope = createScope(null);
   const state: AnalyzerState = {
+    ancestors: [],
     code,
     namespaces: [],
     requireSources: new Map(),
@@ -1373,12 +1330,7 @@ export function collectOxcExportsAndImportsFromProgram(
   };
 
   precollectRequireSources(program, state);
-  visit(
-    program,
-    { key: 'program', parent: null, scope: rootScope },
-    state,
-    'all'
-  );
+  visit(program, { parent: null, scope: rootScope }, state, 'all');
   addUnusedNamespaceSideEffects(state);
 
   return cacheOxcCollection(program, code, isEsModule, state.result);
@@ -1395,6 +1347,7 @@ export function collectOxcProcessorImportsFromProgram(
 
   const rootScope = createScope(null);
   const state: AnalyzerState = {
+    ancestors: [],
     code,
     namespaces: [],
     requireSources: new Map(),
@@ -1408,12 +1361,7 @@ export function collectOxcProcessorImportsFromProgram(
   };
 
   precollectRequireSources(program, state);
-  visit(
-    program,
-    { key: 'program', parent: null, scope: rootScope },
-    state,
-    'importsOnly'
-  );
+  visit(program, { parent: null, scope: rootScope }, state, 'importsOnly');
 
   return cacheOxcProcessorImports(program, code, state.result.imports);
 }
