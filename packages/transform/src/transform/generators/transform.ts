@@ -467,7 +467,7 @@ export function* internalTransform(
 
   const preevalResult = this.entrypoint.getPreevalResult();
   if (
-    prepareFn === prepareCode &&
+    prepareFn === prepareCodeImpl &&
     this.entrypoint.parents.length === 0 &&
     isPrevalOnly(only) &&
     preevalResult?.metadata &&
