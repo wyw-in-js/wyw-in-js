@@ -15,7 +15,7 @@ const PKG_DIR = path.resolve(__dirname, '..');
 const normalizeLineEndings = (value) =>
   value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 
-const runBuild = async (entrypoint, strategy) => {
+const runBuild = async (entrypoint, strategy, pluginOptions) => {
   const outDir = path.resolve(PKG_DIR, 'dist');
   await fs.rm(outDir, { recursive: true, force: true });
 
@@ -29,13 +29,14 @@ const runBuild = async (entrypoint, strategy) => {
       wyw({
         configFile: false,
         ...(strategy ? { eval: { strategy } } : {}),
+        ...pluginOptions,
       }),
     ],
   });
 };
 
-const runFixture = async (entrypoint, fixture, strategy) => {
-  await runBuild(entrypoint, strategy);
+const runFixture = async (entrypoint, fixture, strategy, pluginOptions) => {
+  await runBuild(entrypoint, strategy, pluginOptions);
 
   const outDir = path.resolve(PKG_DIR, 'dist');
   const entries = await fs.readdir(outDir);
@@ -76,6 +77,7 @@ const runFixture = async (entrypoint, fixture, strategy) => {
 const main = async () => {
   console.log(colors.blue('Package directory:'), PKG_DIR);
   await runFixture('src/index.js', 'fixture.css');
+  await runFixture('src/index.js', 'fixture.css', undefined, { parallel: 2 });
   await runFixture(
     'fixtures/dangerous-controls/index.js',
     'fixtures/dangerous-controls/expected.css',

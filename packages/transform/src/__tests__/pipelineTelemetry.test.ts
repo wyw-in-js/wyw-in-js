@@ -1498,7 +1498,7 @@ describe('pipeline telemetry boundary', () => {
     }
   });
 
-  it('collects processor, shaker, and cleanup counters from a real transform', async () => {
+  it('collects processor and cleanup counters without shaking a static root', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wyw-pipeline-telemetry-'));
     const filename = join(root, 'styles.ts');
     const code = [
@@ -1540,11 +1540,11 @@ describe('pipeline telemetry boundary', () => {
         ])
       );
       expect(summaries[0].shakes).toMatchObject({
+        attempts: 0,
         errors: 0,
+        successes: 0,
+        generatedBytes: 0,
       });
-      expect(summaries[0].shakes.attempts).toBeGreaterThan(0);
-      expect(summaries[0].shakes.successes).toBe(summaries[0].shakes.attempts);
-      expect(summaries[0].shakes.generatedBytes).toBeGreaterThan(0);
       expect(summaries[0].cleanup.calls).toBeGreaterThan(0);
       expect(summaries[0].cleanup.calls).toBe(
         summaries[0].cleanup.converged +

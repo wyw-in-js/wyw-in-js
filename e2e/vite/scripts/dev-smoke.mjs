@@ -17,7 +17,7 @@ const assertTransformed = (result, label) => {
   }
 };
 
-const runBasicDevSmoke = async () => {
+const runBasicDevSmoke = async (pluginOptions = {}) => {
   const server = await createServer({
     configFile: false,
     root: PKG_DIR,
@@ -31,7 +31,7 @@ const runBasicDevSmoke = async () => {
         '@': path.resolve(PKG_DIR, 'src'),
       },
     },
-    plugins: [wyw()],
+    plugins: [wyw(pluginOptions)],
   });
 
   try {
@@ -61,7 +61,7 @@ const getLoadedCode = (loaded, label) => {
   return code;
 };
 
-const runEvalDependencyInvalidationSmoke = async () => {
+const runEvalDependencyInvalidationSmoke = async (pluginOptions = {}) => {
   const fixtureDir = await fs.mkdtemp(
     path.join(PKG_DIR, '.dev-invalidation-fixture-')
   );
@@ -116,7 +116,10 @@ const runEvalDependencyInvalidationSmoke = async () => {
         hmr: true,
         watch: { ignored: ['**/*'] },
       },
-      plugins: [wyw({ eval: { strategy: 'execute' } }), hmrProbe],
+      plugins: [
+        wyw({ eval: { strategy: 'execute' }, ...pluginOptions }),
+        hmrProbe,
+      ],
     });
 
     const initialTransform = await server.transformRequest(entryUrl);
@@ -181,6 +184,8 @@ const runEvalDependencyInvalidationSmoke = async () => {
 const main = async () => {
   await runBasicDevSmoke();
   await runEvalDependencyInvalidationSmoke();
+  await runBasicDevSmoke({ parallel: 2 });
+  await runEvalDependencyInvalidationSmoke({ parallel: 2 });
 };
 
 main().then(
