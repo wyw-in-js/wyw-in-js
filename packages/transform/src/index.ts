@@ -20,6 +20,22 @@ export type { WYWTransformDiagnostic } from './utils/TransformDiagnostics';
 export { Module, DefaultModuleImplementation } from './module';
 export { default as shaker, oxcShaker } from './shaker';
 export { transform } from './transform';
+export {
+  createParallelTransforms,
+  createTransformWorkerPool,
+  findNonTransferableOption,
+  getDefaultTransformWorkerCount,
+  TransformWorkerPool,
+  TransformWorkerScope,
+} from './parallel';
+export type {
+  ParallelTransforms,
+  ParallelTransformsOption,
+  ParallelTransformsOptions,
+  TransformWorkerJob,
+  TransformWorkerPoolOptions,
+  TransformWorkerScopeConfig,
+} from './parallel';
 export { disposeEvalBroker } from './eval/broker';
 export {
   isUnprocessedEntrypointError,
