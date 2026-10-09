@@ -85,18 +85,15 @@ export const emitCurrentStaticPlanDebug = (
 };
 
 type PrepareCodeOptions = {
-  emitCommonJS?: boolean;
   evalTelemetry?: EvalPreparationToken;
   shortCircuitOnMissingMetadata?: boolean;
   stripForEvalRuntime?: boolean;
 };
 
-const normalizeOxcPreparedESM = (code: string): string =>
-  code
-    .replace(/^(?:[ \t]*\n)+/, '')
-    .replace(/[ \t\n]+$/, '')
-    .replace(/\n{2,}/g, '\n')
-    .replace(/^const /gm, 'var ');
+// Only the edges of the module are trimmed: no string or template literal can
+// start or end a program, so user-visible values stay byte-for-byte intact.
+const trimOxcPreparedESM = (code: string): string =>
+  code.replace(/^(?:[ \t]*\n)+/, '').replace(/[ \t\n]+$/, '');
 
 const ensureOxcPreevalResult = (
   services: Services,
@@ -234,7 +231,7 @@ const prepareCodeImpl = (
       : stripTypesAndJsxWithOxc(preevalCode, filename).code;
 
     return [
-      normalizeOxcPreparedESM(strippedCode),
+      trimOxcPreparedESM(strippedCode),
       collectOxcImportMap(strippedCode, filename),
       null,
     ];
@@ -296,31 +293,23 @@ const prepareCodeImpl = (
 
   log('[evaluator:end]');
 
-  if (!options.emitCommonJS) {
-    let preparedCode = shaken.code;
-    if (options.stripForEvalRuntime) {
-      preparedCode = options.evalTelemetry
-        ? options.evalTelemetry.measureStage(
-            'strip',
-            () => stripTypesAndJsxWithOxc(shaken.code, filename).code
-          )
-        : stripTypesAndJsxWithOxc(shaken.code, filename).code;
-    }
-
-    return [
-      normalizeOxcPreparedESM(preparedCode),
-      options.stripForEvalRuntime
-        ? collectOxcImportMap(preparedCode, filename)
-        : shaken.imports,
-      transformMetadata ?? null,
-    ];
+  let preparedCode = shaken.code;
+  if (options.stripForEvalRuntime) {
+    preparedCode = options.evalTelemetry
+      ? options.evalTelemetry.measureStage(
+          'strip',
+          () => stripTypesAndJsxWithOxc(shaken.code, filename).code
+        )
+      : stripTypesAndJsxWithOxc(shaken.code, filename).code;
   }
 
-  const emitted = eventEmitter.perf('transform:emitCommonJS', () =>
-    emitOxcCommonJS(shaken.code, filename)
-  );
-
-  return [emitted.code, shaken.imports, transformMetadata ?? null];
+  return [
+    trimOxcPreparedESM(preparedCode),
+    options.stripForEvalRuntime
+      ? collectOxcImportMap(preparedCode, filename)
+      : shaken.imports,
+    transformMetadata ?? null,
+  ];
 };
 
 /**
@@ -520,32 +509,22 @@ export function* internalTransform(
 
   emitCurrentStaticPlanDebug(this, imports);
 
-  const finalPreparedCode = this.services.eventEmitter.perf(
-    'transform:emitCommonJS',
-    () =>
-      emitOxcCommonJS(
-        nextCode,
-        loadedAndParsed.evalConfig.filename ?? this.entrypoint.name
-      ).code
-  );
+  log('<< (%o)', only);
+  log.extend('source')('%s', nextCode || EMPTY_FILE);
 
-  if (loadedAndParsed.code === finalPreparedCode) {
-    log('<< (%o)\n === no changes ===', only);
-  } else {
-    log('<< (%o)', only);
-    log.extend('source')('%s', finalPreparedCode || EMPTY_FILE);
-  }
-
-  if (finalPreparedCode === '') {
-    log('is skipped');
-    return {
-      code: loadedAndParsed.code ?? '',
-      metadata,
-    };
-  }
-
+  // Only the legacy `Module` evaluator reads the CommonJS form of the
+  // prepared module (the eval broker prepares its own code), so it is
+  // emitted when an entrypoint's transformed code is first read.
+  const filename = loadedAndParsed.evalConfig.filename ?? this.entrypoint.name;
+  const originalCode = loadedAndParsed.code ?? '';
   return {
-    code: finalPreparedCode,
+    prepareCode: (_entrypoint, services) => {
+      const code = services.eventEmitter.perf(
+        'transform:emitCommonJS',
+        () => emitOxcCommonJS(nextCode, filename).code
+      );
+      return code === '' ? originalCode : code;
+    },
     metadata,
   };
 }

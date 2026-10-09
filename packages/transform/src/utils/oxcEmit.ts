@@ -502,9 +502,6 @@ const collectPredeclaredExports = (statement: Statement): string[] => {
   return [];
 };
 
-const stripLegacyCodegenTrailingCommas = (code: string): string =>
-  code.replace(/,\n(\s*})/g, '\n$1');
-
 const stripLeadingBlankLines = (code: string): string =>
   code.replace(/^(?:[ \t]*\n)+/, '');
 
@@ -691,8 +688,7 @@ export const emitOxcCommonJS = (
     }
   });
 
-  const commonjs = stripLegacyCodegenTrailingCommas(edits.apply());
-  const normalizedCommonjs = stripLeadingBlankLines(commonjs);
+  const commonjs = stripLeadingBlankLines(edits.apply());
   const predeclared = [...predeclaredExports]
     .map((name) => `exports${propertyAccess(name)} = void 0;`)
     .join('\n');
@@ -711,6 +707,6 @@ export const emitOxcCommonJS = (
     : '"use strict";\n';
 
   return {
-    code: `${preamble}${normalizedCommonjs}`,
+    code: `${preamble}${commonjs}`,
   };
 };

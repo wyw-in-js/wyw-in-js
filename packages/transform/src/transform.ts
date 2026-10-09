@@ -377,14 +377,32 @@ const executeTransform = async (
   }
 };
 
+type TransformAsyncResolve = (
+  what: string,
+  importer: string,
+  stack: string[]
+) => Promise<string | null>;
+
 export function transform(
   partialServices: PartialServices,
   originalCode: string,
-  asyncResolve: (
-    what: string,
-    importer: string,
-    stack: string[]
-  ) => Promise<string | null>,
+  asyncResolve: TransformAsyncResolve
+): Promise<Result>;
+/**
+ * @deprecated The `customHandlers` argument replaces internal stages of the
+ * action runner, which are not a stable API. It will be removed in 3.0. To
+ * observe stages, pass an `eventEmitter` in the services.
+ */
+export function transform(
+  partialServices: PartialServices,
+  originalCode: string,
+  asyncResolve: TransformAsyncResolve,
+  customHandlers?: Partial<AllHandlers<'sync'>>
+): Promise<Result>;
+export function transform(
+  partialServices: PartialServices,
+  originalCode: string,
+  asyncResolve: TransformAsyncResolve,
   customHandlers: Partial<AllHandlers<'sync'>> = {}
 ): Promise<Result> {
   const { eventEmitter } = partialServices;
