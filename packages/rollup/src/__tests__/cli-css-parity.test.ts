@@ -10,13 +10,10 @@ import {
 import { tmpdir } from 'os';
 import path from 'path';
 
-import { rollup } from 'rollup';
-
-import wywInJS from '../index';
-
 // The CLI is the only integration that writes CSS to files (`outputFilename`).
 // For the same input and options it must produce the CSS a bundler gets.
 const cliPath = path.resolve(__dirname, '../../../cli/src/wyw-in-js.ts');
+const rollupCssPath = path.resolve(__dirname, '__fixtures__', 'rollup-css.ts');
 const processorPath = path.resolve(
   __dirname,
   '../../../transform/src/__tests__/__fixtures__/test-css-processor.js'
@@ -97,42 +94,20 @@ const runCli = (root: string, flags: string[]): string => {
   return readFileSync(path.join(root, 'dist', 'src', 'index.css'), 'utf8');
 };
 
-const runRollup = async (
-  root: string,
-  options: Parameters<typeof wywInJS>[0]
-): Promise<string> => {
-  const css: string[] = [];
-  const cwd = process.cwd();
-  // Class names are derived from the path relative to the root, which is the
-  // working directory for bundler adapters and --source-root for the CLI.
-  process.chdir(root);
+// Rollup runs in its own process, as the CLI does: `jest.mock` of the transform
+// in other test files of this package is process-wide in bun.
+const runRollup = (root: string, options: Record<string, unknown>): string => {
+  const result = spawnSync(
+    process.execPath,
+    [rollupCssPath, JSON.stringify(options)],
+    { cwd: root, encoding: 'utf8', timeout: 30_000 }
+  );
 
-  try {
-    const bundle = await rollup({
-      input: path.join(root, 'src', 'index.js'),
-      external: ['test-css-processor'],
-      plugins: [
-        wywInJS({
-          configFile: path.join(root, 'wyw-in-js.config.cjs'),
-          ...options,
-        }),
-        {
-          name: 'capture-css',
-          transform(code, id) {
-            if (!id.endsWith('.css')) return null;
-            css.push(code);
-            return { code: 'export {};', map: null };
-          },
-        },
-      ],
-    });
+  expect(result.error).toBeUndefined();
+  expect(result.stderr).toBe('');
+  expect(result.status).toBe(0);
 
-    await bundle.generate({ format: 'esm' });
-    await bundle.close();
-  } finally {
-    process.chdir(cwd);
-  }
-
+  const css: string[] = JSON.parse(result.stdout);
   expect(css).toHaveLength(1);
   return css[0];
 };
@@ -160,7 +135,7 @@ describe('CLI and rollup CSS parity', () => {
     },
     {
       flags: ['--no-prefixer', '--keep-comments-pattern', 'rtl:'],
-      options: { prefixer: false, keepComments: /rtl:/ },
+      options: { prefixer: false, keepCommentsPattern: 'rtl:' },
       check: (css: string) => {
         expect(css).toContain('{display:flex inline;/* rtl:ignore */');
         expect(css).not.toContain('-webkit-');
@@ -177,16 +152,16 @@ describe('CLI and rollup CSS parity', () => {
     },
     {
       flags: ['--preprocessor', 'none'],
-      options: { preprocessor: 'none' as const },
+      options: { preprocessor: 'none' },
       check: (css: string) => {
         expect(css).toContain(' {\n  display: flex inline;\n');
       },
     },
   ])(
     'matches for flags $flags',
-    async ({ flags, options, check }) => {
+    ({ flags, options, check }) => {
       const cliCss = runCli(root, flags);
-      const rollupCss = await runRollup(root, options);
+      const rollupCss = runRollup(root, options);
 
       check(cliCss);
       expect(cliCss).toBe(rollupCss);
