@@ -93,6 +93,7 @@ import {
   serializeCachedExports,
 } from './brokerCache';
 import { buildDirectBarrelProxy } from './directBarrelProxy';
+import { collectEvalDependencies } from './evalDependencies';
 import { publishModuleExports } from './brokerPublication';
 import {
   EVAL_TIMEOUT_MS,
@@ -2119,34 +2120,15 @@ export class EvalBroker {
   }
 
   private collectEntrypointDependencies(entrypointId: string): string[] {
-    const collected = new Set(
-      this.runtimeDependenciesByModule.get(entrypointId) ?? []
+    const { cache } = this.currentServices;
+    return collectEvalDependencies(
+      entrypointId,
+      this.runtimeDependenciesByModule.get(entrypointId) ?? [],
+      (id) =>
+        cache.get('entrypoints', id) as
+          | { dependencies?: Map<string, { resolved: string | null }> }
+          | undefined
     );
-    const cachedEntrypoint = this.currentServices.cache.get(
-      'entrypoints',
-      entrypointId
-    ) as
-      | {
-          dependencies?: Map<
-            string,
-            {
-              source: string;
-              resolved: string | null;
-              only: string[];
-            }
-          >;
-        }
-      | undefined;
-    cachedEntrypoint?.dependencies?.forEach((dependency, specifier) => {
-      if (
-        dependency.resolved !== null &&
-        !isBuiltinSpecifier(specifier) &&
-        !isVirtualSpecifier(specifier)
-      ) {
-        collected.add(specifier);
-      }
-    });
-    return Array.from(collected);
   }
 
   private applyImportOverrides(

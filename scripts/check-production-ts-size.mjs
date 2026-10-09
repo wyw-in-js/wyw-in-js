@@ -6,7 +6,7 @@ import { globSync } from 'glob';
 const MAX_LINES = 1000;
 
 const LEGACY_OVERSIZED_FILES = new Map([
-  ['packages/transform/src/eval/broker.ts', 3232],
+  ['packages/transform/src/eval/broker.ts', 3132],
   ['packages/transform/src/module.ts', 1482],
   [
     'packages/transform/src/transform/generators/rewriteOxcBarrelImports.ts',
