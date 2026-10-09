@@ -1,10 +1,16 @@
 import { spawnSync } from 'child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 
 describe('CLI evaluation', () => {
-  it('exits after evaluating imported values', () => {
+  const runCli = (extraArgs: string[] = []) => {
     const root = mkdtempSync(path.join(tmpdir(), 'wyw-cli-eval-'));
 
     try {
@@ -88,6 +94,7 @@ describe('CLI evaluation', () => {
           path.join(root, 'dist'),
           '--source-root',
           root,
+          ...extraArgs,
           entryFile,
         ],
         {
@@ -102,8 +109,19 @@ describe('CLI evaluation', () => {
       );
       expect(result.status).toBe(0);
       expect(result.stdout).toContain('Successfully extracted 1 CSS files.');
+      expect(
+        readFileSync(path.join(root, 'dist', 'src', 'index.css'), 'utf8')
+      ).toContain('color:red');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  };
+
+  it('exits after evaluating imported values', () => {
+    runCli();
+  });
+
+  it('extracts CSS in worker threads', () => {
+    runCli(['--workers', '2']);
   });
 });

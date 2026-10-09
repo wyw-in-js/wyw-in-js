@@ -13,6 +13,7 @@ import type {
 
 import { shaker } from '../../shaker';
 import type { PluginOptions } from '../../types';
+import { DEFAULT_EVAL_STRATEGY } from '../../utils/evalStrategy';
 
 const searchPlaces = [
   `.wyw-in-jsrc`,
@@ -176,7 +177,7 @@ export function loadWywOptions(
     require: 'warn-and-run',
     resolver: 'bundler',
     runtime: 'nodejs',
-    strategy: 'hybrid',
+    strategy: DEFAULT_EVAL_STRATEGY,
   };
 
   const config = (() => {

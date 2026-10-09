@@ -9,6 +9,7 @@ import path from 'path';
 import { asyncResolveFallback } from '@wyw-in-js/shared';
 import {
   createFileReporter,
+  createParallelTransforms,
   disposeEvalBroker,
   TransformCacheCollection,
   transform,
@@ -64,6 +65,12 @@ const argv = yargs(hideBin(process.argv))
     type: 'boolean',
     description: 'Run extraction in parallel',
     default: false,
+  })
+  .option('workers', {
+    type: 'number',
+    description:
+      'Number of worker threads for extraction (implies --parallel); 0 runs extraction on the main thread',
+    requiresArg: true,
   })
   .option('output-metadata', {
     type: 'boolean',
@@ -122,6 +129,7 @@ type Options = {
   sourceMaps?: boolean;
   sourceRoot: string;
   transform?: boolean;
+  workers?: number;
 };
 
 function resolveRequireInsertionFilename(filename: string) {
@@ -157,6 +165,22 @@ async function processFiles(files: (number | string)[], options: Options) {
     [] as string[]
   );
   const cache = new TransformCacheCollection();
+  // One object for all files: transform() memoizes options by identity.
+  const pluginOptions = {
+    configFile: options.configFile,
+    outputMetadata: options.outputMetadata,
+  };
+  const parallelTransforms = createParallelTransforms({
+    onFallback: (message) => console.warn(`[wyw-in-js] ${message}`),
+    parallel: options.workers,
+    unsupported: options.debug ? 'the `--debug` option is set' : null,
+  });
+  const workerScope =
+    parallelTransforms?.scope('cli', () => ({
+      asyncResolveKey: 'cli',
+      pluginOptions,
+      root: options.sourceRoot,
+    })) ?? null;
 
   const modifiedFiles: { content: string; name: string }[] = [];
 
@@ -165,7 +189,8 @@ async function processFiles(files: (number | string)[], options: Options) {
   // eslint-disable-next-line no-restricted-syntax
   for (const filename of resolvedFiles) {
     if (fs.lstatSync(filename).isDirectory()) {
-      return;
+      // eslint-disable-next-line no-continue
+      continue;
     }
 
     const outputFilename = resolveOutputFilename(
@@ -178,22 +203,25 @@ async function processFiles(files: (number | string)[], options: Options) {
       options: {
         filename,
         outputFilename,
-        pluginOptions: {
-          configFile: options.configFile,
-          outputMetadata: options.outputMetadata,
-        },
+        pluginOptions,
         root: options.sourceRoot,
       },
       cache,
       eventEmitter: emitter,
     };
 
+    const run = (code: string) =>
+      workerScope
+        ? workerScope.transform({
+            asyncResolve: asyncResolveFallback,
+            code,
+            filename,
+            outputFilename,
+          })
+        : transform(transformServices, code, asyncResolveFallback);
+
     tasks.push(() =>
-      transform(
-        transformServices,
-        fs.readFileSync(filename).toString(),
-        asyncResolveFallback
-      ).then(
+      run(fs.readFileSync(filename).toString()).then(
         ({
           code,
           cssText,
@@ -288,7 +316,7 @@ async function processFiles(files: (number | string)[], options: Options) {
   }
 
   try {
-    if (options.parallel) {
+    if (options.parallel || workerScope) {
       const res = await Promise.all(tasks.map((task) => task()));
       console.log(
         `Successfully extracted ${res.filter((i) => i).length} CSS files.`
@@ -312,6 +340,7 @@ async function processFiles(files: (number | string)[], options: Options) {
 
     onDone(options.sourceRoot ?? process.cwd());
   } finally {
+    await parallelTransforms?.dispose();
     disposeEvalBroker(cache);
     cache.clear('all');
     modifiedFiles.length = 0;
@@ -332,4 +361,5 @@ processFiles(argv._, {
   sourceMaps: argv['source-maps'],
   sourceRoot: argv['source-root'],
   transform: argv.transform,
+  workers: argv.workers,
 });
