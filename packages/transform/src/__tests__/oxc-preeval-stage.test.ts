@@ -108,8 +108,10 @@ describe('runOxcPreevalStage', () => {
           strategy === 'execute' ? ['_exp'] : []
         );
 
+        // Serializing parses the code once, through the shared parse cache.
         const originalCode = measure(() => result.code);
-        expect(summaries.at(-1)!.parse.uncachedRequests).toBe(1);
+        expect(summaries.at(-1)!.parse.allRequests).toBe(1);
+        expect(summaries.at(-1)!.parse.uncachedRequests).toBe(0);
         expect(measure(() => result.code)).toBe(originalCode);
         expect(summaries.at(-1)!.parse.allRequests).toBe(0);
 
@@ -123,7 +125,7 @@ describe('runOxcPreevalStage', () => {
         expect(summaries.at(-1)!.parse.uncachedRequests).toBe(0);
         expect(processor.doEvaltimeReplacement).toHaveBeenCalledTimes(1);
         const finalizedCode = measure(() => result.code);
-        expect(summaries.at(-1)!.parse.uncachedRequests).toBe(1);
+        expect(summaries.at(-1)!.parse.allRequests).toBe(1);
         expect(finalizedCode).not.toContain('css`');
         expect(finalizedCode).toContain('export const __wywPreval = {};');
         expect(finalizedCode).not.toBe(originalCode);
