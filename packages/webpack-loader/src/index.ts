@@ -17,8 +17,16 @@ import {
   stripQueryAndHash,
   toNativeResolverAlias,
 } from '@wyw-in-js/shared';
-import type { PluginOptions, Preprocessor, Result } from '@wyw-in-js/transform';
+import type {
+  ParallelTransforms,
+  ParallelTransformsOption,
+  PluginOptions,
+  Preprocessor,
+  Result,
+  TransformWorkerScope,
+} from '@wyw-in-js/transform';
 import {
+  createParallelTransforms,
   disposeEvalBroker,
   transform,
   TransformCacheCollection,
@@ -49,6 +57,12 @@ export type LoaderOptions = {
   cssImport?: 'require' | 'import';
   extension?: string;
   keepComments?: boolean | RegExp;
+  /**
+   * Run transforms in worker threads shared by all modules of a compiler:
+   * `true` uses up to four workers, a number sets the count. Function options
+   * must be defined in a wyw-in-js config file.
+   */
+  parallel?: ParallelTransformsOption;
   prefixer?: boolean;
   preprocessor?: Preprocessor;
   sourceMap?: boolean;
@@ -118,6 +132,8 @@ type ResolverScope = {
 type CompilerState = ResolverScope & {
   clearResolvers: () => void;
   hooksInstalled: boolean;
+  /** Worker scopes this compiler created in the shared pool. */
+  workerScopeKeys: Set<string>;
 };
 
 const COMPILER_SCOPE_NAME = 'WYWinJSResolverScope';
@@ -188,11 +204,58 @@ const createResolverScope = (): ResolverScope => {
   };
 };
 
+// Compilers of one process (e.g. the client and server builds of Next.js)
+// share one worker pool; each compiler gets its own scopes in it.
+let parallelTransforms: ParallelTransforms | null | undefined;
+const parallelCompilers = new Set<CompilerLike>();
+
+const getParallelTransforms = (
+  compiler: CompilerLike,
+  parallel: ParallelTransformsOption
+): ParallelTransforms | null => {
+  if (parallelTransforms === undefined) {
+    const infrastructureLogger =
+      compiler.getInfrastructureLogger?.('wyw-in-js');
+    parallelTransforms = createParallelTransforms({
+      onFallback: (message) => {
+        if (infrastructureLogger) infrastructureLogger.warn(message);
+        // eslint-disable-next-line no-console
+        else console.warn(`[wyw-in-js] ${message}`);
+      },
+      parallel,
+      unsupported: sharedState.emitter ? 'WYWinJSDebugPlugin is enabled' : null,
+    });
+  }
+
+  parallelCompilers.add(compiler);
+  return parallelTransforms;
+};
+
+const releaseParallelTransforms = (
+  compiler: CompilerLike,
+  state: CompilerState
+) => {
+  if (!parallelCompilers.delete(compiler)) return;
+  state.workerScopeKeys.forEach((key) => parallelTransforms?.disposeScope(key));
+  state.workerScopeKeys.clear();
+  if (parallelCompilers.size === 0) {
+    parallelTransforms?.dispose();
+    parallelTransforms = undefined;
+  }
+};
+
 const disposeCompilerState = (compiler: CompilerLike, state: CompilerState) => {
   state.clearResolvers();
   disposeEvalBroker(state.cache);
+  releaseParallelTransforms(compiler, state);
   clearCacheProviderRegistry(compiler);
 };
+
+// Loader options become worker scopes; equal options share one scope.
+const getScopeKey = (options: object): string =>
+  JSON.stringify(options, (_, value) =>
+    value instanceof RegExp ? `${value}` : value
+  );
 
 const getCompilerState = (compiler: CompilerLike): CompilerState => {
   const cached = compilerStates.get(compiler);
@@ -208,6 +271,7 @@ const getCompilerState = (compiler: CompilerLike): CompilerState => {
     clearResolvers: scope.dispose,
     dispose: () => disposeCompilerState(compiler, state),
     hooksInstalled: false,
+    workerScopeKeys: new Set(),
   };
 
   const installHooks = () => {
@@ -307,9 +371,8 @@ const webpack5Loader: Loader = function webpack5LoaderPlugin(
   const compiler = hasCompilerHooks(loaderCompiler)
     ? loaderCompiler
     : undefined;
-  const compilerState = compiler
-    ? getCompilerState(compiler)
-    : createInvocationScope();
+  const compilerScope = compiler ? getCompilerState(compiler) : null;
+  const compilerState = compilerScope ?? createInvocationScope();
 
   // Do not let cached transform services capture the webpack loader context.
   // The per-resource callbacks below are short-lived and cleared with the
@@ -356,19 +419,21 @@ const webpack5Loader: Loader = function webpack5LoaderPlugin(
     extension = '.wyw-in-js.css',
     cssImport = 'require',
     cacheProvider,
+    parallel,
     ...rest
   } = this.getOptions() || {};
 
   const outputFileName = this.resourcePath.replace(/\.[^.]+$/, extension);
 
+  const pluginOptions = {
+    ...rest,
+    oxcOptions: mergeOxcResolverAlias(rest.oxcOptions, nativeResolverAlias),
+  };
   const transformServices = {
     options: {
       filename: resourcePath,
       inputSourceMap: normalizeInputSourceMap(inputSourceMap, resourcePath),
-      pluginOptions: {
-        ...rest,
-        oxcOptions: mergeOxcResolverAlias(rest.oxcOptions, nativeResolverAlias),
-      },
+      pluginOptions,
       prefixer,
       keepComments,
       preprocessor,
@@ -380,7 +445,37 @@ const webpack5Loader: Loader = function webpack5LoaderPlugin(
     eventEmitter: sharedState.emitter,
   };
 
-  transform(transformServices, content.toString(), asyncResolve)
+  const scopeConfig = {
+    asyncResolveKey,
+    keepComments,
+    pluginOptions,
+    prefixer,
+    preprocessor,
+    root: process.cwd(),
+  };
+  let workerScope: TransformWorkerScope | null = null;
+  if (compiler && compilerScope && parallel) {
+    const key = getScopeKey(scopeConfig);
+    workerScope =
+      getParallelTransforms(compiler, parallel)?.scope(
+        key,
+        () => scopeConfig
+      ) ?? null;
+    if (workerScope) compilerScope.workerScopeKeys.add(key);
+  }
+  const transformed = workerScope
+    ? Promise.resolve().then(() =>
+        workerScope.transform({
+          asyncResolve,
+          code: content.toString(),
+          emitWarning: transformServices.emitWarning,
+          filename: resourcePath,
+          inputSourceMap: transformServices.options.inputSourceMap,
+        })
+      )
+    : transform(transformServices, content.toString(), asyncResolve);
+
+  transformed
     .then(
       async (result: Result) => {
         try {

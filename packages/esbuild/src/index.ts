@@ -15,11 +15,13 @@ import {
 } from 'oxc-transform';
 
 import type {
+  ParallelTransformsOption,
   PluginOptions,
   Preprocessor,
   IFileReporterOptions,
 } from '@wyw-in-js/transform';
 import {
+  createParallelTransforms,
   disposeEvalBroker,
   slugify,
   transform,
@@ -39,6 +41,11 @@ type EsbuildPluginOptions = {
   filter?: RegExp | string;
   keepComments?: boolean | RegExp;
   oxcTransform?: boolean;
+  /**
+   * Run transforms in worker threads: `true` uses up to four workers, a number
+   * sets the count. Function options must be defined in a wyw-in-js config file.
+   */
+  parallel?: ParallelTransformsOption;
   prefixer?: boolean;
   preprocessor?: Preprocessor;
   sourceMap?: boolean;
@@ -54,6 +61,7 @@ export default function wywInJS({
   sourceMap,
   keepComments,
   oxcTransform,
+  parallel,
   prefixer,
   preprocessor,
   esbuildOptions,
@@ -101,8 +109,21 @@ export default function wywInJS({
       const nativeResolverAlias = toNativeResolverAlias(
         build.initialOptions.alias
       );
+      // One object per build: transform() memoizes options by identity.
+      const pluginOptions = {
+        ...rest,
+        oxcOptions: mergeOxcResolverAlias(rest.oxcOptions, nativeResolverAlias),
+      };
 
       const { emitter, onDone } = createFileReporter(debug ?? false);
+      const parallelTransforms = createParallelTransforms({
+        onFallback: (message) => {
+          // eslint-disable-next-line no-console
+          console.warn(`[wyw-in-js] ${message}`);
+        },
+        parallel,
+        unsupported: debug ? 'the `debug` option is set' : null,
+      });
 
       const warnOnUnsupportedFlags = (
         filterRegexp: RegExp,
@@ -149,9 +170,23 @@ export default function wywInJS({
 
       const asyncResolve = createAsyncResolver(build.resolve);
 
-      build.onEnd(() => {
+      // esbuild before 0.18 has no onDispose: stop the workers after a build.
+      const disposable = build as typeof build & {
+        onDispose?: (callback: () => void) => void;
+      };
+      const canDispose = typeof disposable.onDispose === 'function';
+      if (parallelTransforms) {
+        // Workers load the transform pipeline while esbuild reads the entries.
+        build.onStart(() => parallelTransforms.start());
+      }
+      build.onEnd(async () => {
         onDone(process.cwd());
         disposeEvalBroker(cache);
+        if (canDispose) parallelTransforms?.disposeEvalBrokers();
+        else await parallelTransforms?.dispose();
+      });
+      disposable.onDispose?.(() => {
+        parallelTransforms?.dispose();
       });
 
       build.onResolve({ filter: /\.wyw\.css$/ }, (args) => {
@@ -284,13 +319,7 @@ export default function wywInJS({
         const transformServices = {
           options: {
             filename: args.path,
-            pluginOptions: {
-              ...rest,
-              oxcOptions: mergeOxcResolverAlias(
-                rest.oxcOptions,
-                nativeResolverAlias
-              ),
-            },
+            pluginOptions,
             prefixer,
             keepComments,
             preprocessor,
@@ -300,7 +329,21 @@ export default function wywInJS({
           eventEmitter: emitter,
         };
 
-        const result = await transform(transformServices, code, asyncResolve);
+        const workerScope = parallelTransforms?.scope('esbuild', () => ({
+          asyncResolveKey: 'esbuild',
+          keepComments,
+          pluginOptions,
+          prefixer,
+          preprocessor,
+          root: process.cwd(),
+        }));
+        const result = workerScope
+          ? await workerScope.transform({
+              asyncResolve,
+              code,
+              filename: args.path,
+            })
+          : await transform(transformServices, code, asyncResolve);
         const resolveDir = dirname(args.path);
 
         if (typeof result.cssText === 'undefined') {
