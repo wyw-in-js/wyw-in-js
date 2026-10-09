@@ -414,15 +414,15 @@ describe('createStylisPreprocessor across rules', () => {
     expect(compileCorpus(configs.default)).toMatchInlineSnapshot(`
       [
         ".a{color:red;}.a:hover{color:blue;}",
-        ".b{background:url(../src/image.png);mask:url("../mask.svg");cursor:url(/abs.cur);}",
+        ".b{background:url(../src/image.png);-webkit-mask:url("../mask.svg");mask:url("../mask.svg");cursor:url(/abs.cur);}",
         "body {margin:0;}.dark .c{color:white;}",
-        ".d{display:flex inline;align-items:center;}",
-        "@-webkit-keyframes spin-e{from{transform:rotate(0);}to{transform:rotate(360deg);}}@keyframes spin-e{from{transform:rotate(0);}to{transform:rotate(360deg);}}.e{animation:spin-e 1s linear infinite;}",
-        ".f{animation:fade 0s forwards;}@-webkit-keyframes fade{from{opacity:0;}}@keyframes fade{from{opacity:0;}}",
-        "@media (min-width: 100px){.g{animation-name:pulse;}@-webkit-keyframes pulse-g{from{opacity:0;}}@keyframes pulse-g{from{opacity:0;}}}",
+        ".d{display:-webkit-inline-box;display:-webkit-inline-flex;display:-ms-inline-flexbox;display:inline-flex;-webkit-align-items:center;-webkit-box-align:center;-ms-flex-align:center;align-items:center;}",
+        "@-webkit-keyframes spin-e{from{-webkit-transform:rotate(0);-moz-transform:rotate(0);-ms-transform:rotate(0);transform:rotate(0);}to{-webkit-transform:rotate(360deg);-moz-transform:rotate(360deg);-ms-transform:rotate(360deg);transform:rotate(360deg);}}@keyframes spin-e{from{-webkit-transform:rotate(0);-moz-transform:rotate(0);-ms-transform:rotate(0);transform:rotate(0);}to{-webkit-transform:rotate(360deg);-moz-transform:rotate(360deg);-ms-transform:rotate(360deg);transform:rotate(360deg);}}.e{-webkit-animation:spin-e 1s linear infinite;animation:spin-e 1s linear infinite;}",
+        ".f{-webkit-animation:fade 0s forwards;animation:fade 0s forwards;}@-webkit-keyframes fade{from{opacity:0;}}@keyframes fade{from{opacity:0;}}",
+        "@media (min-width: 100px){.g{-webkit-animation-name:pulse;animation-name:pulse;}@-webkit-keyframes pulse-g{from{opacity:0;}}@keyframes pulse-g{from{opacity:0;}}}",
         ".h{left:0;}.h::-webkit-input-placeholder{color:gray;}.h::-moz-placeholder{color:gray;}.h:-ms-input-placeholder{color:gray;}.h::placeholder{color:gray;}.h:-moz-read-only{color:gray;}.h:read-only{color:gray;}",
-        "@-webkit-keyframes spin-e{from{opacity:0;}}@keyframes spin-e{from{opacity:0;}}.e{animation-name:spin-e;}",
-        ".i{animation-name:spin;}",
+        "@-webkit-keyframes spin-e{from{opacity:0;}}@keyframes spin-e{from{opacity:0;}}.e{-webkit-animation-name:spin-e;animation-name:spin-e;}",
+        ".i{-webkit-animation-name:spin;animation-name:spin;}",
       ]
     `);
     expect(compileCorpus(configs.noPrefixer)).toMatchInlineSnapshot(`
