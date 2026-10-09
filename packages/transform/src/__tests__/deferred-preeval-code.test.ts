@@ -101,8 +101,11 @@ describe('deferred preeval code', () => {
       imports.clear();
       result.dependencyNames!.push('later');
 
+      // Pruning and the preval export parse on the first read, all through
+      // the shared parse cache.
       const demand = measureParses(() => result[first]);
-      expect(demand.parse.uncachedRequests).toBe(1);
+      expect(demand.parse.allRequests).toBe(3);
+      expect(demand.parse.uncachedRequests).toBe(0);
       expect(demand.value).toBe(
         "\n\nexport const item = 'class';\nexport const __wywPreval = {};"
       );
@@ -133,8 +136,11 @@ describe('deferred preeval code', () => {
 
       expect(install.parse.allRequests).toBe(0);
       sideEffects.clear();
+      // Pruning and the preval export parse on the first read, all through
+      // the shared parse cache.
       const demand = measureParses(() => result[first]);
-      expect(demand.parse.uncachedRequests).toBe(1);
+      expect(demand.parse.allRequests).toBe(3);
+      expect(demand.parse.uncachedRequests).toBe(0);
       expect(result.code).toBe(
         "import './first';\nimport './second';\n\n\nexport const item = 'class';\nexport const __wywPreval = {};"
       );

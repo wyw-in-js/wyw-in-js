@@ -41,10 +41,8 @@ import {
   isTagReferenced,
 } from './displayName';
 import { buildParams } from './expressionValues';
-import {
-  createProcessor,
-  shouldCollectStaticExpressionValues,
-} from './processorFactory';
+import { usesStaticEvaluation } from '../evalStrategy';
+import { createProcessor } from './processorFactory';
 import {
   collectProcessorUsages,
   collectUsageExpressionSpans,
@@ -146,8 +144,7 @@ export const applyOxcProcessors = (
   let pipelineImportCandidates = 0;
   let pipelineLookupAttempts = 0;
   let pipelineLookupHits = 0;
-  const collectStaticExpressionValues =
-    shouldCollectStaticExpressionValues(options);
+  const collectStaticExpressionValues = usesStaticEvaluation(options);
   const workingCode = code;
   const reusablePlan =
     runtimeProcessorPlan?.code === workingCode &&

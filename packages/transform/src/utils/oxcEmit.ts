@@ -17,10 +17,8 @@ import type {
   VariableDeclarator,
 } from 'oxc-parser';
 
-import { recordPipelineUncachedParse } from '../debug/pipelineTelemetry';
-
 import { createOxcFileEdits } from './oxc/fileEdits';
-import { parseOxcSync } from './parseOxc';
+import { parseOxcProgramCached } from './parseOxc';
 
 type SourceMap = {
   file?: string;
@@ -224,32 +222,10 @@ const loadOxcTransform = (): OxcTransform => {
   return oxcTransform;
 };
 
-const parseJsModule = (code: string, filename: string): Program => {
-  let parsed: ReturnType<typeof parseOxcSync>;
-  try {
-    parsed = parseOxcSync(
-      filename,
-      code,
-      {
-        astType: 'js',
-        range: true,
-        sourceType: 'module',
-      },
-      'uncached'
-    );
-  } catch (error) {
-    recordPipelineUncachedParse(filename, code, 'module', 'js', true);
-    throw error;
-  }
-  const fatalError = parsed.errors.find((error) => error.severity === 'Error');
-  if (fatalError) {
-    recordPipelineUncachedParse(filename, code, 'module', 'js', true);
-    throw new Error(fatalError.message);
-  }
-  recordPipelineUncachedParse(filename, code, 'module', 'js', false);
-
-  return parsed.program as Program;
-};
+// Emission reads the JS-shaped AST for every file; for TS-family files that is
+// a separate bucket of the shared parse cache.
+const parseJsModule = (code: string, filename: string): Program =>
+  parseOxcProgramCached(filename, code, 'module', 'js');
 
 const tryParseJsModule = (code: string, filename: string): Program | null => {
   try {

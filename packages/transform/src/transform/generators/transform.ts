@@ -1,4 +1,3 @@
-import { oxcShaker } from '../../shaker';
 import type { WYWTransformMetadata } from '../../utils/TransformMetadata';
 import { collectOxcExportsAndImports } from '../../utils/collectOxcExportsAndImports';
 import { collectOxcImportMap } from '../../utils/oxcImportMap';
@@ -36,8 +35,7 @@ const EMPTY_FILE = '=== empty file ===';
 
 type PrepareCodeFn = (
   services: Services,
-  item: Entrypoint,
-  originalAst: unknown | null
+  item: Entrypoint
 ) => [
   code: string,
   imports: Map<string, string[]> | null,
@@ -102,8 +100,7 @@ const normalizeOxcPreparedESM = (code: string): string =>
 
 const ensureOxcPreevalResult = (
   services: Services,
-  item: Entrypoint,
-  originalAst: unknown | null
+  item: Entrypoint
 ): IPreevalResult => {
   const cached = item.getPreevalResult();
   if (cached) {
@@ -135,7 +132,6 @@ const ensureOxcPreevalResult = (
     );
 
     const preevalResult: IPreevalResult = {
-      ast: originalAst,
       baseCode: result.baseCode,
       get code() {
         return result.code;
@@ -196,10 +192,9 @@ const ensureOxcPreevalResult = (
   return preevalStageResult;
 };
 
-const prepareOxcCodeImpl = (
+const prepareCodeImpl = (
   services: Services,
   item: Entrypoint,
-  originalAst: unknown | null,
   options: PrepareCodeOptions = {}
 ): ReturnType<PrepareCodeFn> => {
   const { only, loadedAndParsed, log } = item;
@@ -213,11 +208,7 @@ const prepareOxcCodeImpl = (
   const { pluginOptions } = services.options;
   const root = services.options.root ?? process.cwd();
 
-  const preevalStageResult = ensureOxcPreevalResult(
-    services,
-    item,
-    originalAst
-  );
+  const preevalStageResult = ensureOxcPreevalResult(services, item);
   preevalStageResult.finalizeEvaltimeReplacements?.(
     preevalStageResult.staticValueCache
   );
@@ -332,41 +323,23 @@ const prepareOxcCodeImpl = (
   return [emitted.code, shaken.imports, transformMetadata ?? null];
 };
 
-const prepareCodeImpl = (
-  services: Services,
-  item: Entrypoint,
-  originalAst: unknown | null,
-  options: PrepareCodeOptions = {}
-): ReturnType<PrepareCodeFn> => {
-  const { log, loadedAndParsed } = item;
-  if (loadedAndParsed.evaluator === 'ignored') {
-    log('is ignored');
-    return [loadedAndParsed.code ?? '', null, null];
-  }
-
-  const { evaluator } = loadedAndParsed;
-  if (evaluator !== oxcShaker) {
-    throw new Error(
-      `[wyw-in-js] ${item.name} matched a legacy evaluator. The Oxc runtime path supports only the default Oxc evaluator.`
-    );
-  }
-
-  return prepareOxcCodeImpl(services, item, originalAst, options);
-};
-
+/**
+ * The third argument is ignored: the Oxc pipeline does not consume a
+ * pre-parsed AST. It stays in the signature for public API compatibility.
+ */
 export const prepareCode = (
   services: Services,
   item: Entrypoint,
-  originalAst: unknown | null
-): ReturnType<PrepareCodeFn> => prepareCodeImpl(services, item, originalAst);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  _originalAst: unknown | null
+): ReturnType<PrepareCodeFn> => prepareCodeImpl(services, item);
 
 export const prepareCodeForEvalRuntime = (
   services: Services,
   item: Entrypoint,
-  originalAst: unknown | null,
   evalTelemetry?: EvalPreparationToken
 ): ReturnType<PrepareCodeFn> =>
-  prepareCodeImpl(services, item, originalAst, {
+  prepareCodeImpl(services, item, {
     evalTelemetry,
     shortCircuitOnMissingMetadata: true,
     stripForEvalRuntime: true,
@@ -487,22 +460,14 @@ export function* internalTransform(
     };
   }
 
-  if (loadedAndParsed.evaluator !== oxcShaker) {
-    throw new Error(
-      `[wyw-in-js] ${this.entrypoint.name} matched a legacy evaluator. The Oxc runtime path supports only the default Oxc evaluator.`
-    );
-  }
-
   log('>> (%o)', only);
 
-  if (loadedAndParsed.evaluator === oxcShaker) {
-    ensureOxcPreevalResult(this.services, this.entrypoint, null);
-    yield* resolveStaticOxcPreevalValues.call(this);
-  }
+  ensureOxcPreevalResult(this.services, this.entrypoint);
+  yield* resolveStaticOxcPreevalValues.call(this);
 
   const preevalResult = this.entrypoint.getPreevalResult();
   if (
-    prepareFn === prepareCode &&
+    prepareFn === prepareCodeImpl &&
     this.entrypoint.parents.length === 0 &&
     isPrevalOnly(only) &&
     preevalResult?.metadata &&
@@ -522,52 +487,47 @@ export function* internalTransform(
 
   let [preparedCode, imports, metadata] = prepareFn(
     this.services,
-    this.entrypoint,
-    null
+    this.entrypoint
   );
-  let finalPreparedCode = preparedCode;
 
-  if (loadedAndParsed.evaluator === oxcShaker) {
-    if (metadata === null && isPrevalOnly(only)) {
-      log(
-        'skip resolving imports for __wywPreval-only entrypoint without metadata'
-      );
-      return {
-        code: finalPreparedCode,
-        metadata: null,
-      };
-    }
+  if (metadata === null && isPrevalOnly(only)) {
+    log(
+      'skip resolving imports for __wywPreval-only entrypoint without metadata'
+    );
+    return {
+      code: preparedCode,
+      metadata: null,
+    };
+  }
 
-    let nextCode = yield* resolveAndProcessOxcPreparedImports(
+  let nextCode = yield* resolveAndProcessOxcPreparedImports(
+    this,
+    preparedCode,
+    imports
+  );
+
+  if (yield* resolveStaticOxcPreevalValues.call(this)) {
+    [preparedCode, imports, metadata] = prepareFn(
+      this.services,
+      this.entrypoint
+    );
+    nextCode = yield* resolveAndProcessOxcPreparedImports(
       this,
       preparedCode,
       imports
     );
-
-    if (yield* resolveStaticOxcPreevalValues.call(this)) {
-      [preparedCode, imports, metadata] = prepareFn(
-        this.services,
-        this.entrypoint,
-        null
-      );
-      nextCode = yield* resolveAndProcessOxcPreparedImports(
-        this,
-        preparedCode,
-        imports
-      );
-    }
-
-    emitCurrentStaticPlanDebug(this, imports);
-
-    finalPreparedCode = this.services.eventEmitter.perf(
-      'transform:emitCommonJS',
-      () =>
-        emitOxcCommonJS(
-          nextCode,
-          loadedAndParsed.evalConfig.filename ?? this.entrypoint.name
-        ).code
-    );
   }
+
+  emitCurrentStaticPlanDebug(this, imports);
+
+  const finalPreparedCode = this.services.eventEmitter.perf(
+    'transform:emitCommonJS',
+    () =>
+      emitOxcCommonJS(
+        nextCode,
+        loadedAndParsed.evalConfig.filename ?? this.entrypoint.name
+      ).code
+  );
 
   if (loadedAndParsed.code === finalPreparedCode) {
     log('<< (%o)\n === no changes ===', only);
@@ -584,40 +544,6 @@ export function* internalTransform(
     };
   }
 
-  if (metadata === null && isPrevalOnly(only)) {
-    log(
-      'skip resolving imports for __wywPreval-only entrypoint without metadata'
-    );
-    return {
-      code: finalPreparedCode,
-      metadata: null,
-    };
-  }
-
-  if (
-    loadedAndParsed.evaluator !== oxcShaker &&
-    imports !== null &&
-    imports.size > 0
-  ) {
-    const resolvedImports = yield* this.getNext(
-      'resolveImports',
-      this.entrypoint,
-      {
-        imports,
-      }
-    );
-
-    if (resolvedImports.length !== 0) {
-      yield [
-        'processImports',
-        this.entrypoint,
-        {
-          resolved: resolvedImports,
-        },
-      ];
-    }
-  }
-
   return {
     code: finalPreparedCode,
     metadata,
@@ -627,5 +553,5 @@ export function* internalTransform(
 export function* transform(
   this: ITransformAction
 ): SyncScenarioForAction<ITransformAction> {
-  return yield* internalTransform.call(this, prepareCode);
+  return yield* internalTransform.call(this, prepareCodeImpl);
 }

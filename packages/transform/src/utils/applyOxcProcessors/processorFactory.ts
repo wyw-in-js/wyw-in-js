@@ -24,10 +24,6 @@ let didWarnSkipSymbolMismatch = false;
 export const isReplacementPure = (replacement: ProcessorExpression): boolean =>
   replacement.type === 'CallExpression';
 
-export const shouldCollectStaticExpressionValues = (
-  options: Pick<StrictOptions, 'eval'>
-): boolean => (options.eval?.strategy ?? 'hybrid') !== 'execute';
-
 export const createProcessor = (
   definedProcessor: DefinedProcessor,
   params: Params,

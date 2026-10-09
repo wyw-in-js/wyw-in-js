@@ -179,7 +179,8 @@ export type GetNext = <
 >;
 
 export interface ICollectActionResult {
-  ast: unknown; // FIXME: looks like this is not used
+  /** Not produced by the Oxc pipeline. */
+  ast?: unknown;
   code: string | null | undefined;
   map?: RawSourceMap | null;
   metadata?: WYWTransformMetadata | null;

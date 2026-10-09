@@ -12,7 +12,7 @@ const LEGACY_OVERSIZED_FILES = new Map([
     'packages/transform/src/transform/generators/rewriteOxcBarrelImports.ts',
     1425,
   ],
-  ['packages/transform/src/utils/collectOxcExportsAndImports.ts', 1445],
+  ['packages/transform/src/utils/collectOxcExportsAndImports.ts', 1380],
   [
     'packages/transform/src/utils/collectOxcTemplateDependencies/staticEvaluator.ts',
     1029,
