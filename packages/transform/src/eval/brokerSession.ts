@@ -6,7 +6,6 @@ import { fileURLToPath } from 'url';
 import type { ChildProcessWithoutNullStreams } from 'child_process';
 
 import type {
-  EvalOptionsV2,
   EvalWarning,
   FeatureFlags,
   ImportLoaderContext,
@@ -21,7 +20,12 @@ import type { IEvaluatedEntrypoint } from '../transform/EvaluatedEntrypoint';
 import { loadAndParse } from '../transform/Entrypoint.helpers';
 import { rootLog } from '../transform/rootLog';
 import type { Services } from '../transform/types';
+import {
+  isVirtualModuleId,
+  type ResolveOutcome,
+} from '../resolve/resolvePolicy';
 import { EventEmitter } from '../utils/EventEmitter';
+import { DEFAULT_EVAL_OPTIONS, getEvalOptions } from '../utils/evalOptions';
 import { parseRequest, stripQueryAndHash } from '../utils/parseRequest';
 
 import type { DebugEvalValueStatus } from './debugEval';
@@ -44,18 +48,7 @@ export const isBuiltinSpecifier = (specifier: string) => {
   );
 };
 
-export const isVirtualSpecifier = (specifier: string) =>
-  specifier.startsWith('/@') ||
-  specifier.startsWith('virtual:') ||
-  specifier.startsWith('\0');
-
-const DEFAULT_EVAL_OPTIONS: Required<
-  Pick<EvalOptionsV2, 'errors' | 'require' | 'resolver'>
-> = {
-  errors: 'strict',
-  require: 'warn-and-run',
-  resolver: 'bundler',
-};
+export const isVirtualSpecifier = isVirtualModuleId;
 
 export const RESOLVE_CACHE_SIZE = 5000;
 export const LOAD_CACHE_SIZE = 1000;
@@ -78,6 +71,24 @@ export type ResolveCacheEntry = {
 
 export type ResolveResult = ResolveCacheEntry & {
   only: string[];
+};
+
+export const toResolveCacheEntry = (
+  outcome: ResolveOutcome
+): ResolveCacheEntry => {
+  if (outcome.kind === 'not-found') {
+    return { resolvedId: null };
+  }
+
+  if (outcome.via === 'custom') {
+    return { resolvedId: outcome.id, external: outcome.kind === 'external' };
+  }
+
+  if (outcome.via === 'native-fallback') {
+    return { resolvedId: outcome.id, usedNativeFallback: true };
+  }
+
+  return { resolvedId: outcome.id };
 };
 
 export type PreparedCacheEntry = PreparedModule & {
@@ -230,11 +241,6 @@ export const getSlowImportThresholdMs = () => {
   return parsed;
 };
 
-export const getEvalOptions = (services: Services): EvalOptionsV2 => ({
-  ...DEFAULT_EVAL_OPTIONS,
-  ...(services.options.pluginOptions.eval ?? {}),
-});
-
 export const buildRunnerPath = (): string => {
   const url = new URL('./runner.js', import.meta.url);
   return fileURLToPath(url);
@@ -322,8 +328,8 @@ export const buildRunnerInitPayload = (
     evalOptions: {
       globals: encodeGlobalsCached(sanitizedGlobals),
       importOverrides,
-      errors: evalOptions.errors ?? 'strict',
-      require: evalOptions.require ?? 'warn-and-run',
+      errors: evalOptions.errors ?? DEFAULT_EVAL_OPTIONS.errors,
+      require: evalOptions.require ?? DEFAULT_EVAL_OPTIONS.require,
       root,
       extensions,
     },

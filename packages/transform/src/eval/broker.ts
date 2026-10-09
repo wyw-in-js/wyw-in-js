@@ -15,14 +15,22 @@ import type { TransformCacheEpoch } from '../cache';
 import { isStaticallyEvaluatableModule } from '../transform/isStaticallyEvaluatableModule';
 import type { Services } from '../transform/types';
 import {
+  applyImportOverride,
   applyImportOverrideToOnly,
-  getImportOverride,
-  resolveMockSpecifier,
+  findImportOverride,
   toImportKey,
 } from '../utils/importOverrides';
+import { getEvalOptions } from '../utils/evalOptions';
 import { getFileIdx } from '../utils/getFileIdx';
-import { resolveWithNativeResolver } from '../utils/nativeResolver';
 import { stripQueryAndHash } from '../utils/parseRequest';
+import {
+  createNativeResolverAdapter,
+  getCustomResolverAdapter,
+  getNativeFallbackPolicy,
+  normalizeResolvedId,
+  resolveWithPolicy,
+  type ResolveRequest,
+} from '../resolve/resolvePolicy';
 import {
   hasCachedWywPrevalExport,
   type CachedEntrypointLike,
@@ -72,6 +80,7 @@ import {
   dumpEvalCode,
   flushDebugStreams,
   getDebugValuesStatus,
+  getEvalResolveTrace,
   serializedExportsToDebugValues,
   toBase64,
   toJsonBase64,
@@ -103,7 +112,6 @@ import {
   emitWarning,
   formatLoaderResult,
   getEntrypointResolveRoot,
-  getEvalOptions,
   getServicesCacheOwner,
   getSlowImportThresholdMs,
   getTransformCacheSessionToken,
@@ -115,6 +123,7 @@ import {
   isVirtualSpecifier,
   isWarningEnabled,
   loadByImportLoaders,
+  toResolveCacheEntry,
   toSerializedError,
   type ActiveEvalRequest,
   type CacheGeneration,
@@ -190,6 +199,10 @@ export class EvalBroker {
     string,
     Promise<ResolveCacheEntry>
   >();
+
+  private readonly nativeResolver = createNativeResolverAdapter(
+    () => this.currentServices.options.pluginOptions
+  );
 
   private readonly loadCache = new LruCache<string, PreparedCacheEntry>(
     LOAD_CACHE_SIZE
@@ -404,16 +417,13 @@ export class EvalBroker {
       return null;
     }
 
-    const { root } = this.currentServices.options;
-    const keyInfo = toImportKey({
-      source: request,
+    const { override } = findImportOverride({
+      importOverrides:
+        this.currentServices.options.pluginOptions.importOverrides,
       resolved: id,
-      root,
+      root: this.currentServices.options.root,
+      source: request,
     });
-    const override = getImportOverride(
-      this.currentServices.options.pluginOptions.importOverrides,
-      keyInfo.key
-    );
     let nextOnly = applyImportOverrideToOnly(
       this.getImportOnly(importerId, request),
       override
@@ -1821,74 +1831,21 @@ export class EvalBroker {
     });
   }
 
-  private normalizeResolvedId(
+  private normalizeEvalResolvedId(
     resolvedId: string,
     specifier: string,
-    importerId: string | undefined,
+    importerId: string,
     kind: ResolveRequestPayload['kind']
   ): string {
-    const stripped = stripQueryAndHash(resolvedId);
-    if (!stripped) return resolvedId;
-    if (path.extname(stripped)) return resolvedId;
-
-    const isFileSpecifier =
-      specifier.startsWith('.') || path.isAbsolute(specifier);
-    if (!isFileSpecifier && !path.isAbsolute(stripped)) {
-      return resolvedId;
-    }
-
-    let candidate = stripped;
-    if (!path.isAbsolute(candidate)) {
-      if (!importerId) {
-        return resolvedId;
+    return normalizeResolvedId(
+      resolvedId,
+      { importer: importerId, kind, specifier },
+      {
+        extensions: this.currentServices.options.pluginOptions.extensions,
+        native: this.nativeResolver,
+        trace: getEvalResolveTrace(),
       }
-      const importerFile = stripQueryAndHash(importerId);
-      candidate = path.resolve(path.dirname(importerFile), candidate);
-    }
-
-    const suffix = resolvedId.slice(stripped.length);
-    for (const ext of this.currentServices.options.pluginOptions.extensions) {
-      const fileCandidate = `${candidate}${ext}`;
-      if (fs.existsSync(fileCandidate)) {
-        return `${fileCandidate}${suffix}`;
-      }
-
-      const indexCandidate = path.join(candidate, `index${ext}`);
-      if (fs.existsSync(indexCandidate)) {
-        return `${indexCandidate}${suffix}`;
-      }
-    }
-
-    if (importerId) {
-      try {
-        const importerFile = stripQueryAndHash(importerId);
-        const { conditionNames, extensions, oxcOptions } =
-          this.currentServices.options.pluginOptions;
-        const resolved = resolveWithNativeResolver({
-          conditionNames,
-          extensions,
-          importer: importerFile,
-          kind,
-          oxcOptions,
-          specifier: resolvedId,
-        });
-        if (resolved && resolved !== stripped) {
-          return resolved;
-        }
-      } catch (error) {
-        if (process.env.WYW_DEBUG_EVAL_RESOLVE) {
-          // eslint-disable-next-line no-console
-          console.warn('[wyw-eval:resolve:native-normalize-miss]', {
-            specifier,
-            importerId,
-            kind,
-            error,
-          });
-        }
-      }
-    }
-
-    return resolvedId;
+    );
   }
 
   private async resolveImport(
@@ -1924,7 +1881,6 @@ export class EvalBroker {
     }
     const key = `${kind}:${importerId}:${specifier}`;
     const services = context?.services ?? this.currentServices;
-    const evalOptions = getEvalOptions(services);
     const stack = this.getResolveStack(importerId);
     const importsOnly = this.importsByModule.get(importerId)?.get(specifier);
     const only = this.getImportOnly(importerId, specifier);
@@ -1936,295 +1892,142 @@ export class EvalBroker {
         kind,
       });
     }
-    const strippedSpecifier = stripQueryAndHash(specifier);
-    if (path.isAbsolute(strippedSpecifier)) {
-      const normalized = this.normalizeResolvedId(
-        specifier,
-        specifier,
-        importerId,
-        kind
-      );
-      const overridden = this.applyImportOverrides(
-        {
-          source: specifier,
-          resolved: normalized,
-          only,
-          external: false,
-        },
-        importerId,
-        stack
-      );
-      this.resolveCache.set(key, { resolvedId: normalized, external: false });
-      return this.finalizeResolvedImport(importerId, specifier, overridden);
-    }
 
-    const cached = this.resolveCache.get(key);
-    if (cached) {
-      if (!cached.resolvedId) {
+    // Every route settles an entry the same way. Memoized entries are
+    // normalized again; a fresh resolve was normalized by the policy.
+    const settle = (
+      entry: ResolveCacheEntry,
+      memoized: boolean
+    ): ResolveResult => {
+      if (!entry.resolvedId) {
         return this.finalizeResolvedImport(importerId, specifier, {
           resolvedId: null,
           only: ['*'],
         });
       }
 
-      const normalized = this.normalizeResolvedId(
-        cached.resolvedId,
-        specifier,
-        importerId,
-        kind
-      );
+      const resolvedId = memoized
+        ? this.normalizeEvalResolvedId(
+            entry.resolvedId,
+            specifier,
+            importerId,
+            kind
+          )
+        : entry.resolvedId;
       const overridden = this.applyImportOverrides(
         {
           source: specifier,
-          resolved: normalized,
+          resolved: resolvedId,
           only,
-          external: cached.external,
+          external: entry.external,
         },
         importerId,
         stack
       );
-      if (cached.usedNativeFallback) {
+      if (entry.usedNativeFallback) {
         this.maybeWarnNativeFallback({
           importerId,
           specifier,
-          resolvedId: normalized,
+          resolvedId,
           kind,
         });
       }
       return this.finalizeResolvedImport(importerId, specifier, overridden);
+    };
+
+    const strippedSpecifier = stripQueryAndHash(specifier);
+    if (path.isAbsolute(strippedSpecifier)) {
+      // An absolute specifier needs no resolver, only normalization.
+      const entry: ResolveCacheEntry = {
+        resolvedId: this.normalizeEvalResolvedId(
+          specifier,
+          specifier,
+          importerId,
+          kind
+        ),
+        external: false,
+      };
+      const result = settle(entry, false);
+      this.resolveCache.set(key, entry);
+      return result;
+    }
+
+    const cached = this.resolveCache.get(key);
+    if (cached) {
+      return settle(cached, true);
     }
 
     const inFlight = this.resolveInFlight.get(key);
     if (inFlight) {
       const cachedResult = await inFlight;
       this.assertRequestContextActive(context);
-      if (!cachedResult.resolvedId) {
-        return this.finalizeResolvedImport(importerId, specifier, {
-          resolvedId: null,
-          only: ['*'],
-        });
-      }
-      const normalized = this.normalizeResolvedId(
-        cachedResult.resolvedId,
-        specifier,
-        importerId,
-        kind
-      );
-      const overridden = this.applyImportOverrides(
-        {
-          source: specifier,
-          resolved: normalized,
-          only,
-          external: cachedResult.external,
-        },
-        importerId,
-        stack
-      );
-      if (cachedResult.usedNativeFallback) {
-        this.maybeWarnNativeFallback({
-          importerId,
-          specifier,
-          resolvedId: normalized,
-          kind,
-        });
-      }
-      return this.finalizeResolvedImport(importerId, specifier, overridden);
+      return settle(cachedResult, true);
     }
 
-    const task: Promise<ResolveCacheEntry> = (async () => {
-      if (evalOptions.customResolver) {
-        const customResolved = await evalOptions.customResolver(
-          specifier,
-          importerId,
-          kind
-        );
-        this.assertRequestContextActive(context);
-        if (customResolved) {
-          const normalized = this.normalizeResolvedId(
-            customResolved.id,
-            specifier,
-            importerId,
-            kind
-          );
-          if (process.env.WYW_DEBUG_EVAL_RESOLVE) {
-            // eslint-disable-next-line no-console
-            console.warn('[wyw-eval:resolve:custom]', {
-              specifier,
-              importerId,
-              resolved: customResolved.id,
-              normalized,
-              external: customResolved.external,
-            });
-          }
-          return {
-            resolvedId: normalized,
-            external: customResolved.external,
-          };
-        }
-
-        if (evalOptions.resolver === 'custom') {
-          return { resolvedId: null };
-        }
-      }
-
-      if (evalOptions.resolver === 'hybrid') {
-        try {
-          const nativeResolved = this.resolveWithNativeFallback(
-            specifier,
-            importerId,
-            kind
-          );
-          if (process.env.WYW_DEBUG_EVAL_RESOLVE) {
-            // eslint-disable-next-line no-console
-            console.warn('[wyw-eval:resolve:native]', {
-              specifier,
-              importerId,
-              resolved: nativeResolved.resolvedId,
-            });
-          }
-          return nativeResolved;
-        } catch (error) {
-          if (process.env.WYW_DEBUG_EVAL_RESOLVE) {
-            // eslint-disable-next-line no-console
-            console.warn('[wyw-eval:resolve:native-miss]', {
-              specifier,
-              importerId,
-              kind,
-              error,
-            });
-          }
-          // Hybrid mode lets the bundler resolver handle aliases, virtual IDs,
-          // and other specifiers that the native resolver cannot resolve.
-        }
-      }
-
-      if (evalOptions.resolver === 'native') {
-        const nativeResolved = this.resolveWithNativeFallback(
-          specifier,
-          importerId,
-          kind
-        );
-        if (process.env.WYW_DEBUG_EVAL_RESOLVE) {
-          // eslint-disable-next-line no-console
-          console.warn('[wyw-eval:resolve:native]', {
-            specifier,
-            importerId,
-            resolved: nativeResolved.resolvedId,
-          });
-        }
-        return nativeResolved;
-      }
-
-      if (
-        evalOptions.resolver === 'bundler' ||
-        evalOptions.resolver === 'hybrid'
-      ) {
-        let resolved: string | null = null;
-        try {
-          const asyncResolve =
-            services.asyncResolve ?? this.fallbackAsyncResolve;
-          resolved = await asyncResolve(specifier, importerId, stack);
-          this.assertRequestContextActive(context);
-        } catch (error) {
-          if (isCacheRecoveryControlError(error) || isAborted(error)) {
-            throw error;
-          }
-
-          this.assertRequestContextActive(context);
-          resolved = null;
-        }
-        if (resolved) {
-          const normalized = this.normalizeResolvedId(
-            resolved,
-            specifier,
-            importerId,
-            kind
-          );
-          if (process.env.WYW_DEBUG_EVAL_RESOLVE) {
-            // eslint-disable-next-line no-console
-            console.warn('[wyw-eval:resolve:async]', {
-              specifier,
-              importerId,
-              resolved,
-              normalized,
-            });
-          }
-          return {
-            resolvedId: normalized,
-          };
-        }
-      }
-
-      if (evalOptions.resolver === 'bundler' && evalOptions.require !== 'off') {
-        const nativeResolved = this.resolveWithNativeFallback(
-          specifier,
-          importerId,
-          kind
-        );
-        if (process.env.WYW_DEBUG_EVAL_RESOLVE) {
-          // eslint-disable-next-line no-console
-          console.warn('[wyw-eval:resolve:native-fallback]', {
-            specifier,
-            importerId,
-            resolved: nativeResolved.resolvedId,
-          });
-        }
-        return {
-          ...nativeResolved,
-          usedNativeFallback: true,
-        };
-      }
-
-      if (process.env.WYW_DEBUG_EVAL_RESOLVE) {
-        // eslint-disable-next-line no-console
-        console.warn('[wyw-eval:resolve:none]', {
-          specifier,
-          importerId,
-        });
-      }
-      return { resolvedId: null };
-    })();
-
+    const task = this.resolveThroughPolicy(
+      { importer: importerId, kind, specifier, stack },
+      services,
+      context
+    );
     this.resolveInFlight.set(key, task);
 
     try {
       const result = await task;
       this.assertRequestContextActive(context);
       this.resolveCache.set(key, result);
-
-      if (!result.resolvedId) {
-        return this.finalizeResolvedImport(importerId, specifier, {
-          resolvedId: null,
-          only: ['*'],
-        });
-      }
-
-      const overridden = this.applyImportOverrides(
-        {
-          source: specifier,
-          resolved: result.resolvedId,
-          only,
-          external: result.external,
-        },
-        importerId,
-        stack
-      );
-
-      if (result.usedNativeFallback && result.resolvedId) {
-        this.maybeWarnNativeFallback({
-          importerId,
-          specifier,
-          resolvedId: result.resolvedId,
-          kind,
-        });
-      }
-
-      return this.finalizeResolvedImport(importerId, specifier, overridden);
+      return settle(result, false);
     } finally {
       if (this.resolveInFlight.get(key) === task) {
         this.resolveInFlight.delete(key);
       }
     }
+  }
+
+  private async resolveThroughPolicy(
+    request: ResolveRequest,
+    services: Services,
+    context: EvalRequestContext | undefined
+  ): Promise<ResolveCacheEntry> {
+    const evalOptions = getEvalOptions(services);
+    const customResolver = getCustomResolverAdapter(evalOptions);
+    const outcome = await resolveWithPolicy(
+      request,
+      {
+        extensions: this.currentServices.options.pluginOptions.extensions,
+        mode: evalOptions.resolver,
+        phase: 'eval',
+        require: evalOptions.require,
+        trace: getEvalResolveTrace(),
+      },
+      {
+        bundler: async ({ importer, specifier, stack }) => {
+          try {
+            const asyncResolve =
+              services.asyncResolve ?? this.fallbackAsyncResolve;
+            const resolved = await asyncResolve(specifier, importer, stack);
+            this.assertRequestContextActive(context);
+            return resolved;
+          } catch (error) {
+            if (isCacheRecoveryControlError(error) || isAborted(error)) {
+              throw error;
+            }
+
+            this.assertRequestContextActive(context);
+            return null;
+          }
+        },
+        custom:
+          customResolver &&
+          (async (specifier, importer, kind) => {
+            const resolved = await customResolver(specifier, importer, kind);
+            this.assertRequestContextActive(context);
+            return resolved;
+          }),
+        native: this.nativeResolver,
+      }
+    );
+
+    return toResolveCacheEntry(outcome);
   }
 
   private finalizeResolvedImport(
@@ -2338,30 +2141,19 @@ export class EvalBroker {
     importerId: string,
     stack: string[]
   ): ResolveResult {
-    const { root } = this.currentServices.options;
-    const keyInfo = toImportKey({
-      source: resolved.source,
+    const overridden = applyImportOverride({
+      getStack: () => stack,
+      importOverrides:
+        this.currentServices.options.pluginOptions.importOverrides,
+      importer: importerId,
+      only: resolved.only,
       resolved: resolved.resolved,
-      root,
+      root: this.currentServices.options.root,
+      source: resolved.source,
     });
-    const override = getImportOverride(
-      this.currentServices.options.pluginOptions.importOverrides,
-      keyInfo.key
-    );
-
-    let nextResolved = resolved.resolved;
-    let nextExternal = resolved.external;
-    if (override?.mock) {
-      nextResolved = resolveMockSpecifier({
-        mock: override.mock,
-        importer: importerId,
-        root,
-        stack,
-      });
-      nextExternal = false;
-    }
-
-    let nextOnly = applyImportOverrideToOnly(resolved.only, override);
+    const nextResolved = overridden?.resolved ?? resolved.resolved;
+    const nextExternal = overridden?.mocked ? false : resolved.external;
+    let nextOnly = overridden?.only ?? resolved.only;
     const cached = this.currentServices.cache.get(
       'entrypoints',
       nextResolved
@@ -2386,45 +2178,6 @@ export class EvalBroker {
     };
   }
 
-  private resolveWithNativeFallback(
-    specifier: string,
-    importerId: string,
-    kind: ResolveRequestPayload['kind']
-  ): ResolveCacheEntry {
-    const { conditionNames, extensions, oxcOptions } =
-      this.currentServices.options.pluginOptions;
-
-    try {
-      const resolved = resolveWithNativeResolver({
-        conditionNames,
-        extensions,
-        importer: importerId,
-        kind,
-        oxcOptions,
-        specifier,
-      });
-      return {
-        resolvedId: this.normalizeResolvedId(
-          resolved,
-          specifier,
-          importerId,
-          kind
-        ),
-      };
-    } catch (error) {
-      throw new Error(
-        [
-          `[wyw-in-js] Native resolver failed during eval.`,
-          ``,
-          `importer: ${importerId}`,
-          `source:   ${specifier}`,
-          ``,
-          `error: ${error instanceof Error ? error.message : String(error)}`,
-        ].join('\n')
-      );
-    }
-  }
-
   private maybeWarnNativeFallback({
     importerId,
     specifier,
@@ -2437,28 +2190,17 @@ export class EvalBroker {
     kind: ResolveRequestPayload['kind'];
   }) {
     const evalOptions = getEvalOptions(this.currentServices);
-    const { root } = this.currentServices.options;
-    const keyInfo = toImportKey({
-      source: specifier,
+    const keyInfo = findImportOverride({
+      importOverrides:
+        this.currentServices.options.pluginOptions.importOverrides,
       resolved: resolvedId,
-      root,
+      root: this.currentServices.options.root,
+      source: specifier,
     });
-
-    const override = getImportOverride(
-      this.currentServices.options.pluginOptions.importOverrides,
-      keyInfo.key
+    const policy = getNativeFallbackPolicy(
+      evalOptions.require,
+      keyInfo.override
     );
-
-    if (override && override.unknown === undefined) {
-      return;
-    }
-
-    const basePolicy: 'warn' | 'error' =
-      evalOptions.require === 'warn-and-run' ? 'warn' : 'error';
-    let policy = override?.unknown ?? basePolicy;
-    if (evalOptions.require === 'off' && policy !== 'error') {
-      policy = 'error';
-    }
 
     if (policy === 'error') {
       throw new Error(

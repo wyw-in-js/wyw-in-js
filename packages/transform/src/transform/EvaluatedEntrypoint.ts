@@ -6,6 +6,7 @@ import type {
   IIgnoredEntrypoint,
   IEntrypointDependency,
   IPreevalResult,
+  TransformCodeFactory,
 } from './Entrypoint.types';
 import type { ParentEntrypoint } from '../types';
 
@@ -25,6 +26,7 @@ export interface IEvaluatedEntrypoint extends ParentEntrypoint {
   log: Debugger;
   only: string[];
   preevalResult: IPreevalResult | null;
+  transformCodeFactory?: TransformCodeFactory | null;
   transformResultCode: string | null;
 }
 
@@ -47,4 +49,6 @@ export class EvaluatedEntrypoint
   public preevalResult: IPreevalResult | null = null;
 
   public transformResultCode: string | null = null;
+
+  public transformCodeFactory: TransformCodeFactory | null = null;
 }

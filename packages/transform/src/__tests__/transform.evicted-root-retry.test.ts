@@ -61,6 +61,64 @@ it.each(['collect', 'extract'] as const)(
   }
 );
 
+it('retries the supplied root after a superseding generation is evicted', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wyw-evicted-root-'));
+  const filename = path.join(root, 'entry.ts');
+  fs.writeFileSync(filename, code);
+  const cache = new TransformCacheCollection();
+  let superseded = false;
+  let evicted = false;
+  try {
+    const result = await transform(
+      {
+        cache,
+        options: {
+          filename,
+          root,
+          pluginOptions: {
+            configFile: false,
+            tagResolver: () => processorFile,
+            babelOptions: { babelrc: false, configFile: false },
+          },
+        },
+      },
+      code,
+      async () => processorFile,
+      {
+        transform: function* handler(...args) {
+          if (!superseded) {
+            superseded = true;
+            // Another consumer requests more exports of the same module, so
+            // the workflow continues on a superseding generation.
+            Entrypoint.createRoot(
+              this.services,
+              filename,
+              ['__wywPreval', 'cls'],
+              code
+            );
+          }
+          return yield* baseHandlers.transform.apply(this, args);
+        },
+        collect: function* handler(...args) {
+          const stageResult = yield* baseHandlers.collect.apply(this, args);
+          if (!evicted) {
+            evicted = true;
+            cache.invalidateForFile(filename);
+          }
+          return stageResult;
+        },
+      }
+    );
+    expect(superseded).toBe(true);
+    expect(evicted).toBe(true);
+    expect(result.code).not.toContain('css`');
+    expect(result.cssText).toContain('color:red');
+  } finally {
+    disposeEvalBroker(cache);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 it.each(['eviction', 'replacement'] as const)(
   'bounds root retries and rejects foreign publications (%s)',
   async (mode) => {

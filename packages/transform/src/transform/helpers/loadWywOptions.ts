@@ -12,7 +12,9 @@ import type {
 } from '@wyw-in-js/shared';
 
 import { shaker } from '../../shaker';
+import { DEFAULT_EVAL_OPTIONS } from '../../utils/evalOptions';
 import type { PluginOptions } from '../../types';
+import { DEFAULT_EVAL_STRATEGY } from '../../utils/evalStrategy';
 
 const searchPlaces = [
   `.wyw-in-jsrc`,
@@ -172,11 +174,9 @@ export function loadWywOptions(
     useWeakRefInEval: true,
   } satisfies FeatureFlags;
   const defaultEval: EvalOptionsV2 = {
-    errors: 'strict',
-    require: 'warn-and-run',
-    resolver: 'bundler',
+    ...DEFAULT_EVAL_OPTIONS,
     runtime: 'nodejs',
-    strategy: 'hybrid',
+    strategy: DEFAULT_EVAL_STRATEGY,
   };
 
   const config = (() => {
