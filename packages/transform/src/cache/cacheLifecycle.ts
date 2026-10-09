@@ -6,8 +6,9 @@ import {
 } from '../transform/actions/CacheEpochAbortedError';
 import { CacheKeySaltBusyError } from '../transform/actions/CacheKeySaltBusyError';
 import { recordPipelineCacheSalt } from '../debug/pipelineTelemetry';
+import { hashContent } from '../utils/contentHash';
 import { CacheFreshness, type PendingUnknownGraph } from './cacheFreshness';
-import { hashContent, type IBaseCachedEntrypoint } from './cacheTypes';
+import type { IBaseCachedEntrypoint } from './cacheTypes';
 
 export interface TransformCacheEpoch {
   readonly owner: TransformCacheCollection<IBaseCachedEntrypoint>;

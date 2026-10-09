@@ -2,13 +2,17 @@ import type { Debugger, Artifact, StrictOptions } from '@wyw-in-js/shared';
 import type { RawSourceMap } from 'source-map';
 
 import type { TransformCacheCollection, TransformCacheEpoch } from '../cache';
-import type { Options, ITransformFileResult } from '../types';
+import type { Options } from '../types';
 import type { EventEmitter } from '../utils/EventEmitter';
 import type { WYWTransformMetadata } from '../utils/TransformMetadata';
 
 import type { Entrypoint } from './Entrypoint';
 import type { IEvaluatedEntrypoint } from './EvaluatedEntrypoint';
-import type { LoadAndParseFn, IEntrypointDependency } from './Entrypoint.types';
+import type {
+  LoadAndParseFn,
+  IEntrypointDependency,
+  EntrypointTransformResult,
+} from './Entrypoint.types';
 import type { PrevalPayload } from './prevalPayload';
 import type { BaseAction } from './actions/BaseAction';
 import type {
@@ -175,7 +179,8 @@ export type GetNext = <
 >;
 
 export interface ICollectActionResult {
-  ast: unknown; // FIXME: looks like this is not used
+  /** Not produced by the Oxc pipeline. */
+  ast?: unknown;
   code: string | null | undefined;
   map?: RawSourceMap | null;
   metadata?: WYWTransformMetadata | null;
@@ -245,7 +250,7 @@ export interface IResolveImportsAction
 }
 
 export interface ITransformAction
-  extends IBaseAction<ITransformAction, ITransformFileResult, undefined> {
+  extends IBaseAction<ITransformAction, EntrypointTransformResult, undefined> {
   type: 'transform';
 }
 

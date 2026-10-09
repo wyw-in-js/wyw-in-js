@@ -19,6 +19,8 @@ import {
 import { collectOxcExportsAndImports } from './collectOxcExportsAndImports';
 import { EventEmitter } from './EventEmitter';
 import { getOxcNodeChildren } from './oxc/ast';
+import { isInOxcTypeContext } from './oxc/lexicalScopes';
+import { unwrapOxcRuntimeExpression } from './oxc/runtimeSemantics';
 import {
   isControlStatement,
   removeEmptyControlStatements,
@@ -523,10 +525,10 @@ const visit = (
     scope: Scope,
     parent: Node | null,
     ancestors: Node[]
-  ) => void,
+  ) => boolean | void,
   parent: Node | null = null,
   ancestors: Node[] = []
-): void => {
+): boolean => {
   let currentScope = scope;
   if (createsScope(node)) {
     currentScope = createScope(scope, `${node.type}:${node.start}:${node.end}`);
@@ -534,7 +536,10 @@ const visit = (
   }
 
   declareBindings(node, currentScope);
-  enter(node, currentScope, parent, ancestors);
+  // A predicate visitor can stop the whole walk after its first match.
+  if (enter(node, currentScope, parent, ancestors) === true) {
+    return true;
+  }
 
   // Push onto a shared ancestors stack instead of allocating `[...ancestors,
   // node]` per child step (O(n × depth) extra allocation on deep ASTs).
@@ -544,9 +549,13 @@ const visit = (
   ancestors.push(node);
   const children = getChildren(node);
   for (let i = 0; i < children.length; i += 1) {
-    visit(children[i], currentScope, enter, node, ancestors);
+    if (visit(children[i], currentScope, enter, node, ancestors)) {
+      ancestors.pop();
+      return true;
+    }
   }
   ancestors.pop();
+  return false;
 };
 
 export const replaceImportMetaEnvWithOxc = (
@@ -807,12 +816,6 @@ const isPropertyOnlyIdentifier = (node: Node, parent: Node | null): boolean => {
   return false;
 };
 
-const isTypeContext = (ancestors: Node[]): boolean =>
-  ancestors.some(
-    (ancestor) =>
-      ancestor.type.startsWith('TS') || ancestor.type.startsWith('JSDoc')
-  );
-
 const isInsideTypeof = (ancestors: Node[]): boolean =>
   ancestors.some(
     (ancestor) =>
@@ -960,19 +963,29 @@ const findPromiseCallbackOwner = (ancestors: Node[]): Node | null => {
 
 const containsForbiddenIdentifier = (
   node: Node,
-  isIgnoredNode: (node: Node) => boolean
+  isIgnoredNode: (node: Node) => boolean,
+  cache: WeakMap<Node, boolean>
 ): boolean => {
+  const cached = cache.get(node);
+  if (cached !== undefined) {
+    return cached;
+  }
+
   if (isIgnoredNode(node)) {
+    cache.set(node, false);
     return false;
   }
 
   if (node.type === 'Identifier' && alwaysForbiddenIdentifiers.has(node.name)) {
+    cache.set(node, true);
     return true;
   }
 
-  return getChildren(node).some((child) =>
-    containsForbiddenIdentifier(child, isIgnoredNode)
+  const found = getChildren(node).some((child) =>
+    containsForbiddenIdentifier(child, isIgnoredNode, cache)
   );
+  cache.set(node, found);
+  return found;
 };
 
 const collectWindowScopedNames = (
@@ -982,11 +995,14 @@ const collectWindowScopedNames = (
   const windowScopedNames = new Set<string>();
 
   visit(program, createScope(null, 'root'), (node, scope) => {
+    if (isIgnoredNode(node) || node.type !== 'MemberExpression') {
+      return;
+    }
+
+    const object = unwrapOxcRuntimeExpression(node.object, false);
     if (
-      isIgnoredNode(node) ||
-      node.type !== 'MemberExpression' ||
-      node.object.type !== 'Identifier' ||
-      node.object.name !== 'window' ||
+      object.type !== 'Identifier' ||
+      object.name !== 'window' ||
       hasBinding(scope, 'window')
     ) {
       return;
@@ -1007,37 +1023,29 @@ const containsForbiddenReference = (
   windowScopedNames: Set<string>,
   derivedForbiddenBindings: Set<string>,
   isIgnoredNode: (node: Node) => boolean
-): boolean => {
-  let found = false;
-
+): boolean =>
   visit(node, scope, (child, childScope, parent, ancestors) => {
     if (
-      found ||
       isIgnoredNode(child) ||
       child.type !== 'Identifier' ||
-      isTypeContext(ancestors) ||
+      isInOxcTypeContext(ancestors) ||
       isInsideTypeof(ancestors) ||
       isPropertyOnlyIdentifier(child, parent) ||
       isBindingPosition(child, parent)
     ) {
-      return;
+      return false;
     }
 
     const bindingKey = getBindingKey(childScope, child.name);
-    if (
+    return (
       alwaysForbiddenIdentifiers.has(child.name) ||
       (forbiddenGlobals.has(child.name) &&
         !hasBinding(childScope, child.name)) ||
       (windowScopedNames.has(child.name) &&
         !hasBinding(childScope, child.name)) ||
       (bindingKey !== null && derivedForbiddenBindings.has(bindingKey))
-    ) {
-      found = true;
-    }
+    );
   });
-
-  return found;
-};
 
 const nameFromModuleExport = (node: Node): string | null => {
   if (node.type === 'Identifier') {
@@ -1517,6 +1525,9 @@ export const collectDangerousCodeReplacementsWithOxc = (
     return false;
   };
   const derivedForbiddenBindings = new Set<string>();
+  // Parser-cached nodes can be shared between calls, but ignored spans differ.
+  // Keep these immutable subtree results local to this removal plan.
+  const forbiddenIdentifierCache = new WeakMap<Node, boolean>();
   const program = parseOxc(code, filename);
   const imports = collectImportBindings(code, filename, program);
   const componentTypes = getComponentTypes(options);
@@ -1546,7 +1557,11 @@ export const collectDangerousCodeReplacementsWithOxc = (
       }
 
       if (
-        containsForbiddenIdentifier(node.init, isIgnoredNode) ||
+        containsForbiddenIdentifier(
+          node.init,
+          isIgnoredNode,
+          forbiddenIdentifierCache
+        ) ||
         containsForbiddenReference(
           node.init,
           scope,
@@ -1650,7 +1665,7 @@ export const collectDangerousCodeReplacementsWithOxc = (
 
       if (
         node.type !== 'Identifier' ||
-        isTypeContext(ancestors) ||
+        isInOxcTypeContext(ancestors) ||
         isInsideTypeof(ancestors) ||
         isInsideImportDeclaration(ancestors)
       ) {

@@ -66,6 +66,22 @@ Order: `Oxc(source) → esbuild.transform() → WyW transform`.
 
 This is an opt-in feature and may increase build times, so it's recommended to keep `filter` narrow.
 
+## Running transforms in worker threads
+
+Set `parallel: true` to run transforms in up to four worker threads, or pass a number to choose the count:
+
+```js
+wyw({
+  parallel: true,
+});
+```
+
+Options are sent to the workers as data, so function options (for example `tagResolver`) must be defined in a wyw-in-js
+config file. Otherwise, or when `debug` is set, the plugin warns and runs transforms on the main thread.
+
+Each worker starts with a 1.5 GB heap limit and is restarted with a larger one if it runs out of memory; an explicit
+`--max-old-space-size` applies to every worker instead.
+
 ## Disabling vendor prefixing
 
 Stylis adds vendor-prefixed CSS by default. To disable it (and reduce CSS size), pass `prefixer: false`:

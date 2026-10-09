@@ -3,6 +3,11 @@ import path from 'path';
 
 import type { StrictOptions } from '@wyw-in-js/shared';
 
+import {
+  registerPipelineTelemetryReporter,
+  runWithPipelineTelemetry,
+  type PipelineTelemetrySummary,
+} from '../debug/pipelineTelemetry';
 import { EventEmitter } from '../utils/EventEmitter';
 import { runOxcPreevalStage } from '../utils/oxcPreevalStage';
 import { shakeOxcToESM } from '../utils/oxcShaker';
@@ -70,6 +75,71 @@ const linariaOptions: Pick<
 };
 
 describe('runOxcPreevalStage', () => {
+  it.each(['static', 'hybrid', 'execute'] as const)(
+    'serializes %s executable exports only on demand and refreshes after callbacks',
+    (strategy) => {
+      const emitter = new EventEmitter(
+        () => {},
+        () => 0,
+        () => {}
+      );
+      const summaries: PipelineTelemetrySummary[] = [];
+      const unregister = registerPipelineTelemetryReporter(emitter, (summary) =>
+        summaries.push(summary)
+      );
+      const measure = <T>(callback: () => T) =>
+        runWithPipelineTelemetry(
+          emitter,
+          () => ({ filename: fileContext.filename }),
+          callback
+        );
+
+      try {
+        const result = measure(() =>
+          runOxcPreevalStage(
+            "import { css } from 'test-package'; const color = 'red'; export const deferred = css`color: ${color};`;",
+            fileContext,
+            { ...options, eval: { strategy } }
+          )
+        );
+        expect(summaries.at(-1)!.parse.uncachedRequests).toBe(0);
+        expect(result.metadata?.processors).toHaveLength(1);
+        expect(result.dependencyNames).toEqual(
+          strategy === 'execute' ? ['_exp'] : []
+        );
+
+        // Serializing parses the code once, through the shared parse cache.
+        const originalCode = measure(() => result.code);
+        expect(summaries.at(-1)!.parse.allRequests).toBe(1);
+        expect(summaries.at(-1)!.parse.uncachedRequests).toBe(0);
+        expect(measure(() => result.code)).toBe(originalCode);
+        expect(summaries.at(-1)!.parse.allRequests).toBe(0);
+
+        const processor = result.metadata!.processors[0];
+        const replace = processor.doEvaltimeReplacement.bind(processor);
+        processor.doEvaltimeReplacement = jest.fn(replace);
+        result.dependencyNames = [];
+        measure(
+          () => result.finalizeEvaltimeReplacements?.(result.staticValueCache)
+        );
+        expect(summaries.at(-1)!.parse.uncachedRequests).toBe(0);
+        expect(processor.doEvaltimeReplacement).toHaveBeenCalledTimes(1);
+        const finalizedCode = measure(() => result.code);
+        expect(summaries.at(-1)!.parse.allRequests).toBe(1);
+        expect(finalizedCode).not.toContain('css`');
+        expect(finalizedCode).toContain('export const __wywPreval = {};');
+        expect(finalizedCode).not.toBe(originalCode);
+
+        measure(() => result.finalizeEvaltimeReplacements?.());
+        expect(processor.doEvaltimeReplacement).toHaveBeenCalledTimes(1);
+        expect(measure(() => result.code)).toBe(finalizedCode);
+        expect(summaries.at(-1)!.parse.allRequests).toBe(0);
+      } finally {
+        unregister();
+      }
+    }
+  );
+
   it('uses eval.strategy to keep static values out of __wywPreval', () => {
     const result = runOxcPreevalStage(
       `

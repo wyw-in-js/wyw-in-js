@@ -1,14 +1,12 @@
 import type {
   ExportNamedDeclaration,
-  ImportDeclaration,
   Node,
-  Program,
   VariableDeclaration,
   VariableDeclarator,
 } from 'oxc-parser';
 
-import { recordPipelineUncachedParse } from '../debug/pipelineTelemetry';
-import { parseOxcSync } from '../utils/parseOxc';
+import { isTypeOnlyImport } from '../utils/oxc/typeOnlyImport';
+import { parseOxcProgramCached } from '../utils/parseOxc';
 
 const isNode = (value: unknown): value is Node =>
   !!value &&
@@ -17,50 +15,6 @@ const isNode = (value: unknown): value is Node =>
   typeof (value as { type?: unknown }).type === 'string';
 
 const getNodeType = (node: Pick<Node, 'type'>): string => node.type as string;
-
-const parseOxc = (code: string, filename: string): Program => {
-  const astType =
-    filename.endsWith('.ts') || filename.endsWith('.tsx') ? 'ts' : 'js';
-  let parsed: ReturnType<typeof parseOxcSync>;
-  try {
-    parsed = parseOxcSync(
-      filename,
-      code,
-      {
-        astType,
-        range: true,
-        sourceType: 'unambiguous',
-      },
-      'uncached'
-    );
-  } catch (error) {
-    recordPipelineUncachedParse(filename, code, 'unambiguous', astType, true);
-    throw error;
-  }
-  const fatalError = parsed.errors.find((error) => error.severity === 'Error');
-  if (fatalError) {
-    recordPipelineUncachedParse(filename, code, 'unambiguous', astType, true);
-    throw new Error(fatalError.message);
-  }
-  recordPipelineUncachedParse(filename, code, 'unambiguous', astType, false);
-
-  return parsed.program as Program;
-};
-
-const isTypeOnlyImport = (statement: ImportDeclaration): boolean => {
-  if (statement.importKind === 'type') {
-    return true;
-  }
-
-  return Array.isArray(statement.specifiers)
-    ? statement.specifiers.every(
-        (specifier) =>
-          isNode(specifier) &&
-          specifier.type === 'ImportSpecifier' &&
-          specifier.importKind === 'type'
-      )
-    : false;
-};
 
 const isTypeOnlyReExport = (statement: ExportNamedDeclaration): boolean =>
   !!statement.source && statement.exportKind === 'type';
@@ -288,7 +242,7 @@ export function isStaticallyEvaluatableModule(
   code: string,
   filename: string
 ): boolean {
-  return parseOxc(code, filename).body.every((statement) =>
-    isSafeStatement(statement)
+  return parseOxcProgramCached(filename, code, 'unambiguous').body.every(
+    (statement) => isSafeStatement(statement)
   );
 }
