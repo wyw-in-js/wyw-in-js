@@ -54,6 +54,7 @@
     "build:types": "tsc --project ./tsconfig.lib.json --baseUrl . --rootDir ./src",
     "lint": "eslint --ext .js,.ts .",
     "perf:complex-scenarios": "bun run ./scripts/perf-complex-scenarios.ts",
+    "perf:extract-stylis": "bun run ./scripts/perf-extract-stylis.ts",
     "perf:shaker-scaling": "bun run ./scripts/perf-shaker-scaling.ts",
     "test": "bun test src"
   },

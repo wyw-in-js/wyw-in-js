@@ -8,6 +8,7 @@ import type { StrictOptions } from '@wyw-in-js/shared';
 import type { Expression, Node } from 'oxc-parser';
 
 import { createOxcAstService } from '../oxcAstService';
+import type { OxcEdit } from '../oxc/fileEdits';
 import { buildOxcCodeFrameError } from '../oxc/sourceLocations';
 import { applyDeclarativeProcessorSemantics } from '../../processors/declarativeSemantics';
 import { getDisplayName } from './displayName';
@@ -17,16 +18,11 @@ import type {
   CreatedProcessor,
   DefinedProcessor,
   LocationLookup,
-  Replacement,
 } from './types';
 
 let didWarnSkipSymbolMismatch = false;
 export const isReplacementPure = (replacement: ProcessorExpression): boolean =>
   replacement.type === 'CallExpression';
-
-export const shouldCollectStaticExpressionValues = (
-  options: Pick<StrictOptions, 'eval'>
-): boolean => (options.eval?.strategy ?? 'hybrid') !== 'execute';
 
 export const createProcessor = (
   definedProcessor: DefinedProcessor,
@@ -49,7 +45,7 @@ export const createProcessor = (
   evaltimeLive: boolean,
   isReferenced: boolean,
   usedNames: Set<string>,
-  replacements: Replacement[]
+  replacements: OxcEdit[]
 ): CreatedProcessor | null => {
   const [Processor, tagSource] = definedProcessor;
   const astService = createOxcAstService(usedNames);

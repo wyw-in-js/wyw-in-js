@@ -1,6 +1,5 @@
 import type { Expression, Node, Program } from 'oxc-parser';
 
-import type { OxcTextReplacement } from '../../../utils/oxc/replacements';
 import type { runOxcPreevalStage } from '../../../utils/oxcPreevalStage';
 import type { ITransformAction, SyncScenarioFor } from '../../types';
 
@@ -125,8 +124,6 @@ export type Range = {
   end: number;
   start: number;
 };
-
-export type Replacement = Range & OxcTextReplacement;
 
 export type StaticExpressionDependencies = {
   imports: ImportBinding[];

@@ -64,11 +64,7 @@ describe('comment.tsx-like prepare', () => {
       throw new Error('ignored');
     }
 
-    const [code, imports] = prepareCodeForEvalRuntime(
-      services,
-      entrypoint,
-      null
-    );
+    const [code, imports] = prepareCodeForEvalRuntime(services, entrypoint);
 
     expect(code).not.toContain('var Comment');
     expect(code).not.toContain("from 'react'");

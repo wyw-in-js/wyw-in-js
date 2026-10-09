@@ -10,7 +10,16 @@ export { createOxcStaticCallableValue } from './collectOxcTemplateDependencies/s
 export {
   collectOxcExpressionDependencies,
   collectOxcTemplateDependencies,
-  evaluateOxcStaticExpression,
-  evaluateOxcStaticExpressionAt,
   isOxcStaticSerializableValue,
 } from './collectOxcTemplateDependencies/expressionExtraction';
+export {
+  evaluateOxcStaticExpression,
+  evaluateOxcStaticExpressionAt,
+  evaluateOxcStaticOutcome,
+  evaluateOxcStaticOutcomeAt,
+} from './collectOxcTemplateDependencies/staticExpressionEvaluation';
+export {
+  OpaqueReason,
+  UnknownReason,
+  type StaticOutcome,
+} from './collectOxcTemplateDependencies/staticOutcome';

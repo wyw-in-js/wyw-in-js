@@ -19,28 +19,29 @@ import {
 import { collectOxcExportsAndImports } from './collectOxcExportsAndImports';
 import { EventEmitter } from './EventEmitter';
 import { getOxcNodeChildren } from './oxc/ast';
+import { isInOxcTypeContext } from './oxc/lexicalScopes';
+import { unwrapOxcRuntimeExpression } from './oxc/runtimeSemantics';
+import {
+  applyOxcEdits,
+  createOxcFileEdits,
+  type OxcEdit,
+} from './oxc/fileEdits';
 import {
   isControlStatement,
   removeEmptyControlStatements,
   removeOwner,
   type ControlStatement,
 } from './oxcDangerousCodeOwners';
+import { evaluateOxcRequireSpecifiers } from './oxcRequireSpecifiers';
 import { parseOxcProgramCached } from './parseOxc';
 
 type AnyNode = Node & Record<string, unknown>;
 
-export type Replacement = {
-  end: number;
-  start: number;
-  value: string;
-};
-
-export type DangerousCodeReplacement = Replacement & {
+export type DangerousCodeEdit = OxcEdit & {
   kind?: 'component';
 };
 
 type Scope = {
-  bindings: Map<string, Expression | null>;
   key: string;
   names: Set<string>;
   parent: Scope | null;
@@ -109,7 +110,6 @@ const windowTokenRe = /\bwindow\b/;
 const importMetaEnvRe = /\bimport\s*\.\s*meta\s*\.\s*env\b/;
 
 const createScope = (parent: Scope | null, key: string): Scope => ({
-  bindings: new Map(),
   key,
   names: new Set(),
   parent,
@@ -148,22 +148,6 @@ const getBindingKey = (scope: Scope, name: string): string | null => {
   return null;
 };
 
-const getStaticBinding = (
-  scope: Scope,
-  name: string
-): Expression | null | undefined => {
-  let current: Scope | null = scope;
-  while (current) {
-    if (current.bindings.has(name)) {
-      return current.bindings.get(name);
-    }
-
-    current = current.parent;
-  }
-
-  return undefined;
-};
-
 const isFileLikeRequireSpecifier = (value: string): boolean =>
   value.startsWith('.') || value.startsWith('/') || value.startsWith('file:');
 
@@ -183,129 +167,6 @@ const parseOxc = (code: string, filename: string): Program => {
   return parseOxcProgramCached(filename, code, 'unambiguous');
 };
 
-const evaluateStaticValue = (
-  node: Expression,
-  scope: Scope,
-  seen = new Set<string>()
-): unknown | undefined => {
-  const expression = unwrapExpression(node);
-
-  if (expression.type === 'Literal') {
-    return expression.value;
-  }
-
-  if (expression.type === 'TemplateLiteral') {
-    let result = '';
-
-    for (let idx = 0; idx < expression.quasis.length; idx += 1) {
-      result += expression.quasis[idx]?.value.cooked ?? '';
-
-      const nextExpression = expression.expressions[idx];
-      if (!nextExpression) {
-        continue;
-      }
-
-      const value = evaluateStaticValue(nextExpression, scope, seen);
-      if (
-        value === undefined ||
-        (typeof value !== 'string' && typeof value !== 'number')
-      ) {
-        return undefined;
-      }
-
-      result += String(value);
-    }
-
-    return result;
-  }
-
-  if (expression.type === 'Identifier') {
-    if (seen.has(expression.name)) {
-      return undefined;
-    }
-
-    const binding = getStaticBinding(scope, expression.name);
-    if (!binding) {
-      return undefined;
-    }
-
-    return evaluateStaticValue(
-      binding,
-      scope,
-      new Set([...seen, expression.name])
-    );
-  }
-
-  if (expression.type === 'BinaryExpression' && expression.operator === '+') {
-    const left = evaluateStaticValue(expression.left, scope, seen);
-    const right = evaluateStaticValue(expression.right, scope, seen);
-
-    if (left === undefined || right === undefined) {
-      return undefined;
-    }
-
-    if (typeof left === 'number' && typeof right === 'number') {
-      return left + right;
-    }
-
-    if (
-      (typeof left === 'string' || typeof left === 'number') &&
-      (typeof right === 'string' || typeof right === 'number')
-    ) {
-      return `${left}${right}`;
-    }
-  }
-
-  if (
-    expression.type === 'CallExpression' &&
-    expression.callee.type === 'MemberExpression'
-  ) {
-    const objectValue = evaluateStaticValue(
-      expression.callee.object,
-      scope,
-      seen
-    );
-    const propertyName = getMemberPropertyName(expression.callee);
-    if (!propertyName) {
-      return undefined;
-    }
-
-    if (typeof objectValue === 'string') {
-      if (propertyName === 'toLowerCase' && expression.arguments.length === 0) {
-        return objectValue.toLowerCase();
-      }
-
-      if (propertyName === 'toUpperCase' && expression.arguments.length === 0) {
-        return objectValue.toUpperCase();
-      }
-
-      if (propertyName === 'trim' && expression.arguments.length === 0) {
-        return objectValue.trim();
-      }
-
-      if (propertyName === 'concat') {
-        const args = expression.arguments.map((argument) =>
-          argument.type === 'SpreadElement'
-            ? undefined
-            : evaluateStaticValue(argument, scope, seen)
-        );
-        if (
-          args.some((value) => value === undefined) ||
-          args.some(
-            (value) => typeof value !== 'string' && typeof value !== 'number'
-          )
-        ) {
-          return undefined;
-        }
-
-        return objectValue.concat(...args.map((value) => String(value)));
-      }
-    }
-  }
-
-  return undefined;
-};
-
 const isLiteralRequireArg = (node: Expression): boolean => {
   const expression = unwrapExpression(node);
 
@@ -321,23 +182,6 @@ const isLiteralRequireArg = (node: Expression): boolean => {
   }
 
   return false;
-};
-
-export const applyReplacements = (
-  code: string,
-  replacements: Replacement[]
-): string => {
-  let result = code;
-  replacements
-    .sort((a, b) => b.start - a.start)
-    .forEach((replacement) => {
-      result =
-        result.slice(0, replacement.start) +
-        replacement.value +
-        result.slice(replacement.end);
-    });
-
-  return result;
 };
 
 const isIdentifierNamed = (value: unknown, name: string): boolean =>
@@ -466,19 +310,13 @@ const declareBindings = (node: Node, scope: Scope): void => {
     case 'VariableDeclarator': {
       const names = collectBindingNames(node.id);
       for (let i = 0; i < names.length; i += 1) {
-        const name = names[i];
-        scope.names.add(name);
-        scope.bindings.set(name, null);
-      }
-      if (node.id.type === 'Identifier' && node.init) {
-        scope.bindings.set(node.id.name, node.init);
+        scope.names.add(names[i]);
       }
       return;
     }
     case 'ClassDeclaration': {
       if (node.id) {
         scope.names.add(node.id.name);
-        scope.bindings.set(node.id.name, null);
       }
       return;
     }
@@ -486,13 +324,11 @@ const declareBindings = (node: Node, scope: Scope): void => {
     case 'ImportNamespaceSpecifier':
     case 'ImportSpecifier': {
       scope.names.add(node.local.name);
-      scope.bindings.set(node.local.name, null);
       return;
     }
     case 'FunctionDeclaration': {
       if (node.id) {
         scope.names.add(node.id.name);
-        scope.bindings.set(node.id.name, null);
       }
       // Fall through to declare params.
     }
@@ -503,9 +339,7 @@ const declareBindings = (node: Node, scope: Scope): void => {
       for (let i = 0; i < params.length; i += 1) {
         const names = collectBindingNames(params[i]);
         for (let j = 0; j < names.length; j += 1) {
-          const name = names[j];
-          scope.names.add(name);
-          scope.bindings.set(name, null);
+          scope.names.add(names[j]);
         }
       }
       break;
@@ -523,10 +357,10 @@ const visit = (
     scope: Scope,
     parent: Node | null,
     ancestors: Node[]
-  ) => void,
+  ) => boolean | void,
   parent: Node | null = null,
   ancestors: Node[] = []
-): void => {
+): boolean => {
   let currentScope = scope;
   if (createsScope(node)) {
     currentScope = createScope(scope, `${node.type}:${node.start}:${node.end}`);
@@ -534,7 +368,10 @@ const visit = (
   }
 
   declareBindings(node, currentScope);
-  enter(node, currentScope, parent, ancestors);
+  // A predicate visitor can stop the whole walk after its first match.
+  if (enter(node, currentScope, parent, ancestors) === true) {
+    return true;
+  }
 
   // Push onto a shared ancestors stack instead of allocating `[...ancestors,
   // node]` per child step (O(n × depth) extra allocation on deep ASTs).
@@ -544,9 +381,13 @@ const visit = (
   ancestors.push(node);
   const children = getChildren(node);
   for (let i = 0; i < children.length; i += 1) {
-    visit(children[i], currentScope, enter, node, ancestors);
+    if (visit(children[i], currentScope, enter, node, ancestors)) {
+      ancestors.pop();
+      return true;
+    }
   }
   ancestors.pop();
+  return false;
 };
 
 export const replaceImportMetaEnvWithOxc = (
@@ -557,21 +398,17 @@ export const replaceImportMetaEnvWithOxc = (
     return code;
   }
 
-  const replacements: Replacement[] = [];
+  const edits = createOxcFileEdits(code);
 
   visit(parseOxc(code, filename), createScope(null, 'root'), (node) => {
     if (!isImportMetaEnv(node)) {
       return;
     }
 
-    replacements.push({
-      end: node.end,
-      start: node.start,
-      value: '__wyw_import_meta_env',
-    });
+    edits.replace(node.start, node.end, '__wyw_import_meta_env');
   });
 
-  return applyReplacements(code, replacements);
+  return edits.apply();
 };
 
 type CombinedSyntaxRewriteOptions = {
@@ -580,67 +417,54 @@ type CombinedSyntaxRewriteOptions = {
   rewriteDynamicImports: boolean;
 };
 
-type RequireFallbackCandidate = {
-  call: CallExpression;
-  scope: Scope;
-};
-
 function collectDynamicImportAndRequireFallbackReplacements(
   code: string,
   filename: string,
   options: CombinedSyntaxRewriteOptions
-): Replacement[] {
+): OxcEdit[] {
   const eventEmitter = options.eventEmitter ?? EventEmitter.dummy;
   const dynamicImportCandidates: ImportExpression[] = [];
-  const requireFallbackCandidates: RequireFallbackCandidate[] = [];
+  const requireFallbackCandidates: CallExpression[] = [];
 
-  eventEmitter.perf(
+  const program = eventEmitter.perf(
     'transform:preeval:dynamicImportRequireFallback:scan',
     () => {
-      visit(
-        parseOxc(code, filename),
-        createScope(null, 'root'),
-        (node, scope) => {
-          if (
-            options.rewriteDynamicImports &&
-            node.type === 'ImportExpression'
-          ) {
-            dynamicImportCandidates.push(node as ImportExpression);
-          }
-
-          if (!options.addRequireFallback || node.type !== 'CallExpression') {
-            return;
-          }
-
-          const call = node as CallExpression;
-          if (
-            call.callee.type !== 'Identifier' ||
-            call.callee.name !== 'require' ||
-            hasBinding(scope, 'require') ||
-            call.arguments.length !== 1
-          ) {
-            return;
-          }
-
-          const [firstArg] = call.arguments;
-          if (
-            !firstArg ||
-            firstArg.type === 'SpreadElement' ||
-            isLiteralRequireArg(firstArg)
-          ) {
-            return;
-          }
-
-          requireFallbackCandidates.push({
-            call,
-            scope,
-          });
+      const parsed = parseOxc(code, filename);
+      visit(parsed, createScope(null, 'root'), (node, scope) => {
+        if (options.rewriteDynamicImports && node.type === 'ImportExpression') {
+          dynamicImportCandidates.push(node as ImportExpression);
         }
-      );
+
+        if (!options.addRequireFallback || node.type !== 'CallExpression') {
+          return;
+        }
+
+        const call = node as CallExpression;
+        if (
+          call.callee.type !== 'Identifier' ||
+          call.callee.name !== 'require' ||
+          hasBinding(scope, 'require') ||
+          call.arguments.length !== 1
+        ) {
+          return;
+        }
+
+        const [firstArg] = call.arguments;
+        if (
+          !firstArg ||
+          firstArg.type === 'SpreadElement' ||
+          isLiteralRequireArg(firstArg)
+        ) {
+          return;
+        }
+
+        requireFallbackCandidates.push(call);
+      });
+      return parsed;
     }
   );
 
-  const replacements: Replacement[] = [];
+  const replacements: OxcEdit[] = [];
 
   eventEmitter.perf('transform:preeval:dynamicImport', () => {
     dynamicImportCandidates.forEach((importExpression) => {
@@ -661,15 +485,23 @@ function collectDynamicImportAndRequireFallbackReplacements(
   });
 
   eventEmitter.perf('transform:preeval:requireFallback', () => {
-    requireFallbackCandidates.forEach(({ call, scope }) => {
+    if (requireFallbackCandidates.length === 0) {
+      return;
+    }
+
+    const specifiers = evaluateOxcRequireSpecifiers(
+      program,
+      requireFallbackCandidates
+    );
+    requireFallbackCandidates.forEach((call) => {
       const [firstArg] = call.arguments;
       if (!firstArg || firstArg.type === 'SpreadElement') {
         return;
       }
 
-      const staticValue = evaluateStaticValue(firstArg, scope);
+      const staticValue = specifiers.get(call);
       if (
-        typeof staticValue === 'string' &&
+        staticValue !== undefined &&
         isFileLikeRequireSpecifier(staticValue)
       ) {
         replacements.push({
@@ -704,7 +536,7 @@ export const rewriteDynamicImportsWithOxc = (
     }
   );
 
-  return applyReplacements(code, replacements);
+  return applyOxcEdits(code, replacements);
 };
 
 export const addRequireFallbackWithOxc = (
@@ -720,7 +552,7 @@ export const addRequireFallbackWithOxc = (
     }
   );
 
-  return applyReplacements(code, replacements);
+  return applyOxcEdits(code, replacements);
 };
 
 export const rewriteDynamicImportsAndAddRequireFallbackWithOxc = (
@@ -734,7 +566,7 @@ export const rewriteDynamicImportsAndAddRequireFallbackWithOxc = (
     options
   );
 
-  return applyReplacements(code, replacements);
+  return applyOxcEdits(code, replacements);
 };
 
 const isBindingPosition = (node: Node, parent: Node | null): boolean => {
@@ -806,12 +638,6 @@ const isPropertyOnlyIdentifier = (node: Node, parent: Node | null): boolean => {
 
   return false;
 };
-
-const isTypeContext = (ancestors: Node[]): boolean =>
-  ancestors.some(
-    (ancestor) =>
-      ancestor.type.startsWith('TS') || ancestor.type.startsWith('JSDoc')
-  );
 
 const isInsideTypeof = (ancestors: Node[]): boolean =>
   ancestors.some(
@@ -960,19 +786,29 @@ const findPromiseCallbackOwner = (ancestors: Node[]): Node | null => {
 
 const containsForbiddenIdentifier = (
   node: Node,
-  isIgnoredNode: (node: Node) => boolean
+  isIgnoredNode: (node: Node) => boolean,
+  cache: WeakMap<Node, boolean>
 ): boolean => {
+  const cached = cache.get(node);
+  if (cached !== undefined) {
+    return cached;
+  }
+
   if (isIgnoredNode(node)) {
+    cache.set(node, false);
     return false;
   }
 
   if (node.type === 'Identifier' && alwaysForbiddenIdentifiers.has(node.name)) {
+    cache.set(node, true);
     return true;
   }
 
-  return getChildren(node).some((child) =>
-    containsForbiddenIdentifier(child, isIgnoredNode)
+  const found = getChildren(node).some((child) =>
+    containsForbiddenIdentifier(child, isIgnoredNode, cache)
   );
+  cache.set(node, found);
+  return found;
 };
 
 const collectWindowScopedNames = (
@@ -982,11 +818,14 @@ const collectWindowScopedNames = (
   const windowScopedNames = new Set<string>();
 
   visit(program, createScope(null, 'root'), (node, scope) => {
+    if (isIgnoredNode(node) || node.type !== 'MemberExpression') {
+      return;
+    }
+
+    const object = unwrapOxcRuntimeExpression(node.object, false);
     if (
-      isIgnoredNode(node) ||
-      node.type !== 'MemberExpression' ||
-      node.object.type !== 'Identifier' ||
-      node.object.name !== 'window' ||
+      object.type !== 'Identifier' ||
+      object.name !== 'window' ||
       hasBinding(scope, 'window')
     ) {
       return;
@@ -1007,37 +846,29 @@ const containsForbiddenReference = (
   windowScopedNames: Set<string>,
   derivedForbiddenBindings: Set<string>,
   isIgnoredNode: (node: Node) => boolean
-): boolean => {
-  let found = false;
-
+): boolean =>
   visit(node, scope, (child, childScope, parent, ancestors) => {
     if (
-      found ||
       isIgnoredNode(child) ||
       child.type !== 'Identifier' ||
-      isTypeContext(ancestors) ||
+      isInOxcTypeContext(ancestors) ||
       isInsideTypeof(ancestors) ||
       isPropertyOnlyIdentifier(child, parent) ||
       isBindingPosition(child, parent)
     ) {
-      return;
+      return false;
     }
 
     const bindingKey = getBindingKey(childScope, child.name);
-    if (
+    return (
       alwaysForbiddenIdentifiers.has(child.name) ||
       (forbiddenGlobals.has(child.name) &&
         !hasBinding(childScope, child.name)) ||
       (windowScopedNames.has(child.name) &&
         !hasBinding(childScope, child.name)) ||
       (bindingKey !== null && derivedForbiddenBindings.has(bindingKey))
-    ) {
-      found = true;
-    }
+    );
   });
-
-  return found;
-};
 
 const nameFromModuleExport = (node: Node): string | null => {
   if (node.type === 'Identifier') {
@@ -1393,7 +1224,7 @@ const isInDeferredFunctionScope = (ancestors: Node[]): boolean => {
 
 const findFunctionReplacement = (
   ancestors: Node[]
-): DangerousCodeReplacement | null => {
+): DangerousCodeEdit | null => {
   const renderMethod = findLastAncestor(
     ancestors,
     (ancestor) =>
@@ -1453,12 +1284,12 @@ const findFunctionReplacement = (
 };
 
 const normalizeReplacements = (
-  replacements: DangerousCodeReplacement[]
-): DangerousCodeReplacement[] => {
+  replacements: DangerousCodeEdit[]
+): DangerousCodeEdit[] => {
   const sorted = [...replacements].sort((a, b) =>
     a.start === b.start ? b.end - a.end : a.start - b.start
   );
-  const result: DangerousCodeReplacement[] = [];
+  const result: DangerousCodeEdit[] = [];
 
   sorted.forEach((replacement) => {
     const last = result[result.length - 1];
@@ -1484,8 +1315,8 @@ export const collectDangerousCodeReplacementsWithOxc = (
     ignoredSpans?: Array<{ end: number; start: number }>;
     preserveImportMetaEnv?: boolean;
   }
-): DangerousCodeReplacement[] => {
-  const replacements: DangerousCodeReplacement[] = [];
+): DangerousCodeEdit[] => {
+  const replacements: DangerousCodeEdit[] = [];
   const controlStatements: ControlStatement[] = [];
   const ignoredSpans = [...(planningOptions?.ignoredSpans ?? [])]
     .sort((a, b) => a.start - b.start)
@@ -1517,6 +1348,9 @@ export const collectDangerousCodeReplacementsWithOxc = (
     return false;
   };
   const derivedForbiddenBindings = new Set<string>();
+  // Parser-cached nodes can be shared between calls, but ignored spans differ.
+  // Keep these immutable subtree results local to this removal plan.
+  const forbiddenIdentifierCache = new WeakMap<Node, boolean>();
   const program = parseOxc(code, filename);
   const imports = collectImportBindings(code, filename, program);
   const componentTypes = getComponentTypes(options);
@@ -1546,7 +1380,11 @@ export const collectDangerousCodeReplacementsWithOxc = (
       }
 
       if (
-        containsForbiddenIdentifier(node.init, isIgnoredNode) ||
+        containsForbiddenIdentifier(
+          node.init,
+          isIgnoredNode,
+          forbiddenIdentifierCache
+        ) ||
         containsForbiddenReference(
           node.init,
           scope,
@@ -1650,7 +1488,7 @@ export const collectDangerousCodeReplacementsWithOxc = (
 
       if (
         node.type !== 'Identifier' ||
-        isTypeContext(ancestors) ||
+        isInOxcTypeContext(ancestors) ||
         isInsideTypeof(ancestors) ||
         isInsideImportDeclaration(ancestors)
       ) {

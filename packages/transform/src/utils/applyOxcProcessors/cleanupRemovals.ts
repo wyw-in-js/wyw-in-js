@@ -3,6 +3,7 @@
 import type { Node, Program } from 'oxc-parser';
 
 import { getOxcNodeChildren, isOxcNode } from '../oxc/ast';
+import type { OxcEdit } from '../oxc/fileEdits';
 import {
   collectDeclaredNames,
   collectImportLocalNames,
@@ -13,7 +14,6 @@ import {
 import { GENERATED_HELPER_NAME_RE } from './shared';
 import type {
   AnyNode,
-  Replacement,
   ScopedBindingInfo,
   ScopedBindingKind,
   ScopedCleanupScope,
@@ -454,7 +454,7 @@ export function expandImportRemovalRange(
   code: string,
   start: number,
   end: number
-): Replacement {
+): OxcEdit {
   let removalStart = start;
   while (
     removalStart > 0 &&
@@ -492,12 +492,12 @@ export const collectUnusedScopedDeclarationRemovals = (
   code: string,
   bindings: Map<string, ScopedBindingInfo>,
   initialRemovableNames: Set<string>
-): Replacement[] => {
+): OxcEdit[] => {
   const removableBindingIds = collectScopedRemovableBindingIds(
     bindings,
     initialRemovableNames
   );
-  const removals = new Map<string, Replacement>();
+  const removals = new Map<string, OxcEdit>();
 
   bindings.forEach((binding) => {
     if (
@@ -549,7 +549,7 @@ export const expandImportSpecifierRemovalRange = (
   code: string,
   start: number,
   end: number
-): Replacement => {
+): OxcEdit => {
   let removalStart = start;
   let removalEnd = end;
 
@@ -605,34 +605,6 @@ export const expandImportSpecifierRemovalRange = (
   };
 };
 
-export const mergeEmptyRemovalRanges = (
-  removals: Replacement[]
-): Replacement[] => {
-  if (removals.length <= 1) {
-    return removals;
-  }
-
-  const sorted = [...removals].sort((a, b) => a.start - b.start);
-  const merged: Replacement[] = [];
-
-  sorted.forEach((removal) => {
-    const previous = merged[merged.length - 1];
-    if (
-      previous &&
-      previous.value === '' &&
-      removal.value === '' &&
-      removal.start <= previous.end
-    ) {
-      previous.end = Math.max(previous.end, removal.end);
-      return;
-    }
-
-    merged.push({ ...removal });
-  });
-
-  return merged;
-};
-
 export const collectUnusedImportRemovals = (
   code: string,
   program: Program,
@@ -640,8 +612,8 @@ export const collectUnusedImportRemovals = (
   removableNames: Set<string>,
   preserveSideEffectImportLocals: Set<string>,
   preserveSideEffectImportOrderLocals: Set<string> = preserveSideEffectImportLocals
-): Replacement[] => {
-  const removals: Replacement[] = [];
+): OxcEdit[] => {
+  const removals: OxcEdit[] = [];
   const importSourceByLocal = new Map<string, string>();
   const removedSideEffectImportRanges: { end: number; start: number }[] = [];
   const keptImportRangesBySource = new Map<
@@ -807,8 +779,8 @@ export const collectUnusedTopLevelDeclarationRemovals = (
   program: Program,
   referencedNames: Set<string>,
   removableNames: Set<string>
-): Replacement[] => {
-  const removals: Replacement[] = [];
+): OxcEdit[] => {
+  const removals: OxcEdit[] = [];
 
   program.body.forEach((statement) => {
     if (statement.type !== 'VariableDeclaration') {
@@ -835,8 +807,8 @@ export const collectUnusedGeneratedHelperDeclarationRemovals = (
   code: string,
   program: Program,
   referencedNames: Set<string>
-): Replacement[] => {
-  const removals: Replacement[] = [];
+): OxcEdit[] => {
+  const removals: OxcEdit[] = [];
 
   program.body.forEach((statement) => {
     if (statement.type !== 'VariableDeclaration') {
@@ -865,8 +837,8 @@ export const collectTopLevelExpressionStatementRemovals = (
   statements: TopLevelStatementInfo[],
   topLevelBindings: Set<string>,
   removableExpressionRefs: Set<string>
-): Replacement[] => {
-  const removals: Replacement[] = [];
+): OxcEdit[] => {
+  const removals: OxcEdit[] = [];
 
   statements.forEach((statement) => {
     if (statement.node.type !== 'ExpressionStatement') {
@@ -907,8 +879,8 @@ export const collectTopLevelExpressionStatementRemovals = (
 export const collectEmptyTopLevelBlockRemovals = (
   code: string,
   program: Program
-): Replacement[] => {
-  const removals: Replacement[] = [];
+): OxcEdit[] => {
+  const removals: OxcEdit[] = [];
 
   program.body.forEach((statement) => {
     if (statement.type !== 'BlockStatement' || statement.body.length > 0) {

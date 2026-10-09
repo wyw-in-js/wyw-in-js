@@ -8,6 +8,7 @@ import {
   type OxcAssignmentTargetLeaf,
 } from '../oxc/assignmentTargets';
 import { getOxcNodeChildren } from '../oxc/ast';
+import { applyOxcEditsInRange, type OxcEdit } from '../oxc/fileEdits';
 import { collectOxcPatternBindingNames } from '../oxc/patterns';
 import { getOxcSyntacticPropertyKey } from '../oxc/projections';
 import {
@@ -17,13 +18,12 @@ import {
   isPropertyOnlyIdentifier,
   resolveBindingAt,
 } from './scopeAnalysis';
-import { evaluateStatic } from './staticEvaluator';
+import { evaluateStaticOutcome } from './staticEvaluator';
 import { literalCode } from './staticValues';
 import type {
   Binding,
   ExtractionContext,
   OxcStaticImportReference,
-  Replacement,
 } from './types';
 
 export const getConstantReplacement = (
@@ -44,8 +44,8 @@ export const getConstantReplacement = (
     binding?.isRoot &&
     binding.declarator?.id.type === 'Identifier'
   ) {
-    const evaluated = evaluateStatic(binding.declarator.id, ctx);
-    return literalCode(evaluated);
+    const outcome = evaluateStaticOutcome(binding.declarator.id, ctx);
+    return outcome.kind === 'known' ? literalCode(outcome.value) : null;
   }
 
   return null;
@@ -332,8 +332,8 @@ export const collectIdentifierReferenceReplacements = (
   expression: Expression,
   replacements: ReadonlyMap<string, string>,
   exactReplacements?: ReadonlyMap<number, string>
-): Replacement[] => {
-  const localReplacements: Replacement[] = [];
+): OxcEdit[] => {
+  const localReplacements: OxcEdit[] = [];
   const ancestors: Node[] = [];
   const rootScope = createReplacementScope(null, true);
   const scopes = new WeakMap<Node, ReplacementScope>();
@@ -381,36 +381,20 @@ export const collectIdentifierReferenceReplacements = (
   return localReplacements;
 };
 
-export const applyExpressionReplacements = (
-  expression: Pick<Node, 'end' | 'start'>,
-  replacements: Replacement[],
-  code: string
-): string => {
-  let result = code.slice(expression.start, expression.end);
-  replacements
-    .sort((a, b) => b.start - a.start)
-    .forEach((replacement) => {
-      const start = replacement.start - expression.start;
-      const end = replacement.end - expression.start;
-      result = result.slice(0, start) + replacement.value + result.slice(end);
-    });
-  return result;
-};
-
 export const replaceIdentifierReferences = (
   expression: Expression,
   replacements: ReadonlyMap<string, string>,
   code: string,
   exactReplacements?: ReadonlyMap<number, string>
 ): string => {
-  return applyExpressionReplacements(
-    expression,
+  return applyOxcEditsInRange(
+    code,
     collectIdentifierReferenceReplacements(
       expression,
       replacements,
       exactReplacements
     ),
-    code
+    expression
   );
 };
 
@@ -458,11 +442,11 @@ export const collectStaticNamespaceMemberReferences = (
 ): {
   coveredReferenceStarts: Set<number>;
   imports: OxcStaticImportReference[];
-  replacements: Replacement[];
+  replacements: OxcEdit[];
 } => {
   const coveredReferenceStarts = new Set<number>();
   const imports = new Map<string, OxcStaticImportReference>();
-  const replacements: Replacement[] = [];
+  const replacements: OxcEdit[] = [];
 
   const walk = (node: Node): void => {
     if (node.type === 'MemberExpression' && node.object.type === 'Identifier') {

@@ -9,6 +9,7 @@ import path from 'path';
 import { asyncResolveFallback } from '@wyw-in-js/shared';
 import {
   createFileReporter,
+  createParallelTransforms,
   disposeEvalBroker,
   TransformCacheCollection,
   transform,
@@ -29,6 +30,8 @@ const modulesOptions = [
   'esnext',
   'native',
 ] as const;
+
+const preprocessorOptions = ['stylis', 'none'] as const;
 
 const argv = yargs(hideBin(process.argv))
   .usage('Usage: $0 [options] <files ...>')
@@ -64,6 +67,12 @@ const argv = yargs(hideBin(process.argv))
     type: 'boolean',
     description: 'Run extraction in parallel',
     default: false,
+  })
+  .option('workers', {
+    type: 'number',
+    description:
+      'Number of worker threads for extraction (implies --parallel); 0 runs extraction on the main thread',
+    requiresArg: true,
   })
   .option('output-metadata', {
     type: 'boolean',
@@ -106,6 +115,28 @@ const argv = yargs(hideBin(process.argv))
     description: 'Pattern of files to ignore. Be sure to provide a string',
     requiresArg: true,
   })
+  .option('prefixer', {
+    type: 'boolean',
+    description:
+      'Add vendor prefixes to the extracted CSS (--no-prefixer turns them off)',
+    default: true,
+  })
+  .option('keep-comments', {
+    type: 'boolean',
+    description: 'Keep CSS comments in the extracted CSS',
+  })
+  .option('keep-comments-pattern', {
+    type: 'string',
+    description:
+      'Keep only CSS comments that match this regular expression, e.g. "rtl:"',
+    requiresArg: true,
+    coerce: (pattern: string) => new RegExp(pattern),
+  })
+  .conflicts('keep-comments', 'keep-comments-pattern')
+  .option('preprocessor', {
+    choices: preprocessorOptions,
+    description: 'CSS preprocessor for the extracted rules',
+  })
   .alias('help', 'h')
   .alias('version', 'v')
   .parseSync();
@@ -115,13 +146,17 @@ type Options = {
   debug?: string;
   ignore?: string;
   insertCssRequires?: string;
+  keepComments?: boolean | RegExp;
   modules: (typeof modulesOptions)[number];
   outDir: string;
   outputMetadata?: boolean;
   parallel?: boolean;
+  prefixer?: boolean;
+  preprocessor?: (typeof preprocessorOptions)[number];
   sourceMaps?: boolean;
   sourceRoot: string;
   transform?: boolean;
+  workers?: number;
 };
 
 function resolveRequireInsertionFilename(filename: string) {
@@ -157,6 +192,25 @@ async function processFiles(files: (number | string)[], options: Options) {
     [] as string[]
   );
   const cache = new TransformCacheCollection();
+  // One object for all files: transform() memoizes options by identity.
+  const pluginOptions = {
+    configFile: options.configFile,
+    outputMetadata: options.outputMetadata,
+  };
+  const parallelTransforms = createParallelTransforms({
+    onFallback: (message) => console.warn(`[wyw-in-js] ${message}`),
+    parallel: options.workers,
+    unsupported: options.debug ? 'the `--debug` option is set' : null,
+  });
+  const workerScope =
+    parallelTransforms?.scope('cli', () => ({
+      asyncResolveKey: 'cli',
+      keepComments: options.keepComments,
+      pluginOptions,
+      prefixer: options.prefixer,
+      preprocessor: options.preprocessor,
+      root: options.sourceRoot,
+    })) ?? null;
 
   const modifiedFiles: { content: string; name: string }[] = [];
 
@@ -165,7 +219,8 @@ async function processFiles(files: (number | string)[], options: Options) {
   // eslint-disable-next-line no-restricted-syntax
   for (const filename of resolvedFiles) {
     if (fs.lstatSync(filename).isDirectory()) {
-      return;
+      // eslint-disable-next-line no-continue
+      continue;
     }
 
     const outputFilename = resolveOutputFilename(
@@ -177,23 +232,29 @@ async function processFiles(files: (number | string)[], options: Options) {
     const transformServices = {
       options: {
         filename,
+        keepComments: options.keepComments,
         outputFilename,
-        pluginOptions: {
-          configFile: options.configFile,
-          outputMetadata: options.outputMetadata,
-        },
+        pluginOptions,
+        prefixer: options.prefixer,
+        preprocessor: options.preprocessor,
         root: options.sourceRoot,
       },
       cache,
       eventEmitter: emitter,
     };
 
+    const run = (code: string) =>
+      workerScope
+        ? workerScope.transform({
+            asyncResolve: asyncResolveFallback,
+            code,
+            filename,
+            outputFilename,
+          })
+        : transform(transformServices, code, asyncResolveFallback);
+
     tasks.push(() =>
-      transform(
-        transformServices,
-        fs.readFileSync(filename).toString(),
-        asyncResolveFallback
-      ).then(
+      run(fs.readFileSync(filename).toString()).then(
         ({
           code,
           cssText,
@@ -288,7 +349,7 @@ async function processFiles(files: (number | string)[], options: Options) {
   }
 
   try {
-    if (options.parallel) {
+    if (options.parallel || workerScope) {
       const res = await Promise.all(tasks.map((task) => task()));
       console.log(
         `Successfully extracted ${res.filter((i) => i).length} CSS files.`
@@ -312,6 +373,7 @@ async function processFiles(files: (number | string)[], options: Options) {
 
     onDone(options.sourceRoot ?? process.cwd());
   } finally {
+    await parallelTransforms?.dispose();
     disposeEvalBroker(cache);
     cache.clear('all');
     modifiedFiles.length = 0;
@@ -325,11 +387,15 @@ processFiles(argv._, {
   debug: argv.debug,
   ignore: argv.ignore,
   insertCssRequires: argv['insert-css-requires'],
+  keepComments: argv['keep-comments-pattern'] ?? argv['keep-comments'],
   modules: argv.modules,
   parallel: argv.parallel,
   outDir: argv['out-dir'],
   outputMetadata: argv['output-metadata'],
+  prefixer: argv.prefixer,
+  preprocessor: argv.preprocessor,
   sourceMaps: argv['source-maps'],
   sourceRoot: argv['source-root'],
   transform: argv.transform,
+  workers: argv.workers,
 });

@@ -81,4 +81,54 @@ describe('build-esm-oxc', () => {
       rmSync(root, { force: true, recursive: true });
     }
   });
+
+  it('points .js specifiers of TypeScript siblings at the emitted extension', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wyw-build-esm-'));
+
+    try {
+      mkdirSync(join(root, 'src'));
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ type: 'module' }, null, 2)
+      );
+      writeFileSync(
+        join(root, 'src', 'helper.ts'),
+        'export const answer: number = 42;\n'
+      );
+      writeFileSync(
+        join(root, 'src', 'index.ts'),
+        "export { answer } from './helper.js';\n"
+      );
+
+      const build = spawnSync(
+        nodeBinary,
+        [buildScript, '--out-file-extension', '.mjs'],
+        { cwd: root, encoding: 'utf8' }
+      );
+
+      if (build.status !== 0) {
+        throw new Error(
+          `build failed with ${build.status}\n${build.stdout}\n${build.stderr}`
+        );
+      }
+
+      const output = readFileSync(join(root, 'esm', 'index.mjs'), 'utf8');
+      expect(output).toContain('"./helper.mjs"');
+
+      const run = spawnSync(
+        nodeBinary,
+        [
+          '--input-type=module',
+          '-e',
+          `import { answer } from ${JSON.stringify(
+            join(root, 'esm', 'index.mjs')
+          )}; if (answer !== 42) process.exit(1);`,
+        ],
+        { encoding: 'utf8' }
+      );
+      expect(run.status).toBe(0);
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  });
 });

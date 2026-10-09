@@ -1,17 +1,15 @@
 /* eslint-disable no-continue,no-await-in-loop,require-yield */
-import type { EvalOptionsV2 } from '@wyw-in-js/shared';
-
+import {
+  createNativeResolverAdapter,
+  getCustomResolverAdapter,
+  resolveWithPolicy,
+} from '../../resolve/resolvePolicy';
+import { getEvalOptions } from '../../utils/evalOptions';
 import { getFileIdx } from '../../utils/getFileIdx';
+import { applyImportOverride } from '../../utils/importOverrides';
 import type { Entrypoint } from '../Entrypoint';
 import { getStack, isSuperSet, mergeOnly } from '../Entrypoint.helpers';
 import type { IEntrypointDependency } from '../Entrypoint.types';
-import {
-  applyImportOverrideToOnly,
-  getImportOverride,
-  resolveMockSpecifier,
-  toImportKey,
-} from '../../utils/importOverrides';
-import { resolveWithNativeResolver } from '../../utils/nativeResolver';
 import type {
   AsyncScenarioForAction,
   IResolveImportsAction,
@@ -26,19 +24,6 @@ type AsyncResolve = (
   stack: string[]
 ) => Promise<string | null>;
 
-const DEFAULT_EVAL_OPTIONS: Required<
-  Pick<EvalOptionsV2, 'errors' | 'require' | 'resolver'>
-> = {
-  errors: 'strict',
-  require: 'warn-and-run',
-  resolver: 'bundler',
-};
-
-const getEvalOptions = (services: Services): EvalOptionsV2 => ({
-  ...DEFAULT_EVAL_OPTIONS,
-  ...(services.options.pluginOptions.eval ?? {}),
-});
-
 const resolveWithConfiguredEvalResolver = async (
   services: Services,
   source: string,
@@ -47,49 +32,21 @@ const resolveWithConfiguredEvalResolver = async (
   resolve: AsyncResolve
 ): Promise<string | null> => {
   const evalOptions = getEvalOptions(services);
-
-  if (evalOptions.customResolver) {
-    const customResolved = await evalOptions.customResolver(
-      source,
-      importer,
-      'import'
-    );
-    if (customResolved) {
-      return customResolved.external ? null : customResolved.id;
+  const outcome = await resolveWithPolicy(
+    { importer, kind: 'import', specifier: source, stack },
+    { mode: evalOptions.resolver, phase: 'prepare' },
+    {
+      bundler: (request) =>
+        resolve(request.specifier, request.importer, request.stack),
+      custom: getCustomResolverAdapter(evalOptions),
+      native: createNativeResolverAdapter(() => services.options.pluginOptions),
     }
+  );
 
-    if (evalOptions.resolver === 'custom') {
-      return null;
-    }
-  }
-
-  if (evalOptions.resolver === 'hybrid') {
-    try {
-      return resolveWithNativeResolver({
-        conditionNames: services.options.pluginOptions.conditionNames,
-        extensions: services.options.pluginOptions.extensions,
-        importer,
-        kind: 'import',
-        oxcOptions: services.options.pluginOptions.oxcOptions,
-        specifier: source,
-      });
-    } catch {
-      return resolve(source, importer, stack);
-    }
-  }
-
-  if (evalOptions.resolver === 'native') {
-    return resolveWithNativeResolver({
-      conditionNames: services.options.pluginOptions.conditionNames,
-      extensions: services.options.pluginOptions.extensions,
-      importer,
-      kind: 'import',
-      oxcOptions: services.options.pluginOptions.oxcOptions,
-      specifier: source,
-    });
-  }
-
-  return resolve(source, importer, stack);
+  // An external import is not part of the dependency graph.
+  return outcome.kind === 'file' || outcome.kind === 'virtual'
+    ? outcome.id
+    : null;
 };
 
 function applyImportOverrides(
@@ -107,30 +64,23 @@ function applyImportOverrides(
   const stack = getStack(entrypoint);
 
   return resolvedImports.map((dependency) => {
-    const { key } = toImportKey({
-      source: dependency.source,
+    const overridden = applyImportOverride({
+      getStack: () => stack,
+      importOverrides: overrides,
+      importer,
+      only: dependency.only,
       resolved: dependency.resolved,
       root,
+      source: dependency.source,
     });
-    const override = getImportOverride(overrides, key);
-    if (!override) {
+    if (!overridden) {
       return dependency;
     }
 
-    const nextOnly = applyImportOverrideToOnly(dependency.only, override);
-    const nextResolved = override.mock
-      ? resolveMockSpecifier({
-          mock: override.mock,
-          importer,
-          root,
-          stack,
-        })
-      : dependency.resolved;
-
     return {
       ...dependency,
-      only: nextOnly,
-      resolved: nextResolved,
+      only: overridden.only,
+      resolved: overridden.resolved,
     };
   });
 }

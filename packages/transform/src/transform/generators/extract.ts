@@ -97,7 +97,9 @@ export function* extract(
     throw new Error('entrypoint was ignored');
   }
 
-  let allRules: Rules = {};
+  // Merged in place: re-spreading the accumulator for every artifact is
+  // quadratic in the number of processors of a file.
+  const allRules: Rules = {};
   const allReplacements: Replacements = [];
   processors.forEach((processor) => {
     processor.artifacts.forEach((artifact) => {
@@ -107,11 +109,7 @@ export function* extract(
         sourceMapReplacements: Replacements,
       ];
 
-      allRules = {
-        ...allRules,
-        ...rules,
-      };
-
+      Object.assign(allRules, rules);
       allReplacements.push(...replacements);
     });
   });
