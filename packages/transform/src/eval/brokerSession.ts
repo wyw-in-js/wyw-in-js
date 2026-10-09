@@ -27,6 +27,7 @@ import {
 import { EventEmitter } from '../utils/EventEmitter';
 import { DEFAULT_EVAL_OPTIONS, getEvalOptions } from '../utils/evalOptions';
 import { parseRequest, stripQueryAndHash } from '../utils/parseRequest';
+import { getEvalRunnerConditions } from '../utils/nativeResolver';
 
 import type { DebugEvalValueStatus } from './debugEval';
 import type { EvalRunnerInitPayload } from './protocol';
@@ -307,6 +308,7 @@ export const buildRunnerInitPayload = (
   const { pluginOptions } = services.options;
   const root = services.options.root ?? process.cwd();
   const { overrideContext, importOverrides, extensions } = pluginOptions;
+  const conditions = getEvalRunnerConditions(pluginOptions);
   const features = featuresOverride ?? pluginOptions.features;
   const baseGlobals: Record<string, unknown> = {
     ...(evalOptions.globals ?? {}),
@@ -332,6 +334,7 @@ export const buildRunnerInitPayload = (
       require: evalOptions.require ?? DEFAULT_EVAL_OPTIONS.require,
       root,
       extensions,
+      ...(conditions ? { conditions } : {}),
     },
     features,
     entrypoint: entrypoint.name,

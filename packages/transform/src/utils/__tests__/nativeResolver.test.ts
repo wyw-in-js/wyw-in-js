@@ -11,6 +11,7 @@ import path from 'path';
 import {
   clearNativeResolverCacheForTest,
   expandNativeResolverConditions,
+  getEvalRunnerConditions,
   getNativeResolverCacheSizeForTest,
   resolveWithNativeResolver,
 } from '../nativeResolver';
@@ -30,6 +31,37 @@ describe('nativeResolver', () => {
     expect(
       expandNativeResolverConditions('require', ['custom', '...'])
     ).toEqual(['custom', 'require', 'node', 'default']);
+  });
+
+  it('expands eval runner conditions per edge kind only when configured', () => {
+    expect(
+      getEvalRunnerConditions({ conditionNames: ['custom', '...'] })
+    ).toEqual({
+      import: ['custom', 'node', 'import', 'default'],
+      require: ['custom', 'require', 'node', 'default'],
+    });
+    expect(
+      getEvalRunnerConditions({ conditionNames: ['custom-only'] })
+    ).toEqual({ import: ['custom-only'], require: ['custom-only'] });
+    expect(getEvalRunnerConditions({})).toBeUndefined();
+    expect(getEvalRunnerConditions({ conditionNames: [] })).toBeUndefined();
+  });
+
+  it('falls back to oxc resolver conditionNames for eval runner conditions', () => {
+    expect(
+      getEvalRunnerConditions({
+        oxcOptions: { resolver: { conditionNames: ['from-oxc', '...'] } },
+      })
+    ).toEqual({
+      import: ['from-oxc', 'node', 'import', 'default'],
+      require: ['from-oxc', 'require', 'node', 'default'],
+    });
+    expect(
+      getEvalRunnerConditions({
+        conditionNames: ['custom'],
+        oxcOptions: { resolver: { conditionNames: ['from-oxc'] } },
+      })
+    ).toEqual({ import: ['custom'], require: ['custom'] });
   });
 
   it('resolves with oxc resolver options and preserves request suffixes', () => {

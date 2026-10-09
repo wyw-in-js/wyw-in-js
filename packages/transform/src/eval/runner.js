@@ -960,7 +960,79 @@ const createVmContext = async (filename, features, globals) => {
 const stripQueryAndHash = (value) =>
   value.split('?')[0]?.split('#')[0] ?? value;
 
-const normalizeResolvedId = (resolvedId, specifier, importer, extensions) => {
+const isBarePackageSubpath = (id) => {
+  if (id.startsWith('.') || path.isAbsolute(id)) return false;
+  if (id.startsWith('@')) return id.split('/').length > 2;
+  return id.includes('/');
+};
+
+// Resolves `specifier` from `importerFile` like require.resolve, but with the
+// export conditions the broker sent in INIT for this edge kind, so a specifier
+// the runner resolves on its own lands where the broker would resolve it.
+// Without configured conditions Node's defaults apply, as they always did.
+const resolveFromImporter = (
+  specifier,
+  importerFile,
+  kind,
+  evalOptions,
+  nodeRequire = null
+) => {
+  const conditions =
+    kind === 'require'
+      ? evalOptions.conditions?.require
+      : evalOptions.conditions?.import;
+  if (!conditions) {
+    const importerRequire =
+      nodeRequire ?? createRequire(pathToFileURL(importerFile).href);
+    return importerRequire.resolve(specifier);
+  }
+
+  const parent = {
+    id: importerFile,
+    filename: importerFile,
+    paths: NativeModule._nodeModulePaths(path.dirname(importerFile)),
+  };
+  const options = { conditions: new Set(conditions) };
+  try {
+    return NativeModule._resolveFilename(specifier, parent, false, options);
+  } catch (error) {
+    // A conditional wildcard export such as "./src/*" may map to an
+    // extensionless target, so retry the known extensions. Only for
+    // extensionless relative, absolute and package subpath ids: guessing an
+    // extension for a package root such as "@scope/pkg" would name another
+    // package ("@scope/pkg.js").
+    const canRetry =
+      error?.code === 'MODULE_NOT_FOUND' &&
+      path.extname(specifier) === '' &&
+      (specifier.startsWith('.') ||
+        path.isAbsolute(specifier) ||
+        isBarePackageSubpath(specifier));
+    if (!canRetry) throw error;
+
+    const extensions = evalOptions.extensions ?? [];
+    for (let index = 0; index < extensions.length; index += 1) {
+      try {
+        return NativeModule._resolveFilename(
+          `${specifier}${extensions[index]}`,
+          parent,
+          false,
+          options
+        );
+      } catch {
+        // Try the next extension.
+      }
+    }
+    throw error;
+  }
+};
+
+const normalizeResolvedId = (
+  resolvedId,
+  specifier,
+  importer,
+  evalOptions,
+  kind
+) => {
   const stripped = stripQueryAndHash(resolvedId);
   if (!stripped) return resolvedId;
   if (path.extname(stripped)) return resolvedId;
@@ -981,7 +1053,7 @@ const normalizeResolvedId = (resolvedId, specifier, importer, extensions) => {
   }
 
   const suffix = resolvedId.slice(stripped.length);
-  const resolvedExtensions = extensions ?? [];
+  const resolvedExtensions = evalOptions.extensions ?? [];
   for (let index = 0; index < resolvedExtensions.length; index += 1) {
     const ext = resolvedExtensions[index];
     const fileCandidate = `${candidate}${ext}`;
@@ -997,9 +1069,12 @@ const normalizeResolvedId = (resolvedId, specifier, importer, extensions) => {
 
   if (importer) {
     try {
-      const importerFile = stripQueryAndHash(importer);
-      const nodeRequire = createRequire(pathToFileURL(importerFile).href);
-      const resolved = nodeRequire.resolve(stripQueryAndHash(specifier));
+      const resolved = resolveFromImporter(
+        stripQueryAndHash(specifier),
+        stripQueryAndHash(importer),
+        kind,
+        evalOptions
+      );
       if (resolved && resolved !== stripped) {
         return `${resolved}${suffix}`;
       }
@@ -1642,7 +1717,13 @@ const createRequireFn = (importer) => {
 
       let resolved = hasResolvedOverride
         ? stripQueryAndHash(resolvedOverride)
-        : nodeRequire.resolve(stripQueryAndHash(specifier));
+        : resolveFromImporter(
+            stripQueryAndHash(specifier),
+            importerFile,
+            'require',
+            state.evalOptions,
+            nodeRequire
+          );
 
       const isFileSpecifier =
         specifier.startsWith('.') || path.isAbsolute(specifier);
@@ -1760,7 +1841,12 @@ const unwrapCjsNamespace = (namespace, resolvedFile) => {
   return hit ? hit.exports : namespace;
 };
 
-const resolveExternalImportTarget = (resolvedFile, importer, specifier) => {
+const resolveExternalImportTarget = (
+  resolvedFile,
+  importer,
+  specifier,
+  kind
+) => {
   const target = resolvedFile ?? specifier;
   if (path.isAbsolute(target)) {
     return { target: pathToFileURL(target).href, resolvedFile: target };
@@ -1770,9 +1856,12 @@ const resolveExternalImportTarget = (resolvedFile, importer, specifier) => {
   // as a bare id. Dynamic import resolves bare ids relative to this runner,
   // unlike the old createRequire(importer) path, so resolve the id from the
   // evaluated importer before switching loaders.
-  const importerFile = stripQueryAndHash(importer);
-  const importerRequire = createRequire(pathToFileURL(importerFile).href);
-  const importerResolved = importerRequire.resolve(target);
+  const importerResolved = resolveFromImporter(
+    target,
+    stripQueryAndHash(importer),
+    kind,
+    state.evalOptions
+  );
   if (path.isAbsolute(importerResolved)) {
     return {
       target: pathToFileURL(importerResolved).href,
@@ -1844,7 +1933,8 @@ const loadExternalModule = async (
         const resolvedImport = resolveExternalImportTarget(
           resolvedFile,
           importer,
-          specifier
+          specifier,
+          kind
         );
         value = unwrapCjsNamespace(
           await import(resolvedImport.target),
@@ -2066,7 +2156,8 @@ resolveModule = async (
       cached.resolvedId,
       specifier,
       importerId,
-      state.evalOptions.extensions
+      state.evalOptions,
+      kind
     );
     const treatExternal = shouldLoadAsExternalModule(
       specifier,
@@ -2115,7 +2206,8 @@ resolveModule = async (
           resolved.resolvedId,
           specifier,
           importerId,
-          state.evalOptions.extensions
+          state.evalOptions,
+          kind
         )
       : resolved.resolvedId;
     if (process.env.WYW_DEBUG_EVAL_RESOLVE) {
@@ -2865,6 +2957,41 @@ const handleMessage = async (message) => {
   }
 };
 
+const MALFORMED_MESSAGE_PREVIEW_LENGTH = 200;
+
+// stdin carries one JSON message per line. A line that is not a protocol
+// message is reported on stderr and dropped instead of taking the runner, and
+// every evaluation in flight with it, down.
+const parseStdinMessage = (line) => {
+  let message;
+  let problem = null;
+  try {
+    message = JSON.parse(line);
+    if (
+      !isPlainObject(message) ||
+      typeof message.type !== 'string' ||
+      !isPlainObject(message.payload)
+    ) {
+      problem = 'not a protocol message';
+    }
+  } catch (error) {
+    problem = error instanceof Error ? error.message : String(error);
+  }
+
+  if (problem === null) return message;
+
+  const preview =
+    line.length > MALFORMED_MESSAGE_PREVIEW_LENGTH
+      ? `${line.slice(0, MALFORMED_MESSAGE_PREVIEW_LENGTH)}… (${
+          line.length
+        } chars)`
+      : line;
+  process.stderr.write(
+    `[wyw-eval-runner] Dropped malformed stdin message (${problem}): ${preview}\n`
+  );
+  return null;
+};
+
 let buffer = '';
 process.stdin.setEncoding('utf8');
 process.stdin.resume();
@@ -2874,8 +3001,8 @@ process.stdin.on('data', (chunk) => {
   buffer = lines.pop() ?? '';
   lines.forEach((line) => {
     if (!line.trim()) return;
-    const message = JSON.parse(line);
-    handleMessage(message);
+    const message = parseStdinMessage(line);
+    if (message) handleMessage(message);
   });
 });
 
