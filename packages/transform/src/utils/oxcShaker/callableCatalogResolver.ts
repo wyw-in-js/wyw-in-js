@@ -4,6 +4,10 @@ import {
   getOxcRuntimePropertyPathKeyRoot,
   type OxcRuntimePropertyPathKey,
 } from '../oxc/projections';
+import {
+  isTypeOnlyImport,
+  isTypeOnlyImportSpecifier,
+} from '../oxc/typeOnlyImport';
 import type { collectTopLevelAliases } from './bindingProvenance';
 import {
   aliasesImportedRootCohortInState,
@@ -15,20 +19,15 @@ import { createNormalizedCatalogResolver } from './provenanceClosure';
 
 type StatementOwner = { node: Node };
 
-type AnyNode = Node & Record<string, unknown>;
-
 export const collectRootImportedBindings = (program: Program): Set<string> => {
   const rootImportedBindings = new Set<string>();
   program.body.forEach((node) => {
-    if (
-      node.type !== 'ImportDeclaration' ||
-      (node as AnyNode).importKind === 'type'
-    ) {
+    if (node.type !== 'ImportDeclaration' || isTypeOnlyImport(node)) {
       return;
     }
 
     node.specifiers.forEach((specifier) => {
-      if ((specifier as AnyNode).importKind !== 'type') {
+      if (!isTypeOnlyImportSpecifier(node, specifier)) {
         rootImportedBindings.add(specifier.local.name);
       }
     });

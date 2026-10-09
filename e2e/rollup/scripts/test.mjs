@@ -60,6 +60,20 @@ const main = async () => {
     console.log(cssFixture);
     throw new Error('CSS output does not match fixture');
   }
+
+  // `src/no-css.js` produces no CSS, but Rollup must still receive its
+  // transformed code: the original keeps the `css` tag, whose runtime
+  // implementation in template-tag-syntax throws when it is called.
+  const jsOutput = await fs.readFile(
+    path.resolve(PKG_DIR, 'dist', 'index.js'),
+    'utf8'
+  );
+
+  if (jsOutput.includes('color: black')) {
+    console.log(colors.red('Output JS:'));
+    console.log(jsOutput);
+    throw new Error('JS output keeps an untransformed css tag');
+  }
 };
 
 main().then(

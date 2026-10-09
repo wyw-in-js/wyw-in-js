@@ -192,32 +192,6 @@ const closeAsyncScenario = async (
   }
 };
 
-const closeSyncScenario = (
-  action: BaseAction<ActionQueueItem>,
-  generator: {
-    closeNext(value: never): IteratorResult<unknown, unknown>;
-    return(value: never): IteratorResult<unknown, unknown>;
-  }
-) => {
-  try {
-    let result = generator.return(undefined as never);
-    let closeYields = 0;
-    while (!result.done && closeYields < MAX_CLOSE_YIELDS) {
-      action.log('action scenario yielded while closing');
-      closeYields += 1;
-      result = generator.closeNext(undefined as never);
-    }
-    if (!result.done) {
-      action.log(
-        'stopped draining action scenario after %d cleanup yields',
-        MAX_CLOSE_YIELDS
-      );
-    }
-  } catch (error) {
-    action.log('failed to close action scenario %O', error);
-  }
-};
-
 export async function asyncActionRunner<TAction extends ActionQueueItem>(
   action: BaseAction<TAction>,
   actionHandlers: Handlers<'async' | 'sync'>,
@@ -331,96 +305,6 @@ export async function asyncActionRunner<TAction extends ActionQueueItem>(
   } finally {
     if (!completed) {
       await closeAsyncScenario(action, generator);
-    }
-  }
-}
-
-export function syncActionRunner<TAction extends ActionQueueItem>(
-  action: BaseAction<TAction>,
-  actionHandlers: Handlers<'sync'>,
-  stack: string[] = [getActionRef(action.type, action.entrypoint)]
-): TypeOfResult<TAction> {
-  assertCurrentCacheEpoch(action);
-  action.entrypoint.assertNotSuperseded();
-  if (action.result !== Pending) {
-    action.log('result is cached');
-    return action.result as TypeOfResult<TAction>;
-  }
-
-  const handler = getHandler(action, actionHandlers);
-  const generator = action.run<'sync'>(handler);
-  let actionResult: TypeOfResult<ActionQueueItem> | ActionError | undefined;
-  let abortDelivered = false;
-  let completed = false;
-  try {
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-      assertCurrentCacheEpoch(action);
-      let result: IteratorResult<YieldArg, TypeOfResult<TAction>>;
-      const actionError = isActionError(actionResult) ? actionResult : null;
-      if (action.abortSignal?.aborted && !abortDelivered) {
-        action.log('action is aborted');
-        abortDelivered = true;
-        result = generator.throw(new AbortError(stack[0]));
-      } else if (actionError) {
-        result = generator.throw(actionError[1]);
-      } else {
-        result = generator.next(actionResult as YieldResult);
-      }
-      assertCurrentCacheEpoch(action);
-      if (result.done) {
-        completed = true;
-        return result.value as TypeOfResult<TAction>;
-      }
-
-      const [type, entrypoint, data, abortSignal, services = action.services] =
-        result.value;
-      const parentWasSuperseded = action.entrypoint.supersededWith !== null;
-      let nextAction: BaseAction<ActionQueueItem> | undefined;
-      try {
-        // Creation can observe a supersede after the parent yielded. Deliver
-        // that child failure through the same catch path as execution failures.
-        nextAction = entrypoint.createAction(
-          type,
-          data,
-          abortSignal,
-          action.actionContext,
-          services
-        );
-        actionResult = syncActionRunner(nextAction, actionHandlers, [
-          ...stack,
-          getActionRef(type, entrypoint),
-        ]);
-        if (!parentWasSuperseded && action.entrypoint.supersededWith !== null) {
-          throw new AbortError('superseded');
-        }
-      } catch (e) {
-        (nextAction ?? action).log('error', e);
-        if (isCacheRecoveryControlError(e)) {
-          throw e;
-        }
-        // A fence protects the superseded entrypoint's own scenarios from
-        // resuming with stale state. Once it crosses into a parent that is a
-        // different, still-current entrypoint it is an ordinary child failure,
-        // so processImports can continue on the successor generation.
-        if (isCacheRecoveryFenceError(e)) {
-          if (
-            nextAction === undefined ||
-            nextAction.entrypoint === action.entrypoint ||
-            action.entrypoint.supersededWith !== null ||
-            !isAborted(e)
-          ) {
-            throw e;
-          }
-          actionResult = [ACTION_ERROR, new AbortError('superseded')];
-        } else {
-          actionResult = [ACTION_ERROR, e];
-        }
-      }
-    }
-  } finally {
-    if (!completed) {
-      closeSyncScenario(action, generator);
     }
   }
 }

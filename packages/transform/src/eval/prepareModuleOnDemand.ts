@@ -1,4 +1,3 @@
-import { oxcShaker } from '../shaker';
 import type { Services } from '../transform/types';
 import { Entrypoint } from '../transform/Entrypoint';
 import { isSuperSet } from '../transform/Entrypoint.helpers';
@@ -73,16 +72,9 @@ export function prepareModuleOnDemand(
     });
   }
 
-  const ast =
-    entrypoint.loadedAndParsed.evaluator === oxcShaker
-      ? null
-      : (entrypoint.loadedAndParsed.ast as Parameters<
-          typeof prepareCodeForEvalRuntime
-        >[2]);
   const [code, imports] = prepareCodeForEvalRuntime(
     services,
     entrypoint,
-    ast,
     telemetry
   );
 

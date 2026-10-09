@@ -1,15 +1,11 @@
 import type {
   SyncScenarioForAction,
-  ICollectAction,
-  IEvalAction,
   IExplodeReexportsAction,
-  IExtractAction,
-  IWorkflowAction,
   ActionQueueItem,
 } from '../types';
 
 import { getExports } from './getExports';
-import { processEntrypointAsync } from './processEntrypoint';
+import { processEntrypoint } from './processEntrypoint';
 import { processImports } from './processImports';
 import { transform } from './transform';
 
@@ -21,13 +17,11 @@ function* emptyHandler<T extends ActionQueueItem>(
 }
 
 export const baseProcessingHandlers = {
-  collect: emptyHandler<ICollectAction>,
-  evalFile: emptyHandler<IEvalAction>,
+  // Never scheduled. It stays because it is part of the public
+  // `baseHandlers` shape and of the `transform()` custom handlers type.
   explodeReexports: emptyHandler<IExplodeReexportsAction>,
-  extract: emptyHandler<IExtractAction>,
-  workflow: emptyHandler<IWorkflowAction>,
   getExports,
-  processEntrypoint: processEntrypointAsync,
+  processEntrypoint,
   processImports,
   transform,
 };

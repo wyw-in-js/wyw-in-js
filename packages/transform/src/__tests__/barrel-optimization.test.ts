@@ -4,16 +4,10 @@ import path from 'path';
 
 import { TransformCacheCollection } from '../cache';
 import { Entrypoint } from '../transform/Entrypoint';
-import {
-  asyncActionRunner,
-  syncActionRunner,
-} from '../transform/actions/actionRunner';
+import { asyncActionRunner } from '../transform/actions/actionRunner';
 import { isCacheEpochAbortedError } from '../transform/actions/CacheEpochAbortedError';
 import { baseProcessingHandlers } from '../transform/generators/baseProcessingHandlers';
-import {
-  processEntrypoint,
-  processEntrypointAsync,
-} from '../transform/generators/processEntrypoint';
+import { processEntrypoint } from '../transform/generators/processEntrypoint';
 import {
   asyncResolveImports,
   syncResolveImports,
@@ -126,7 +120,7 @@ const createServices = (
     },
   });
 
-const runEntrypoint = (
+const runEntrypoint = async (
   root: string,
   filename: string,
   cache: TransformCacheCollection,
@@ -159,7 +153,9 @@ const runEntrypoint = (
         },
       };
 
-      syncActionRunner(
+      // Retries after a cache epoch abort must run one after another.
+      // eslint-disable-next-line no-await-in-loop
+      await asyncActionRunner(
         entrypoint.createAction('processEntrypoint', undefined, null),
         handlers
       );
@@ -193,7 +189,7 @@ const runEntrypointAsync = async (
 
   const handlers = {
     ...baseProcessingHandlers,
-    processEntrypoint: processEntrypointAsync,
+    processEntrypoint,
     resolveImports(this: IResolveImportsAction) {
       return asyncResolveImports.call(this, resolve);
     },
@@ -233,7 +229,7 @@ const getBarrelRewriteEventsForSource = (
   );
 
 describe('barrel optimization', () => {
-  it('rewrites pure barrel imports to leaf modules and reuses the manifest cache', () => {
+  it('rewrites pure barrel imports to leaf modules and reuses the manifest cache', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wyw-barrel-opt-'));
 
     try {
@@ -261,13 +257,13 @@ describe('barrel optimization', () => {
       const cache = new TransformCacheCollection();
       const recorder = createRecorder();
 
-      const first = runEntrypoint(
+      const first = await runEntrypoint(
         root,
         consumerA,
         cache,
         recorder.eventEmitter
       );
-      const second = runEntrypoint(
+      const second = await runEntrypoint(
         root,
         consumerB,
         cache,
@@ -316,7 +312,7 @@ describe('barrel optimization', () => {
     }
   });
 
-  it('rewrites import-export passthrough modules to the leaf modules', () => {
+  it('rewrites import-export passthrough modules to the leaf modules', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wyw-barrel-imports-'));
 
     try {
@@ -334,7 +330,7 @@ describe('barrel optimization', () => {
         `import { red } from './barrel';\nexport const value = red;\n`
       );
 
-      const entrypoint = runEntrypoint(
+      const entrypoint = await runEntrypoint(
         root,
         consumerFile,
         new TransformCacheCollection(),
@@ -348,7 +344,7 @@ describe('barrel optimization', () => {
     }
   });
 
-  it('rewrites export-star barrel chains to the final leaf modules', () => {
+  it('rewrites export-star barrel chains to the final leaf modules', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wyw-barrel-star-'));
 
     try {
@@ -372,7 +368,7 @@ describe('barrel optimization', () => {
       const cache = new TransformCacheCollection();
       const recorder = createRecorder();
       const getExportsServices: Services[] = [];
-      const entrypoint = runEntrypoint(
+      const entrypoint = await runEntrypoint(
         root,
         consumerFile,
         cache,
@@ -396,7 +392,7 @@ describe('barrel optimization', () => {
     }
   });
 
-  it('falls back to the original barrel path for impure barrels', () => {
+  it('falls back to the original barrel path for impure barrels', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wyw-barrel-impure-'));
 
     try {
@@ -416,7 +412,7 @@ describe('barrel optimization', () => {
         `import { red } from './barrel';\nexport const value = red;\n`
       );
 
-      const entrypoint = runEntrypoint(
+      const entrypoint = await runEntrypoint(
         root,
         consumerFile,
         cache,
@@ -436,7 +432,7 @@ describe('barrel optimization', () => {
     }
   });
 
-  it('rewrites passthrough imports from mixed barrels and keeps local exports on the original path', () => {
+  it('rewrites passthrough imports from mixed barrels and keeps local exports on the original path', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wyw-barrel-mixed-'));
 
     try {
@@ -455,7 +451,7 @@ describe('barrel optimization', () => {
         `import { red, local } from './barrel';\nexport const value = [red, local];\n`
       );
 
-      const entrypoint = runEntrypoint(
+      const entrypoint = await runEntrypoint(
         root,
         consumerFile,
         new TransformCacheCollection(),
@@ -505,7 +501,7 @@ describe('barrel optimization', () => {
     }
   });
 
-  it('treats passthrough-only imports from mixed barrels as fully rewritten', () => {
+  it('treats passthrough-only imports from mixed barrels as fully rewritten', async () => {
     const root = fs.mkdtempSync(
       path.join(os.tmpdir(), 'wyw-barrel-mixed-fully-')
     );
@@ -526,7 +522,7 @@ describe('barrel optimization', () => {
         `import { red } from './barrel';\nexport const value = red;\n`
       );
 
-      const entrypoint = runEntrypoint(
+      const entrypoint = await runEntrypoint(
         root,
         consumerFile,
         new TransformCacheCollection(),
@@ -561,7 +557,7 @@ describe('barrel optimization', () => {
     }
   });
 
-  it('does not re-resolve generated leaf imports after mixed-barrel rewrite', () => {
+  it('does not re-resolve generated leaf imports after mixed-barrel rewrite', async () => {
     const root = fs.mkdtempSync(
       path.join(os.tmpdir(), 'wyw-barrel-mixed-preresolved-')
     );
@@ -583,7 +579,7 @@ describe('barrel optimization', () => {
         `import { red } from './barrel';\nexport const value = red;\n`
       );
 
-      runEntrypoint(
+      await runEntrypoint(
         root,
         consumerFile,
         new TransformCacheCollection(),
@@ -604,7 +600,7 @@ describe('barrel optimization', () => {
     }
   });
 
-  it('falls back to the original barrel path for side-effect-only imports', () => {
+  it('falls back to the original barrel path for side-effect-only imports', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wyw-barrel-sidefx-'));
 
     try {
@@ -625,7 +621,7 @@ describe('barrel optimization', () => {
         `import { red } from './barrel';\nexport const value = red;\n`
       );
 
-      const entrypoint = runEntrypoint(
+      const entrypoint = await runEntrypoint(
         root,
         consumerFile,
         new TransformCacheCollection(),
@@ -645,7 +641,7 @@ describe('barrel optimization', () => {
     }
   });
 
-  it('keeps export-star on the original path when exports use string-literal names', () => {
+  it('keeps export-star on the original path when exports use string-literal names', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wyw-barrel-star-lit-'));
 
     try {
@@ -661,7 +657,7 @@ describe('barrel optimization', () => {
       fs.writeFileSync(barrelFile, `export * from './leaf';\n`);
       fs.writeFileSync(consumerFile, `export * from './barrel';\n`);
 
-      const entrypoint = runEntrypoint(
+      const entrypoint = await runEntrypoint(
         root,
         consumerFile,
         new TransformCacheCollection(),
@@ -681,7 +677,7 @@ describe('barrel optimization', () => {
     }
   });
 
-  it('keeps export-star on the original path for mixed barrels with local exports', () => {
+  it('keeps export-star on the original path for mixed barrels with local exports', async () => {
     const root = fs.mkdtempSync(
       path.join(os.tmpdir(), 'wyw-barrel-mixed-star-')
     );
@@ -698,7 +694,7 @@ describe('barrel optimization', () => {
       fs.writeFileSync(redFile, `export const red = 'red';\n`);
       fs.writeFileSync(consumerFile, `export * from './barrel';\n`);
 
-      const entrypoint = runEntrypoint(
+      const entrypoint = await runEntrypoint(
         root,
         consumerFile,
         new TransformCacheCollection(),
@@ -712,7 +708,7 @@ describe('barrel optimization', () => {
     }
   });
 
-  it('invalidates cached barrel manifests when a leaf behind export-star changes', () => {
+  it('invalidates cached barrel manifests when a leaf behind export-star changes', async () => {
     const root = fs.mkdtempSync(
       path.join(os.tmpdir(), 'wyw-barrel-leaf-cache-')
     );
@@ -727,7 +723,7 @@ describe('barrel optimization', () => {
       fs.writeFileSync(barrelFile, `export * from './leaf';\n`);
       fs.writeFileSync(consumerFile, `export * from './barrel';\n`);
 
-      const first = runEntrypoint(
+      const first = await runEntrypoint(
         root,
         consumerFile,
         cache,
@@ -740,7 +736,7 @@ describe('barrel optimization', () => {
 
       fs.writeFileSync(leafFile, `export const bar = 'bar';\n`);
 
-      const second = runEntrypoint(
+      const second = await runEntrypoint(
         root,
         consumerFile,
         cache,
@@ -759,7 +755,7 @@ describe('barrel optimization', () => {
     }
   });
 
-  it('invalidates cached direct-export analysis when an impure export-star source changes', () => {
+  it('invalidates cached direct-export analysis when an impure export-star source changes', async () => {
     const root = fs.mkdtempSync(
       path.join(os.tmpdir(), 'wyw-exports-cache-leaf-')
     );
@@ -779,7 +775,7 @@ describe('barrel optimization', () => {
       fs.writeFileSync(barrelFile, `export * from './impure';\n`);
       fs.writeFileSync(consumerFile, `export * from './barrel';\n`);
 
-      const first = runEntrypoint(
+      const first = await runEntrypoint(
         root,
         consumerFile,
         cache,
@@ -793,7 +789,7 @@ describe('barrel optimization', () => {
 
       fs.writeFileSync(leafFile, `export const bar = 'bar';\n`);
 
-      const second = runEntrypoint(
+      const second = await runEntrypoint(
         root,
         consumerFile,
         cache,
@@ -812,7 +808,7 @@ describe('barrel optimization', () => {
     }
   });
 
-  it('invalidates cached output when a rewritten barrel changes', () => {
+  it('invalidates cached output when a rewritten barrel changes', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wyw-barrel-cache-'));
 
     try {
@@ -830,7 +826,7 @@ describe('barrel optimization', () => {
         `import { foo } from './barrel';\nexport const value = foo;\n`
       );
 
-      const first = runEntrypoint(
+      const first = await runEntrypoint(
         root,
         consumerFile,
         cache,
@@ -841,7 +837,7 @@ describe('barrel optimization', () => {
 
       fs.writeFileSync(barrelFile, `export { foo } from './foo-b';\n`);
 
-      const second = runEntrypoint(
+      const second = await runEntrypoint(
         root,
         consumerFile,
         cache,
