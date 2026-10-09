@@ -501,7 +501,7 @@ describe('explicit Oxc workflow', () => {
       const result = await evaluate(services, entrypoint);
       const base = result.values?.get('_exp');
 
-      expect(preparedEntry.code).toContain('var _exp = () => Base;');
+      expect(preparedEntry.code).toContain('const _exp = () => Base;');
       expect(preparedEntry.code).toContain(
         'export const __wywPreval = { _exp };'
       );
