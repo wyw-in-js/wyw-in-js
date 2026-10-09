@@ -1,5 +1,5 @@
 import type { ApplyOxcProcessorsResult } from '../applyOxcProcessors/types';
-import { usesStaticEvaluation } from './evalStrategy';
+import { usesStaticEvaluation } from '../evalStrategy';
 import type { OxcPreevalOptions, StaticPreevalOverlay } from './types';
 
 export const createStaticPreevalOverlay = (

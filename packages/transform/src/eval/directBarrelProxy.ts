@@ -2,6 +2,10 @@
 import { oxcShaker } from '../shaker';
 import { analyzeOxcBarrelFile } from '../transform/oxcBarrelManifest';
 import type { Services } from '../transform/types';
+import {
+  isTypeOnlyImport,
+  isTypeOnlyImportSpecifier,
+} from '../utils/oxc/typeOnlyImport';
 
 import { isEvalOnlyKey } from './brokerCache';
 import type { PreparedModule } from './prepareModuleOnDemand';
@@ -45,25 +49,6 @@ type ParsedModuleAst = {
   program: {
     body: ModuleStatement[];
   };
-};
-
-const isTypeOnlyImport = (statement: ModuleStatement): boolean => {
-  if (statement.type !== 'ImportDeclaration') {
-    return false;
-  }
-
-  if (statement.importKind === 'type') {
-    return true;
-  }
-
-  if (statement.specifiers.length === 0) {
-    return false;
-  }
-
-  return statement.specifiers.every(
-    (specifier) =>
-      specifier.type === 'ImportSpecifier' && specifier.importKind === 'type'
-  );
 };
 
 const isTypeOnlyExport = (statement: ModuleStatement): boolean =>
@@ -118,10 +103,7 @@ export const buildDirectBarrelProxy = (
       }
 
       for (const specifier of statement.specifiers) {
-        if (
-          specifier.type === 'ImportSpecifier' &&
-          specifier.importKind === 'type'
-        ) {
+        if (isTypeOnlyImportSpecifier(statement, specifier)) {
           continue;
         }
 

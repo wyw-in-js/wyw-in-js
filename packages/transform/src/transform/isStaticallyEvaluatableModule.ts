@@ -1,11 +1,11 @@
 import type {
   ExportNamedDeclaration,
-  ImportDeclaration,
   Node,
   VariableDeclaration,
   VariableDeclarator,
 } from 'oxc-parser';
 
+import { isTypeOnlyImport } from '../utils/oxc/typeOnlyImport';
 import { parseOxcProgramCached } from '../utils/parseOxc';
 
 const isNode = (value: unknown): value is Node =>
@@ -15,21 +15,6 @@ const isNode = (value: unknown): value is Node =>
   typeof (value as { type?: unknown }).type === 'string';
 
 const getNodeType = (node: Pick<Node, 'type'>): string => node.type as string;
-
-const isTypeOnlyImport = (statement: ImportDeclaration): boolean => {
-  if (statement.importKind === 'type') {
-    return true;
-  }
-
-  return Array.isArray(statement.specifiers)
-    ? statement.specifiers.every(
-        (specifier) =>
-          isNode(specifier) &&
-          specifier.type === 'ImportSpecifier' &&
-          specifier.importKind === 'type'
-      )
-    : false;
-};
 
 const isTypeOnlyReExport = (statement: ExportNamedDeclaration): boolean =>
   !!statement.source && statement.exportKind === 'type';

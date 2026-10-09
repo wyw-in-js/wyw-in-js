@@ -225,6 +225,48 @@ const assertSelectiveCacheReuse = (stats) => {
   }
 };
 
+// Rspack 1.x (and 2.x before 2.2.4) keeps writing the persistent cache after
+// compiler.close() has called back, so a child that exits right away can
+// leave a partial cache, which the next build misses. Wait until the cache
+// directory stops changing.
+const waitForQuietDirectory = async (
+  directory,
+  { quietMs = 500, timeoutMs = 30_000 } = {}
+) => {
+  const readState = async () => {
+    const entries = await fs
+      .readdir(directory, { recursive: true, withFileTypes: true })
+      .catch(() => []);
+    const files = await Promise.all(
+      entries
+        .filter((entry) => entry.isFile())
+        .map(async (entry) => {
+          const file = path.join(entry.parentPath, entry.name);
+          const stat = await fs.stat(file).catch(() => null);
+          return `${file}:${stat?.size}:${stat?.mtimeMs}`;
+        })
+    );
+    return files.sort().join('\n');
+  };
+
+  const deadline = Date.now() + timeoutMs;
+  let state = await readState();
+  let quietSince = Date.now();
+  while (Date.now() - quietSince < quietMs) {
+    if (Date.now() > deadline) {
+      throw new Error(`${directory} kept changing for ${timeoutMs} ms`);
+    }
+    await new Promise((resolve) => {
+      setTimeout(resolve, 25);
+    });
+    const nextState = await readState();
+    if (nextState !== state) {
+      state = nextState;
+      quietSince = Date.now();
+    }
+  }
+};
+
 const getArg = (name) =>
   process.argv
     .find((arg) => arg.startsWith(`${name}=`))
@@ -239,6 +281,9 @@ const runPersistentCacheChild = async () => {
 
   const entry = path.resolve(PKG_DIR, 'src', 'index.js');
   const stats = await runBuild(entry, { cacheDirectory, dependency });
+  if (useRspack) {
+    await waitForQuietDirectory(cacheDirectory);
+  }
   await assertFixture();
 
   if (process.argv.includes('--expect-selective-cache')) {

@@ -12,6 +12,10 @@ import type {
   VariableDeclaration,
 } from 'oxc-parser';
 
+import {
+  isTypeOnlyImport,
+  isTypeOnlyImportSpecifier,
+} from '../utils/oxc/typeOnlyImport';
 import { parseOxcProgramCached } from '../utils/parseOxc';
 
 import type {
@@ -35,21 +39,6 @@ type AnyNode = Node & Record<string, unknown>;
 
 const nameFromModuleExport = (node: ModuleExportName): string =>
   node.type === 'Literal' ? String(node.value) : node.name;
-
-const isTypeOnlyImport = (statement: ImportDeclaration): boolean => {
-  if (statement.importKind === 'type') {
-    return true;
-  }
-
-  if (statement.specifiers.length === 0) {
-    return false;
-  }
-
-  return statement.specifiers.every(
-    (specifier) =>
-      specifier.type === 'ImportSpecifier' && specifier.importKind === 'type'
-  );
-};
 
 const isTypeOnlyExport = (
   statement: ExportAllDeclaration | ExportNamedDeclaration | ExportSpecifier
@@ -165,7 +154,7 @@ const collectImportBinding = (
   statement: ImportDeclaration,
   imports: Map<string, LocalImportBinding>
 ): boolean => {
-  if (statement.importKind === 'type') {
+  if (isTypeOnlyImport(statement)) {
     return true;
   }
 
@@ -173,16 +162,10 @@ const collectImportBinding = (
     return false;
   }
 
-  let sawValueImport = false;
   for (const specifier of statement.specifiers) {
-    if (
-      specifier.type === 'ImportSpecifier' &&
-      specifier.importKind === 'type'
-    ) {
+    if (isTypeOnlyImportSpecifier(statement, specifier)) {
       continue;
     }
-
-    sawValueImport = true;
 
     if (specifier.type === 'ImportSpecifier') {
       imports.set(specifier.local.name, {
@@ -208,7 +191,7 @@ const collectImportBinding = (
     });
   }
 
-  return sawValueImport || isTypeOnlyImport(statement);
+  return true;
 };
 
 const getNamedReexport = (

@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
+import { retainContentHashMemo } from '../utils/contentHash';
 import type { EventEmitter } from '../utils/EventEmitter';
 import {
   getOxcParserLanguage,
@@ -133,6 +134,9 @@ const registerPipelineTelemetryEmitter = (
     emit,
   };
   reporterByEmitter.set(emitter, reporter);
+  // Revisions are keyed by the same SHA-256 digests the transform cache
+  // computes, so keep the shared digest memo alive while reporting.
+  const releaseContentHashMemo = retainContentHashMemo();
   let registered = true;
 
   return () => {
@@ -141,6 +145,7 @@ const registerPipelineTelemetryEmitter = (
     }
 
     registered = false;
+    releaseContentHashMemo();
     reporter.codeMeasurements.entries.clear();
     reporter.codeMeasurements.evictionKeys =
       reporter.codeMeasurements.entries.keys();
@@ -150,44 +155,6 @@ const registerPipelineTelemetryEmitter = (
       reporterByEmitter.delete(emitter);
     }
   };
-};
-
-export const getPipelineCodeSha256Hex = (code: string): string | undefined => {
-  const accumulator = getAccumulator();
-  if (!accumulator) return undefined;
-
-  try {
-    const measurement = getCodeMeasurement(accumulator, code);
-    if (!measurement) return undefined;
-    if (measurement.sha256Hex === undefined) {
-      measurement.sha256Hex = Buffer.from(
-        measurement.revision,
-        'base64url'
-      ).toString('hex');
-    }
-    return measurement.sha256Hex;
-  } catch {
-    return undefined;
-  }
-};
-
-export const primePipelineCodeSha256Hex = (
-  code: string,
-  sha256Hex: string
-): void => {
-  const accumulator = getAccumulator();
-  if (!accumulator) return;
-
-  try {
-    if (!/^[\da-f]{64}$/u.test(sha256Hex)) return;
-    setMissingCodeMeasurement(accumulator, code, {
-      bytes: Buffer.byteLength(code),
-      revision: Buffer.from(sha256Hex, 'hex').toString('base64url'),
-      sha256Hex,
-    });
-  } catch {
-    // Debug measurement failures must not affect transform cache behavior.
-  }
 };
 
 export const runWithoutPipelineTelemetry = <T>(callback: () => T): T =>
