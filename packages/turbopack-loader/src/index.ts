@@ -1,10 +1,15 @@
 import fs from 'fs';
 import path from 'path';
 
-import type { RawSourceMap } from 'source-map';
 import type { LoaderContext, RawLoaderDefinitionFunction } from 'webpack';
 
-import { logger } from '@wyw-in-js/shared';
+import {
+  logger,
+  normalizeInputSourceMap,
+  stripQueryAndHash,
+  WYW_CSS_MODULE_EXTENSION,
+  WYW_CSS_OUTPUT_QUERY,
+} from '@wyw-in-js/shared';
 import type {
   DependencyResolution,
   PluginOptions,
@@ -16,21 +21,6 @@ import { makeCssModuleGlobalWithLineDeltas } from './css-modules';
 import { writeFileIfChanged } from './file-utils';
 import { insertImportStatement } from './insert-import';
 import { remapSourceMapLines } from './source-map';
-
-const DEFAULT_EXTENSION = '.wyw-in-js.module.css';
-const CSS_OUTPUT_QUERY = '__wyw_css';
-
-const stripQueryAndHash = (request: string) => {
-  const queryIdx = request.indexOf('?');
-  const hashIdx = request.indexOf('#');
-
-  if (queryIdx === -1) {
-    return hashIdx === -1 ? request : request.slice(0, hashIdx);
-  }
-  if (hashIdx === -1) return request.slice(0, queryIdx);
-
-  return request.slice(0, Math.min(queryIdx, hashIdx));
-};
 
 export type LoaderOptions = {
   cssOutputMode?: 'sidecar' | 'query';
@@ -86,24 +76,6 @@ const getTransformScope = (scopeKey: string | undefined) => {
   sharedResolverScopes.set(scopeKey, scope);
   return scope;
 };
-
-function convertSourceMap(
-  value: RawSourceMap | string | null | undefined,
-  filename: string
-): RawSourceMap | undefined {
-  if (typeof value === 'string' || !value) {
-    return undefined;
-  }
-
-  return {
-    ...value,
-    file: value.file ?? filename,
-    mappings: value.mappings ?? '',
-    names: value.names ?? [],
-    sources: value.sources ?? [],
-    version: value.version ?? 3,
-  };
-}
 
 async function resolveWith(
   resolve: ResolveFn,
@@ -179,7 +151,7 @@ const turbopackLoader: Loader = function turbopackLoader(
   const cssFileName = `${path.basename(
     this.resourcePath,
     path.extname(this.resourcePath)
-  )}${DEFAULT_EXTENSION}`;
+  )}${WYW_CSS_MODULE_EXTENSION}`;
   const cssFilePath = path.join(path.dirname(this.resourcePath), cssFileName);
   const cssImportPath = `./${cssFileName}`;
 
@@ -226,7 +198,10 @@ const turbopackLoader: Loader = function turbopackLoader(
   const transformServices = {
     options: {
       filename: this.resourcePath,
-      inputSourceMap: convertSourceMap(inputSourceMap, this.resourcePath),
+      inputSourceMap: normalizeInputSourceMap(
+        inputSourceMap,
+        this.resourcePath
+      ),
       pluginOptions: { configFile, ...rest },
       prefixer,
       keepComments,
@@ -286,7 +261,7 @@ const turbopackLoader: Loader = function turbopackLoader(
         if (cssOutputMode === 'query') {
           importPath = `./${path.basename(
             this.resourcePath
-          )}?${CSS_OUTPUT_QUERY}`;
+          )}?${WYW_CSS_OUTPUT_QUERY}`;
         } else {
           writeFileIfChanged(cssFilePath, cssText);
         }

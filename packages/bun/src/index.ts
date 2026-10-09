@@ -6,7 +6,7 @@ import type { FilterPattern } from '@rollup/pluginutils';
 import type { BunPlugin, JavaScriptLoader, PluginBuilder } from 'bun';
 import { resolveSync, Transpiler } from 'bun';
 
-import { asyncResolveFallback } from '@wyw-in-js/shared';
+import { asyncResolveFallback, stripQueryAndHash } from '@wyw-in-js/shared';
 import type {
   IFileReporterOptions,
   ParallelTransformsOption,
@@ -55,32 +55,6 @@ function getLoader(filename: string): JavaScriptLoader {
     default:
       return 'js';
   }
-}
-
-function splitQueryAndHash(request: string): {
-  specifier: string;
-  suffix: string;
-} {
-  const queryIdx = request.indexOf('?');
-  const hashIdx = request.indexOf('#');
-
-  if (queryIdx === -1 && hashIdx === -1) {
-    return { specifier: request, suffix: '' };
-  }
-
-  let startIdx: number;
-  if (queryIdx === -1) {
-    startIdx = hashIdx;
-  } else if (hashIdx === -1) {
-    startIdx = queryIdx;
-  } else {
-    startIdx = Math.min(queryIdx, hashIdx);
-  }
-
-  return {
-    specifier: request.slice(0, startIdx),
-    suffix: request.slice(startIdx),
-  };
 }
 
 export default function wywInJS({
@@ -139,7 +113,8 @@ export default function wywInJS({
         importer: string,
         stack: string[]
       ): Promise<string | null> => {
-        const { specifier, suffix } = splitQueryAndHash(what);
+        const specifier = stripQueryAndHash(what);
+        const suffix = what.slice(specifier.length);
         try {
           return (await asyncResolveFallback(specifier, importer, stack))
             .replace(/\\/g, path.posix.sep)

@@ -1,3 +1,5 @@
+import * as actualShared from '@wyw-in-js/shared';
+
 const transformMock = jest.fn();
 const cacheGetMock = jest.fn();
 const disposeEvalBrokerMock = jest.fn();
@@ -12,8 +14,13 @@ const createLogger = () => {
   return log;
 };
 
+// Keep the real pure helpers (request parsing, source map normalisation, CSS
+// protocol constants) and stub only what the test controls.
+const realShared = { ...actualShared };
+
 jest.mock('@wyw-in-js/shared', () => ({
   __esModule: true,
+  ...realShared,
   asyncResolverFactory:
     (onResolve: any, mapper: any) =>
     (resolveFn: any) =>

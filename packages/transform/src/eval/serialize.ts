@@ -1,3 +1,5 @@
+import { isPlainObject } from '@wyw-in-js/shared';
+
 export type SerializedError = {
   message: string;
   name?: string;
@@ -60,19 +62,6 @@ type SerializeValueOptions = {
   ignoreSymbolKeys?: boolean;
   path?: PathSegment[];
   rootLabel?: string;
-};
-
-const isPlainObject = (value: unknown): value is Record<string, unknown> => {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return false;
-  }
-
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype === null || prototype === Object.prototype) {
-    return true;
-  }
-
-  return Object.getPrototypeOf(prototype) === null;
 };
 
 const isLikeError = (value: unknown): value is Error =>
