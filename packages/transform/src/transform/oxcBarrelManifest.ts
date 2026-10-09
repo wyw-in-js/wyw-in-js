@@ -12,12 +12,11 @@ import type {
   VariableDeclaration,
 } from 'oxc-parser';
 
-import { recordPipelineUncachedParse } from '../debug/pipelineTelemetry';
 import {
   isTypeOnlyImport,
   isTypeOnlyImportSpecifier,
 } from '../utils/oxc/typeOnlyImport';
-import { parseOxcSync } from '../utils/parseOxc';
+import { parseOxcProgramCached } from '../utils/parseOxc';
 
 import type {
   BarrelManifestCacheEntry,
@@ -407,35 +406,6 @@ const collectPassthroughReexports = (
   };
 };
 
-const parseProgram = (code: string, filename: string): Program => {
-  const astType =
-    filename.endsWith('.ts') || filename.endsWith('.tsx') ? 'ts' : 'js';
-  let parsed: ReturnType<typeof parseOxcSync>;
-  try {
-    parsed = parseOxcSync(
-      filename,
-      code,
-      {
-        astType,
-        range: true,
-        sourceType: 'module',
-      },
-      'uncached'
-    );
-  } catch (error) {
-    recordPipelineUncachedParse(filename, code, 'module', astType, true);
-    throw error;
-  }
-  const fatalError = parsed.errors.find((error) => error.severity === 'Error');
-  if (fatalError) {
-    recordPipelineUncachedParse(filename, code, 'module', astType, true);
-    throw new Error(fatalError.message);
-  }
-  recordPipelineUncachedParse(filename, code, 'module', astType, false);
-
-  return parsed.program as Program;
-};
-
 const analyzeBarrelProgram = (program: Program): RawBarrelManifest | null => {
   const reexports: RawBarrelReexport[] = [];
   const explicitExports = new Set<string>();
@@ -531,7 +501,9 @@ export function analyzeOxcBarrelFile(
   code: string,
   filename: string
 ): BarrelManifestCacheEntry | RawBarrelManifest {
-  const result = analyzeBarrelProgram(parseProgram(code, filename));
+  const result = analyzeBarrelProgram(
+    parseOxcProgramCached(filename, code, 'module')
+  );
 
   if (!result) {
     return {

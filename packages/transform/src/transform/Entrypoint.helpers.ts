@@ -4,11 +4,10 @@ import { dirname, extname, isAbsolute } from 'path';
 import type { Debugger, EvalRule, Evaluator } from '@wyw-in-js/shared';
 import { logger } from '@wyw-in-js/shared';
 
-import { recordPipelineUncachedParse } from '../debug/pipelineTelemetry';
 import { oxcShaker } from '../shaker';
 import type { ParentEntrypoint } from '../types';
 import { getFileIdx } from '../utils/getFileIdx';
-import { parseOxcSync } from '../utils/parseOxc';
+import { parseOxcProgramFresh } from '../utils/parseOxc';
 import { stripQueryAndHash } from '../utils/parseRequest';
 
 import type {
@@ -50,48 +49,13 @@ export function parseFile(
 ): ParsedAst {
   const log = logger.extend('transform:parse').extend(getFileIdx(filename));
 
-  const astType =
-    filename.endsWith('.ts') || filename.endsWith('.tsx') ? 'ts' : 'js';
-  let parseResult: ReturnType<typeof parseOxcSync>;
-  try {
-    parseResult = parseOxcSync(
-      filename,
-      originalCode,
-      {
-        astType,
-        range: true,
-        sourceType: 'module',
-      },
-      'uncached'
-    );
-  } catch (error) {
-    recordPipelineUncachedParse(
-      filename,
-      originalCode,
-      'module',
-      astType,
-      true
-    );
-    throw error;
-  }
-  const fatalError = parseResult.errors.find(
-    (error) => error.severity === 'Error'
-  );
-  if (fatalError) {
-    recordPipelineUncachedParse(
-      filename,
-      originalCode,
-      'module',
-      astType,
-      true
-    );
-    throw new Error(fatalError.message);
-  }
-  recordPipelineUncachedParse(filename, originalCode, 'module', astType, false);
+  // Public callers own the returned AST and may mutate it, so it must never be
+  // the program shared through the parse cache.
+  const program = parseOxcProgramFresh(filename, originalCode, 'module');
 
   log('stage-1', `${filename} has been parsed`);
 
-  return parseResult.program;
+  return program;
 }
 
 export function loadAndParse(

@@ -474,7 +474,8 @@ export const recordPipelineRawTransferFallback = (
   code: string,
   sourceType: string,
   astType: string,
-  kind: ParseKind
+  kind: ParseKind,
+  jsxFallbackAllowed: boolean
 ): void => {
   const accumulator = getAccumulator();
   if (!accumulator) return;
@@ -486,7 +487,7 @@ export const recordPipelineRawTransferFallback = (
         sourceType,
         filename,
         astType,
-        kind === 'cached' && filename.endsWith('.js')
+        jsxFallbackAllowed
       ),
       kind,
       measureCode(accumulator, code)
@@ -504,6 +505,7 @@ export const recordPipelineCachedParseHit = (
   filename: string,
   code: string,
   sourceType: string,
+  astType: string,
   jsxFallback: boolean,
   knownMeasurement?: CompletedCodeMeasurement
 ): CompletedCodeMeasurement | undefined => {
@@ -531,8 +533,6 @@ export const recordPipelineCachedParseHit = (
   }
   let revision = accumulator.parse.cachedRevisions.get(cacheEntry);
   if (!revision) {
-    const astType =
-      filename.endsWith('.ts') || filename.endsWith('.tsx') ? 'ts' : 'js';
     revision = getPipelineParseRevision(
       accumulator,
       createPipelineParserKey(
@@ -614,7 +614,9 @@ export const recordPipelineUncachedParse = (
   code: string,
   sourceType: string,
   astType: string,
-  error: boolean
+  error: boolean,
+  jsxFallback = false,
+  jsxFallbackAllowed = false
 ): void => {
   recordPipelineParseMiss(
     filename,
@@ -622,9 +624,9 @@ export const recordPipelineUncachedParse = (
     sourceType,
     astType,
     'uncached',
-    false,
+    jsxFallback,
     error,
-    false
+    jsxFallbackAllowed
   );
 };
 
