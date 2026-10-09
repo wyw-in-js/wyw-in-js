@@ -1,5 +1,4 @@
-import { hash } from 'node:crypto';
-
+import { hashContent } from '../utils/contentHash';
 import type {
   CodeMeasurement,
   CodeMeasurementBucket,
@@ -283,7 +282,7 @@ export const measureCode = (
 
   const measurement = {
     bytes: local?.measurement.bytes ?? Buffer.byteLength(code),
-    revision: hash('sha256', code, 'base64url'),
+    revision: Buffer.from(hashContent(code), 'hex').toString('base64url'),
   };
   setCodeMeasurementWithKey(
     accumulator,

@@ -14,7 +14,6 @@ import type {
   Function as OxcFunction,
   ImportDeclaration,
   ImportExpression,
-  ImportSpecifier,
   MemberExpression,
   ModuleExportName,
   Node,
@@ -37,6 +36,10 @@ import {
   type OxcLocal,
 } from './collectOxcExportsAndImportsCache';
 import { isOxcRuntimeReferenceIdentifier } from './oxc/lexicalScopes';
+import {
+  isTypeOnlyImport,
+  isTypeOnlyImportSpecifier,
+} from './oxc/typeOnlyImport';
 import { parseOxcCached } from './parseOxc';
 
 export type {
@@ -205,12 +208,6 @@ const declareLocalBindingLike = (scope: Scope, node: Node): void => {
     defineBinding(scope, { kind: 'local', name })
   );
 };
-
-const isTypeOnlyImport = (
-  declaration: ImportDeclaration,
-  specifier?: ImportSpecifier
-): boolean =>
-  declaration.importKind === 'type' || specifier?.importKind === 'type';
 
 const isTypeOnlyExport = (
   declaration:
@@ -552,10 +549,7 @@ const collectFromImportDeclaration = (
   }
 
   node.specifiers.forEach((specifier) => {
-    if (
-      specifier.type === 'ImportSpecifier' &&
-      isTypeOnlyImport(node, specifier)
-    ) {
+    if (isTypeOnlyImportSpecifier(node, specifier)) {
       return;
     }
 

@@ -1,7 +1,9 @@
 /* eslint-env jest */
 import {
   isOxcRawTransferAstTypeCompatible,
+  MAX_PARSE_CACHE_ENTRIES,
   parseOxcCached,
+  setParseCacheLimit,
 } from '../utils/parseOxc';
 
 describe('parseOxcCached', () => {
@@ -40,6 +42,27 @@ describe('parseOxcCached', () => {
       expect(() => parseOxcCached(rejectedFilename, code, 'module')).toThrow();
     }
   );
+
+  it('keeps no more entries than the configured limit', () => {
+    const parse = (name: string) =>
+      parseOxcCached(
+        '/project/limit.ts',
+        `export const ${name} = 1;`,
+        'module'
+      );
+    const kept = parse('keptEntry');
+    expect(parse('keptEntry')).toBe(kept);
+
+    setParseCacheLimit(2);
+    try {
+      const evicted = parse('evictedEntry');
+      parse('secondEntry');
+      parse('thirdEntry');
+      expect(parse('evictedEntry')).not.toBe(evicted);
+    } finally {
+      setParseCacheLimit(MAX_PARSE_CACHE_ENTRIES);
+    }
+  });
 
   it('shares entries across filenames with equivalent parser semantics', () => {
     const code = 'export const sharedDialectEntry: number = 1;';

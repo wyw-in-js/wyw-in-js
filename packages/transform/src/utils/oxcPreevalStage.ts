@@ -1,6 +1,7 @@
 import type { IFileContext } from '@wyw-in-js/processor-utils';
 
 import { EventEmitter } from './EventEmitter';
+import { deferOxcPreevalCode } from './oxcPreevalStage/deferredCode';
 import { appendOxcWywPreval } from './oxcPreevalStage/prevalExport';
 import { prepareOxcPreevalCode } from './oxcPreevalStage/prepareCode';
 import { collectPreevalProcessors } from './oxcPreevalStage/processors';
@@ -53,11 +54,7 @@ export const runOxcPreevalStage = (
 
   const result: OxcPreevalResult = {
     baseCode,
-    code: appendOxcWywPreval(
-      baseCode,
-      filename,
-      staticOverlay.evalDependencyNames
-    ),
+    code: '',
     dependencyNames: staticOverlay.evalDependencyNames,
     metadata: {
       dependencies: [],
@@ -76,6 +73,12 @@ export const runOxcPreevalStage = (
     staticValueCache: staticOverlay.staticValueCache,
     staticValueCandidates: staticOverlay.staticValueCandidates,
   };
+  const deferExecutableCode = () => {
+    deferOxcPreevalCode(result, 'code', () =>
+      appendOxcWywPreval(result.baseCode, filename, result.dependencyNames)
+    );
+  };
+  deferExecutableCode();
 
   if (processed.finalizeProcessorCallbacks) {
     let evaltimeReplacementsFinalized = false;
@@ -88,11 +91,7 @@ export const runOxcPreevalStage = (
 
       processed.finalizeProcessorCallbacks?.(staticValueCache);
       result.baseCode = prepareBaseCode();
-      result.code = appendOxcWywPreval(
-        result.baseCode,
-        filename,
-        result.dependencyNames
-      );
+      deferExecutableCode();
       result.staticValueCache = staticValueCache ?? result.staticValueCache;
       result.staticValueCandidates = processed.staticValueCandidates;
       evaltimeReplacementsFinalized = true;

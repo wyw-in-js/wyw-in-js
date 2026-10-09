@@ -83,6 +83,17 @@ describe('Bun bundler', () => {
     expect(cssOutput).toBe(cssFixture);
   });
 
+  it('extracts CSS in worker threads', async () => {
+    await rm(outDir, { recursive: true, force: true });
+    const cssOutput = normalizeLineEndings(
+      await buildArtefact(outDir, { parallel: 2 })
+    );
+    const cssFixture = normalizeLineEndings(
+      await readFile(path.resolve(PKG_DIR, 'fixture.css'), 'utf8')
+    );
+    expect(cssOutput).toBe(cssFixture);
+  });
+
   it('supports resource query loaders (?raw/?url)', async () => {
     await rm(outDir, { recursive: true, force: true });
 

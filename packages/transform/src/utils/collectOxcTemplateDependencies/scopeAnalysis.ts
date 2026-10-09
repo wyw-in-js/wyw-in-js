@@ -15,6 +15,7 @@ import { getOxcNodeChildren } from '../oxc/ast';
 import { parseOxcProgram } from '../oxc/parse';
 import { collectOxcPatternBindingNames } from '../oxc/patterns';
 import { createOxcSourceLocation } from '../oxc/sourceLocations';
+import { isTypeOnlyImportSpecifier } from '../oxc/typeOnlyImport';
 import { createBindingIndex } from './bindingResolution';
 import {
   collectProgramMutationAnalysis,
@@ -132,10 +133,7 @@ const getImportSpecifierInfo = (
     };
   }
 
-  if (
-    statement.importKind === 'type' ||
-    (specifier as ImportSpecifier).importKind === 'type'
-  ) {
+  if (isTypeOnlyImportSpecifier(statement, specifier)) {
     return null;
   }
 
