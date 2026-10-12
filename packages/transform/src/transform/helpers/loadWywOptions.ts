@@ -17,6 +17,7 @@ import type {
 import { shaker } from '../../shaker';
 import { DEFAULT_EVAL_OPTIONS } from '../../utils/evalOptions';
 import { omitUndefined } from '../../utils/omitUndefined';
+import { warnAboutLoadedOptions } from './onceWarnings';
 import type { PluginOptions } from '../../types';
 import { DEFAULT_EVAL_STRATEGY } from '../../utils/evalStrategy';
 
@@ -302,6 +303,12 @@ export function loadWywOptions(
       `[wyw-in-js] Unsupported eval.errors "${evalErrors}". Use "strict" or "loose".`
     );
   }
+
+  warnAboutLoadedOptions({
+    configFileOptions: definedConfig,
+    options,
+    pluginRules: rules,
+  });
 
   cache.set(overrides, options);
 

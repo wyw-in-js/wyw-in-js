@@ -14,6 +14,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 import type { PartialOptions } from './transform/helpers/loadWywOptions';
 import { loadWywOptions } from './transform/helpers/loadWywOptions';
+import { warnCustomHandlersDeprecated } from './transform/helpers/onceWarnings';
 import {
   CacheKeySaltBusyError,
   TransformCacheCollection,
@@ -405,6 +406,10 @@ export function transform(
   asyncResolve: TransformAsyncResolve,
   customHandlers: Partial<AllHandlers<'sync'>> = {}
 ): Promise<Result> {
+  if (Object.keys(customHandlers).length > 0) {
+    warnCustomHandlersDeprecated();
+  }
+
   const { eventEmitter } = partialServices;
   if (!eventEmitter || !hasPipelineTelemetryReporter(eventEmitter)) {
     if (isPipelineTelemetryActive()) {
