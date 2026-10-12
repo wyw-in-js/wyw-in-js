@@ -13,6 +13,7 @@ import type {
 
 import { shaker } from '../../shaker';
 import { DEFAULT_EVAL_OPTIONS } from '../../utils/evalOptions';
+import { omitUndefined } from '../../utils/omitUndefined';
 import type { PluginOptions } from '../../types';
 import { DEFAULT_EVAL_STRATEGY } from '../../utils/evalStrategy';
 
@@ -193,6 +194,11 @@ export function loadWywOptions(
   const configImportLoaders = config.importLoaders;
   const configFeatures = config.features;
   const configEval = config.eval;
+  // An option set to `undefined` is not set: it keeps the default, and an
+  // option of the plugin keeps the value from the config file. Feature flags
+  // still merge as given.
+  const definedConfig = omitUndefined(config);
+  const definedRest = omitUndefined(rest);
 
   const options: StrictOptions = {
     displayName: false,
@@ -223,17 +229,17 @@ export function loadWywOptions(
     ],
     highPriorityPlugins: ['module-resolver'],
     oxcOptions,
-    ...config,
-    ...rest,
+    ...definedConfig,
+    ...definedRest,
     eval: {
       ...defaultEval,
-      ...(configEval ?? {}),
-      ...(rest.eval ?? {}),
+      ...omitUndefined(configEval),
+      ...omitUndefined(rest.eval),
     },
     importLoaders: {
       ...defaultImportLoaders,
-      ...(configImportLoaders ?? {}),
-      ...(overridesImportLoaders ?? {}),
+      ...omitUndefined(configImportLoaders),
+      ...omitUndefined(overridesImportLoaders),
     },
     features: {
       ...defaultFeatures,
