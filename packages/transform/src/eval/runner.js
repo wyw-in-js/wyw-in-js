@@ -61,11 +61,21 @@ const prefixStream = (getPrefix) =>
     },
   });
 
+const hostStdout = prefixStream(() => '[wyw-runner:host stdout] ');
+
 // require'd modules outside vm use host console — must not write to stdout (IPC channel).
 global.console = new Console({
-  stdout: prefixStream(() => '[wyw-runner:host stdout] '),
+  stdout: hostStdout,
   stderr: prefixStream(() => '[wyw-runner:host stderr] '),
 });
+
+// Only the protocol writes to the real stdout, through this saved write.
+// Evaluated and host code can still reach process.stdout: require('process')
+// returns the real process, and require('console') the original console of
+// Node. Their output goes to stderr like the host console output.
+const writeProtocolStdout = process.stdout.write.bind(process.stdout);
+process.stdout.write = (chunk, encoding, callback) =>
+  hostStdout.write(chunk, encoding, callback);
 
 const VITE_VIRTUAL_PREFIX = '/@';
 const REACT_REFRESH_VIRTUAL_ID = '/@react-refresh';
@@ -1415,7 +1425,7 @@ const flushStdoutWriteQueue = () => {
   process.stdout.once('close', onClose);
   process.stdout.once('error', onError);
 
-  const needsDrain = !process.stdout.write(next.chunk, (error) => {
+  const needsDrain = !writeProtocolStdout(next.chunk, (error) => {
     writeCompleted = true;
     if (error) {
       finish(error);
