@@ -4,10 +4,13 @@ import path from 'path';
 
 import { cosmiconfigSync } from 'cosmiconfig';
 
+import { mergeOxcResolverAlias } from '@wyw-in-js/shared';
 import type {
   EvalOptionsV2,
   FeatureFlags,
   ImportLoaders,
+  NativeResolverAlias,
+  OxcOptions,
   StrictOptions,
 } from '@wyw-in-js/shared';
 
@@ -62,6 +65,30 @@ const resolveConfigFilePath = (configFile: string): string =>
   path.isAbsolute(configFile)
     ? configFile
     : path.resolve(process.cwd(), configFile);
+
+// Bundler integrations add their aliases to the plugin oxcOptions. The
+// oxcOptions of the config file still replace the plugin ones, except for
+// those aliases: they stay, under the aliases set in the config file.
+const withPluginResolverAlias = (
+  configOxcOptions: OxcOptions,
+  pluginOxcOptions: OxcOptions
+): OxcOptions => {
+  const alias = pluginOxcOptions.resolver?.alias;
+  if (
+    !configOxcOptions ||
+    typeof configOxcOptions !== 'object' ||
+    !alias ||
+    typeof alias !== 'object' ||
+    Array.isArray(alias)
+  ) {
+    return configOxcOptions;
+  }
+
+  return (
+    mergeOxcResolverAlias(configOxcOptions, alias as NativeResolverAlias) ??
+    configOxcOptions
+  );
+};
 
 const normalizeLoadedConfig = (loadedConfig: unknown): Partial<StrictOptions> =>
   (loadedConfig && typeof loadedConfig === 'object' && 'default' in loadedConfig
@@ -228,9 +255,12 @@ export function loadWywOptions(
       },
     ],
     highPriorityPlugins: ['module-resolver'],
-    oxcOptions,
     ...definedConfig,
     ...definedRest,
+    oxcOptions:
+      definedConfig.oxcOptions === undefined
+        ? oxcOptions
+        : withPluginResolverAlias(definedConfig.oxcOptions, oxcOptions),
     eval: {
       ...defaultEval,
       ...omitUndefined(configEval),

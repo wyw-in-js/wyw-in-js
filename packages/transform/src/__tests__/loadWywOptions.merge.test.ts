@@ -1,10 +1,17 @@
 /* eslint-env jest */
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 
 import { loadWywOptions } from '../transform/helpers/loadWywOptions';
 import { getEvalOptions } from '../utils/evalOptions';
+import { resolveWithNativeResolver } from '../utils/nativeResolver';
 
 describe('loadWywOptions merge', () => {
   let root: string;
@@ -127,6 +134,103 @@ describe('loadWywOptions merge', () => {
 
       expect(options.evalConsole).toBe('pipe');
       expect(options.eval?.resolver).toBe('bundler');
+    });
+  });
+
+  describe('oxcOptions of the config file', () => {
+    // What an adapter passes: the bundler aliases in the plugin oxcOptions.
+    const pluginOxcOptions = {
+      parser: { fromPlugin: true },
+      resolver: {
+        alias: {
+          '@bundler': ['/bundler'],
+          '@shared': ['/from-bundler'],
+        },
+      },
+    };
+
+    it('keeps the bundler aliases under the aliases of the config file', () => {
+      const configFile = writeConfig({
+        oxcOptions: {
+          resolver: {
+            alias: {
+              '@config': ['/config'],
+              '@shared': ['/from-config'],
+            },
+            tsconfig: 'auto',
+          },
+          transform: { fromConfig: true },
+        },
+      });
+
+      const options = loadWywOptions({
+        configFile,
+        oxcOptions: pluginOxcOptions,
+      });
+
+      expect(options.oxcOptions).toEqual({
+        resolver: {
+          alias: {
+            '@bundler': ['/bundler'],
+            '@config': ['/config'],
+            '@shared': ['/from-config'],
+          },
+          tsconfig: 'auto',
+        },
+        transform: { fromConfig: true },
+      });
+    });
+
+    it('adds the bundler aliases when the config file sets no aliases', () => {
+      const configFile = writeConfig({
+        oxcOptions: { transform: { fromConfig: true } },
+      });
+
+      const options = loadWywOptions({
+        configFile,
+        oxcOptions: pluginOxcOptions,
+      });
+
+      expect(options.oxcOptions).toEqual({
+        resolver: { alias: pluginOxcOptions.resolver.alias },
+        transform: { fromConfig: true },
+      });
+    });
+
+    it('lets the native resolver see the bundler aliases', () => {
+      const realRoot = realpathSync(root);
+      const target = path.join(realRoot, 'src', 'tokens.ts');
+      mkdirSync(path.dirname(target), { recursive: true });
+      writeFileSync(target, 'export const token = true;\n');
+      const configFile = writeConfig({
+        oxcOptions: { resolver: { tsconfig: 'auto' } },
+      });
+
+      const options = loadWywOptions({
+        configFile,
+        oxcOptions: { resolver: { alias: { '@tokens': [target] } } },
+      });
+
+      expect(
+        resolveWithNativeResolver({
+          extensions: options.extensions,
+          importer: path.join(realRoot, 'src', 'entry.ts'),
+          kind: 'import',
+          oxcOptions: options.oxcOptions,
+          specifier: '@tokens',
+        })
+      ).toBe(target);
+    });
+
+    it('keeps the plugin oxcOptions when the config file has none', () => {
+      const configFile = writeConfig({ displayName: true });
+
+      const options = loadWywOptions({
+        configFile,
+        oxcOptions: pluginOxcOptions,
+      });
+
+      expect(options.oxcOptions).toBe(pluginOxcOptions);
     });
   });
 
