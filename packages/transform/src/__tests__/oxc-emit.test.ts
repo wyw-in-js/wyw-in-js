@@ -55,6 +55,45 @@ describe('stripTypesAndJsxWithOxc', () => {
     expect(result.code).toContain('_jsx("div"');
   });
 
+  it('lowers JSX in a .js file the parser read as JSX', () => {
+    const result = stripTypesAndJsxWithOxc(
+      dedent`
+        const render = () => <div />;
+        export const view = render;
+      `,
+      join(__dirname, 'source.js')
+    );
+
+    expect(result.code).toContain('react/jsx-runtime');
+    expect(result.code).toContain('_jsx("div"');
+  });
+
+  it('keeps the JS dialect for a .js file without JSX', () => {
+    const filename = join(__dirname, 'source.js');
+    const code = dedent`
+      const a = 1, b = 2, c = 3;
+      export const compare = a < b > c;
+    `;
+
+    expect(stripTypesAndJsxWithOxc(code, filename).code).toBe(
+      'const a = 1, b = 2, c = 3;\nexport const compare = a < b > c;\n'
+    );
+  });
+
+  it('strips TypeScript from a .cts file', () => {
+    const result = stripTypesAndJsxWithOxc(
+      dedent`
+        const width: number = 10;
+        export const size = width as number;
+      `,
+      join(__dirname, 'source.cts')
+    );
+
+    expect(result.code).not.toContain(': number');
+    expect(result.code).not.toContain('as number');
+    expect(result.code).toContain('export const size = width');
+  });
+
   it('uses the running Node major as the Oxc target when stripping TypeScript', () => {
     const originalNodeVersion = Object.getOwnPropertyDescriptor(
       process.versions,

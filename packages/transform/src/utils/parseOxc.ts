@@ -150,6 +150,16 @@ const getJsxFallbackFilename = (filename: string): string | null => {
   return null;
 };
 
+/**
+ * Some bundlers pass .js files with JSX to WyW before a later JSX transform.
+ * Such a file is read as JSX when the JS grammar rejects it on JSX syntax.
+ */
+export const needsJsxFallback = (
+  filename: string,
+  errorMessage: string
+): boolean =>
+  getJsxFallbackFilename(filename) !== null && errorMessage.includes('JSX');
+
 // The filename selects Oxc's language dialect independently of astType and
 // controls whether .js may fall back to JSX, so both semantics are part of the
 // bucket key. Paths with equivalent parser behavior still share entries.
@@ -225,8 +235,11 @@ const parseWithJsxFallback = (
   }
   let fatalError = parsed.errors.find((error) => error.severity === 'Error');
   let jsxFallback = false;
-  if (fatalError?.message.includes('JSX') && jsxFallbackFilename) {
-    // Some bundlers pass .js files with JSX to WyW before a later JSX transform.
+  if (
+    fatalError &&
+    jsxFallbackFilename &&
+    needsJsxFallback(filename, fatalError.message)
+  ) {
     jsxFallback = true;
     try {
       parsed = parseOxcSync(

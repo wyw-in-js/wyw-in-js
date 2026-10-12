@@ -18,7 +18,7 @@ import type {
 } from 'oxc-parser';
 
 import { createOxcFileEdits } from './oxc/fileEdits';
-import { parseOxcProgramCached } from './parseOxc';
+import { needsJsxFallback, parseOxcProgramCached } from './parseOxc';
 
 type SourceMap = {
   file?: string;
@@ -235,9 +235,17 @@ const tryParseJsModule = (code: string, filename: string): Program | null => {
   }
 };
 
-const getLang = (filename: string): 'js' | 'jsx' | 'ts' | 'tsx' | 'dts' => {
+type StripLang = 'js' | 'jsx' | 'ts' | 'tsx' | 'dts';
+
+const getLang = (filename: string): StripLang => {
   if (filename.endsWith('.tsx')) return 'tsx';
-  if (filename.endsWith('.ts') || filename.endsWith('.mts')) return 'ts';
+  if (
+    filename.endsWith('.ts') ||
+    filename.endsWith('.mts') ||
+    filename.endsWith('.cts')
+  ) {
+    return 'ts';
+  }
   if (filename.endsWith('.jsx')) return 'jsx';
   return 'js';
 };
@@ -261,20 +269,29 @@ export const stripTypesAndJsxWithOxc = (
   filename: string,
   options: { sourcemap?: boolean } = {}
 ): OxcEmitResult => {
-  const result = loadOxcTransform()(filename, code, {
-    jsx: {
-      runtime: 'automatic',
-    },
-    lang: getLang(filename),
-    sourceType: 'module',
-    sourcemap: options.sourcemap ?? false,
-    target: getCurrentNodeTarget(),
-    typescript: {
-      allowNamespaces: true,
-      onlyRemoveTypeImports: false,
-      removeClassFieldsWithoutInitializer: true,
-    },
-  });
+  const strip = (lang: StripLang) =>
+    loadOxcTransform()(filename, code, {
+      jsx: {
+        runtime: 'automatic',
+      },
+      lang,
+      sourceType: 'module',
+      sourcemap: options.sourcemap ?? false,
+      target: getCurrentNodeTarget(),
+      typescript: {
+        allowNamespaces: true,
+        onlyRemoveTypeImports: false,
+        removeClassFieldsWithoutInitializer: true,
+      },
+    });
+
+  let result = strip(getLang(filename));
+  // The parser reads such a .js file as JSX (see needsJsxFallback); a .js
+  // file without JSX keeps the JS dialect, so its output does not change.
+  const fatalError = result.errors.find((error) => error.severity === 'Error');
+  if (fatalError && needsJsxFallback(filename, fatalError.message)) {
+    result = strip('jsx');
+  }
 
   assertOxcSuccess(result.errors);
 
