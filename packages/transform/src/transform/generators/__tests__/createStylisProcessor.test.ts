@@ -3,6 +3,7 @@ import { compile, middleware, serialize, stringify } from 'stylis';
 import type { Element } from 'stylis';
 
 import {
+  createKeyframeSuffixerPlugin,
   createStylisPreprocessor,
   createStylisUrlReplacePlugin,
   stylisGlobalPlugin,
@@ -494,6 +495,22 @@ describe('stylisUrlReplacePlugin', () => {
       compileRule('.component { background-image: url(./image.png) }')
     ).toMatchInlineSnapshot(
       `".component{background-image:url(../src/image.png);}"`
+    );
+  });
+});
+
+describe('createKeyframeSuffixerPlugin', () => {
+  it('describes an unexpected element that links back to its parent', () => {
+    const [ruleset] = compile('.component { color: red; }');
+    const declaration = {
+      ...ruleset.children[0],
+      children: ruleset.children,
+      type: 'decl',
+    } as unknown as Element;
+    const suffixer = createKeyframeSuffixerPlugin();
+
+    expect(() => suffixer(declaration, 0, [], stringify)).toThrow(
+      '"element.children" has type "Element[]"'
     );
   });
 });

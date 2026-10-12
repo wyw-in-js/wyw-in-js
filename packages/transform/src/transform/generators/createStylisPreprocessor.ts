@@ -76,6 +76,28 @@ const getOriginalElementValue = (
   return element ? element[ORIGINAL_VALUE_KEY] ?? element.value : '';
 };
 
+// Elements link to their `parent` and `root`, so a plain JSON.stringify of a
+// child list is cyclic. The description skips those links and marks repeats.
+const describeElementValue = (value: unknown): string => {
+  const seen = new WeakSet<object>();
+  return JSON.stringify(
+    value,
+    (key, nested: unknown) => {
+      if (key === 'parent' || key === 'root') {
+        return undefined;
+      }
+      if (typeof nested === 'object' && nested !== null) {
+        if (seen.has(nested)) {
+          return '[Circular]';
+        }
+        seen.add(nested);
+      }
+      return nested;
+    },
+    2
+  );
+};
+
 // Stylis 4 builds declarations with string `props` and `children`, rulesets
 // and at-rules with array `props`, and its prefixer copies keep those shapes.
 // Anything else means the element contract changed. That fails in every
@@ -86,10 +108,8 @@ function unexpectedElementShape(
   type: string
 ): never {
   throw new Error(
-    `"element.${key}" has type "${type}" (${JSON.stringify(
-      value,
-      null,
-      2
+    `"element.${key}" has type "${type}" (${describeElementValue(
+      value
     )}), it's not expected. Please report a bug if it happens.`
   );
 }
