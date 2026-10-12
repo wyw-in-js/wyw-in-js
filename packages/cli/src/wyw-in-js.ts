@@ -176,6 +176,17 @@ function resolveOutputFilename(
   return path.join(outDir, outputFolder, outputBasename);
 }
 
+// `stat` follows symlinks, so a link to a directory is skipped like the
+// directory. A path that cannot be read, such as a broken link, fails when the
+// file is read, as before.
+function isDirectory(filename: string) {
+  try {
+    return fs.statSync(filename).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 async function processFiles(files: (number | string)[], options: Options) {
   const { emitter, onDone } = createFileReporter(
     options.debug ? { dir: options.debug, print: true } : false
@@ -218,7 +229,7 @@ async function processFiles(files: (number | string)[], options: Options) {
 
   // eslint-disable-next-line no-restricted-syntax
   for (const filename of resolvedFiles) {
-    if (fs.lstatSync(filename).isDirectory()) {
+    if (isDirectory(filename)) {
       // eslint-disable-next-line no-continue
       continue;
     }
