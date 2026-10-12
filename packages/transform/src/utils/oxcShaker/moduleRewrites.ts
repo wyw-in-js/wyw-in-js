@@ -5,7 +5,11 @@ import path from 'path';
 
 import type { Node, Program } from 'oxc-parser';
 
-import { syncResolve, type ImportOverrides } from '@wyw-in-js/shared';
+import {
+  syncResolve,
+  type ImportOverride,
+  type ImportOverrides,
+} from '@wyw-in-js/shared';
 
 import { collectOxcExportsAndImportsFromProgram } from '../collectOxcExportsAndImports';
 import type { OxcCollectedImport } from '../collectOxcExportsAndImports';
@@ -256,8 +260,44 @@ const removeUnusedImportSpecifiers = (
   }
 };
 
+// Direct keys (the source as written) win; a file import then falls back to
+// its canonical root-relative key, as everywhere else importOverrides apply.
+const findSourceImportOverride = (
+  source: string,
+  filename: string,
+  options: Pick<ModuleRewriteOptions, 'importOverrides' | 'root'>
+): ImportOverride | undefined => {
+  const { importOverrides } = options;
+  const stripped = stripQueryAndHash(source);
+  const direct =
+    getImportOverride(importOverrides, source) ??
+    (stripped !== source
+      ? getImportOverride(importOverrides, stripped)
+      : undefined);
+  if (direct !== undefined) {
+    return direct;
+  }
+
+  if (!stripped.startsWith('.') && !path.isAbsolute(stripped)) {
+    return undefined;
+  }
+
+  try {
+    const resolved = syncResolve(stripped, filename, []);
+    const { key } = toImportKey({
+      resolved,
+      root: options.root,
+      source: stripped,
+    });
+    return getImportOverride(importOverrides, key);
+  } catch {
+    return undefined;
+  }
+};
+
 export const hasImportOverride = (
   source: string,
+  filename: string,
   options: Pick<ModuleRewriteOptions, 'importOverrides' | 'root'>
 ): boolean => {
   const { importOverrides } = options;
@@ -265,20 +305,8 @@ export const hasImportOverride = (
     return false;
   }
 
-  const stripped = stripQueryAndHash(source);
-  const direct =
-    getImportOverride(importOverrides, source) ??
-    (stripped !== source ? getImportOverride(importOverrides, stripped) : null);
-
-  if (direct && ('mock' in direct || 'noShake' in direct)) {
-    return true;
-  }
-
-  if (!stripped.startsWith('.') && !path.isAbsolute(stripped)) {
-    return false;
-  }
-
-  return false;
+  const override = findSourceImportOverride(source, filename, options);
+  return Boolean(override && ('mock' in override || 'noShake' in override));
 };
 
 const dynamicImportWarningsEnabled = (): boolean =>
@@ -306,39 +334,8 @@ const filterDynamicImportsForWarning = (
     return sources;
   }
 
-  const shouldWarn = (source: string): boolean => {
-    const strippedSource = stripQueryAndHash(source);
-    const direct =
-      getImportOverride(options.importOverrides, source) ??
-      (strippedSource !== source
-        ? getImportOverride(options.importOverrides, strippedSource)
-        : undefined);
-
-    if (direct !== undefined) {
-      return false;
-    }
-
-    const isFileImport =
-      strippedSource.startsWith('.') || path.isAbsolute(strippedSource);
-    if (!isFileImport) {
-      return true;
-    }
-
-    try {
-      const resolved = syncResolve(strippedSource, filename, []);
-      const importKey = toImportKey({
-        resolved,
-        root: options.root,
-        source: strippedSource,
-      }).key;
-
-      return (
-        getImportOverride(options.importOverrides, importKey) === undefined
-      );
-    } catch {
-      return true;
-    }
-  };
+  const shouldWarn = (source: string): boolean =>
+    findSourceImportOverride(source, filename, options) === undefined;
 
   return sources.filter(shouldWarn);
 };

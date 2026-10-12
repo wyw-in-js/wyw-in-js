@@ -802,7 +802,7 @@ export const shakeOxcToESM = (
       (requested.has('side-effect') ||
         options.keepSideEffects ||
         statement.imports.some((item) =>
-          hasImportOverride(item.source, options)
+          hasImportOverride(item.source, filename, options)
         ))
     ) {
       mark(statement);
