@@ -53,27 +53,38 @@ export const mergeProvenanceClosureNode = (
   source.dependencies.forEach((binding) => target.dependencies.add(binding));
 };
 
+/**
+ * Resolves a binding to the roots its alias graph reaches: bindings without an
+ * alias entry. One depth-first walk visits every alias at most once, so the
+ * work is linear in the graph; the roots keep the order of a walk over every
+ * path, which is the order their first path is found in.
+ */
 export const resolveProvenanceAliases = (
   binding: string,
-  aliases: ReadonlyMap<string, ReadonlySet<string>>,
-  resolving = new Set<string>()
+  aliases: ReadonlyMap<string, ReadonlySet<string>>
 ): Set<string> => {
-  const mapped = aliases.get(binding);
-  if (!mapped) {
-    return new Set([binding]);
-  }
-  if (mapped.size === 0 || resolving.has(binding)) {
-    return new Set();
-  }
-
   const roots = new Set<string>();
-  const nextResolving = new Set(resolving);
-  nextResolving.add(binding);
-  mapped.forEach((alias) => {
-    resolveProvenanceAliases(alias, aliases, nextResolving).forEach((root) =>
-      roots.add(root)
-    );
-  });
+  const visited = new Set<string>();
+  const pending: Iterator<string>[] = [];
+  const enter = (current: string): void => {
+    const mapped = aliases.get(current);
+    if (!mapped) {
+      roots.add(current);
+    } else if (!visited.has(current)) {
+      visited.add(current);
+      pending.push(mapped.values());
+    }
+  };
+
+  enter(binding);
+  while (pending.length > 0) {
+    const next = pending[pending.length - 1]!.next();
+    if (next.done) {
+      pending.pop();
+    } else {
+      enter(next.value);
+    }
+  }
   return roots;
 };
 
