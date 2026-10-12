@@ -3,6 +3,34 @@ import { getEvalCacheKey } from '../transform/evalSession';
 import { loadWywOptions } from '../transform/helpers/loadWywOptions';
 
 describe('getEvalCacheKey', () => {
+  it('gives eval options set to undefined the key of their defaults', () => {
+    const asyncResolve = async () => null;
+    const key = (eval_: Record<string, unknown>) =>
+      getEvalCacheKey(
+        loadWywOptions({ configFile: false, eval: eval_ }),
+        'scope',
+        asyncResolve
+      );
+
+    expect(
+      key({
+        errors: undefined,
+        require: undefined,
+        resolver: undefined,
+        runtime: undefined,
+        strategy: undefined,
+      })
+    ).toBe(
+      key({
+        errors: 'strict',
+        require: 'warn-and-run',
+        resolver: 'bundler',
+        runtime: 'nodejs',
+        strategy: 'hybrid',
+      })
+    );
+  });
+
   it('keeps the key stable when asyncResolveKey stays the same', () => {
     const pluginOptions = loadWywOptions({ configFile: false });
     const asyncResolveA = async () => null;
