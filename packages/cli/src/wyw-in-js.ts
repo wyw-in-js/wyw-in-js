@@ -22,6 +22,7 @@ import { hideBin } from 'yargs/helpers';
 
 import { reportTransformDiagnostics } from './diagnostics';
 import { createMetadataFile } from './metadata';
+import { createSourceRootLocator } from './source-root';
 
 const modulesOptions = [
   'commonjs',
@@ -223,6 +224,7 @@ async function processFiles(files: (number | string)[], options: Options) {
       root: options.sourceRoot,
     })) ?? null;
 
+  const locateInSourceRoot = createSourceRootLocator(options.sourceRoot);
   const modifiedFiles: { content: string; name: string }[] = [];
 
   const tasks: (() => Promise<boolean>)[] = [];
@@ -234,8 +236,10 @@ async function processFiles(files: (number | string)[], options: Options) {
       continue;
     }
 
+    // Output paths only: transform() and file reads keep the matched path.
+    const sourceFilename = locateInSourceRoot(filename);
     const outputFilename = resolveOutputFilename(
-      filename,
+      sourceFilename,
       options.outDir,
       options.sourceRoot
     );
@@ -294,7 +298,7 @@ async function processFiles(files: (number | string)[], options: Options) {
               outputRoot: options.outDir,
               outputFilename,
               sourceRoot: options.sourceRoot,
-              sourceFilename: filename,
+              sourceFilename,
             });
 
             fs.writeFileSync(metadataFile.filename, metadataFile.content);
@@ -322,7 +326,7 @@ async function processFiles(files: (number | string)[], options: Options) {
           if (options.sourceRoot && options.insertCssRequires) {
             const inputFilename = path.resolve(
               options.insertCssRequires,
-              path.relative(options.sourceRoot, filename)
+              path.relative(options.sourceRoot, sourceFilename)
             );
 
             const relativePath = normalize(

@@ -1,8 +1,10 @@
 import { spawnSync } from 'child_process';
 import {
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -21,9 +23,15 @@ const buttonSource = [
   '',
   'export const button = css`',
   '  color: red;',
+  '  background: url(./icon.svg);',
   '`;',
   '',
 ].join('\n');
+
+const readCssUrl = (cssFile: string) => {
+  const [, url] = readFileSync(cssFile, 'utf8').match(/url\(([^)]+)\)/) ?? [];
+  return realpathSync(path.resolve(path.dirname(cssFile), url));
+};
 
 // `junction` makes directory links without extra privileges on Windows;
 // other platforms ignore the type.
@@ -71,6 +79,7 @@ const createProject = () => {
     path.join(project, 'src', 'components', 'button.js'),
     buttonSource
   );
+  writeFileSync(path.join(project, 'src', 'components', 'icon.svg'), '<svg/>');
 
   linkDirectory(project, path.join(root, 'project-link'));
   linkDirectory(path.join(root, 'out'), path.join(root, 'out-link'));
@@ -142,5 +151,81 @@ describe('CLI and symlinks', () => {
     expect(result.error).toBeUndefined();
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain('ENOENT');
+  });
+
+  // The working directory of the CLI is a real path, so a relative pattern
+  // matches real paths, while `--source-root` keeps the symlink.
+  it('writes CSS into --out-dir when --source-root goes through a symlink', () => {
+    const lib = path.join(root, 'lib');
+    mkdirSync(path.join(lib, 'components'), { recursive: true });
+    writeFileSync(
+      path.join(lib, 'components', 'button.js'),
+      'exports.button = "button";\n'
+    );
+
+    const result = runCli(root, project, [
+      '--out-dir',
+      path.join(root, 'out-link'),
+      '--source-root',
+      path.join(root, 'project-link', 'src'),
+      '--insert-css-requires',
+      lib,
+      '--output-metadata',
+      'src/**/*.js',
+    ]);
+
+    expect(result.error).toBeUndefined();
+    expect(result.stderr).toBe('');
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('Successfully extracted 1 CSS files.');
+
+    const cssFile = path.join(root, 'out-link', 'components', 'button.css');
+    expect(readFileSync(cssFile, 'utf8')).toContain('color:red;');
+    // The url() is rewritten for the new place of the CSS file.
+    expect(readCssUrl(cssFile)).toBe(
+      realpathSync(path.join(project, 'src', 'components', 'icon.svg'))
+    );
+    expect(
+      JSON.parse(
+        readFileSync(
+          path.join(root, 'out', 'components', 'button.wyw-in-js.json'),
+          'utf8'
+        )
+      )
+    ).toMatchObject({
+      cssFile: 'components/button.css',
+      source: 'components/button.js',
+    });
+
+    // The require points at the output file through `--out-dir` as given.
+    expect(
+      readFileSync(path.join(lib, 'components', 'button.js'), 'utf8')
+    ).toBe(
+      'exports.button = "button";\n\n\nrequire(\'../../out-link/components/button.css\');\n'
+    );
+    expect(
+      readFileSync(path.join(project, 'src', 'components', 'button.js'), 'utf8')
+    ).toBe(buttonSource);
+  });
+
+  it('writes CSS into --out-dir when the pattern goes through a symlink', () => {
+    const result = runCli(root, realpathSync(project), [
+      '--out-dir',
+      path.join(root, 'out'),
+      '--source-root',
+      'src',
+      path.join(root, 'project-link', 'src', '**', '*.js'),
+    ]);
+
+    expect(result.error).toBeUndefined();
+    expect(result.stderr).toBe('');
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('Successfully extracted 1 CSS files.');
+    expect(
+      readFileSync(path.join(root, 'out', 'components', 'button.css'), 'utf8')
+    ).toContain('color:red;');
+    expect(
+      existsSync(path.join(project, 'src', 'components', 'button.css'))
+    ).toBe(false);
   });
 });
