@@ -145,6 +145,78 @@ describe('extractCssFromAst', () => {
       '.b': 5,
     });
   });
+
+  describe('url() with outputFilename', () => {
+    const outputFilename = '/path/to/dist/css/file.css';
+    const urls = [
+      'background: url(./a.png);',
+      'mask: url("./b.svg") center;',
+      "& > span { background: url('../c.png'); }",
+      'cursor: url(/abs.cur), url(data:image/png;base64,AA==), auto;',
+      'border-image: url(https://example.com/d.png) 30;',
+    ].join('\n');
+
+    it('rewrites relative url() paths for the none preprocessor', () => {
+      const result = extractCssFromAst({ '.a': rule('a', urls, 1) }, '', {
+        filename,
+        outputFilename,
+        preprocessor: 'none',
+      });
+
+      expect(result.cssText).toBe(
+        [
+          '.a {background: url(../../src/a.png);',
+          'mask: url("../../src/b.svg") center;',
+          "& > span { background: url('../../c.png'); }",
+          'cursor: url(/abs.cur), url(data:image/png;base64,AA==), auto;',
+          'border-image: url(https://example.com/d.png) 30;}',
+          '',
+          '',
+        ].join('\n')
+      );
+    });
+
+    it('rewrites the same paths as the stylis preprocessor', () => {
+      const text = 'background: url(./a.png); mask: url("../b.svg");';
+      const rewritten = (preprocessor: 'none' | 'stylis') =>
+        extractCssFromAst({ '.a': rule('a', text, 1) }, '', {
+          filename,
+          outputFilename,
+          prefixer: false,
+          preprocessor,
+        }).cssText.match(/url\([^)]+\)/g);
+
+      expect(rewritten('none')).toEqual([
+        'url(../../src/a.png)',
+        'url("../../b.svg")',
+      ]);
+      expect(rewritten('stylis')).toEqual(rewritten('none'));
+    });
+
+    it('keeps url() paths of the none preprocessor without outputFilename', () => {
+      const result = extractCssFromAst({ '.a': rule('a', urls, 1) }, '', {
+        filename,
+        preprocessor: 'none',
+      });
+
+      expect(result.cssText).toBe(`.a {${urls}}\n\n`);
+    });
+
+    it('passes the original url() paths to a custom preprocessor', () => {
+      const preprocessor = jest.fn(
+        (selector: string, text: string) => `${selector}{${text}}`
+      );
+
+      const result = extractCssFromAst({ '.a': rule('a', urls, 1) }, '', {
+        filename,
+        outputFilename,
+        preprocessor,
+      });
+
+      expect(preprocessor).toHaveBeenCalledWith('.a', urls);
+      expect(result.cssText).toBe(`.a{${urls}}\n`);
+    });
+  });
 });
 
 describe('extract', () => {

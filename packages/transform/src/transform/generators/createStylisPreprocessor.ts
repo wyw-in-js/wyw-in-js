@@ -254,6 +254,22 @@ export const stylisGlobalPlugin: Middleware = (element) => {
   });
 };
 
+/**
+ * Rewrites relative `url()` paths in CSS taken from `sourceFilename`, so they
+ * point at the same assets from `outputFilename`.
+ */
+export function rewriteRelativeUrls(
+  css: string,
+  sourceFilename: string,
+  outputFilename: string
+): string {
+  return css.replace(
+    RELATIVE_URL_REGEXP,
+    (_match, p1, _p2, p3, p4) =>
+      p1 + transformUrl(p3, outputFilename, sourceFilename) + p4
+  );
+}
+
 export function createStylisUrlReplacePlugin(
   filename: string,
   outputFilename: string | undefined
@@ -266,11 +282,7 @@ export function createStylisUrlReplacePlugin(
       // elements that already have `return`, so setting it here would drop
       // vendor prefixes and the display normalization.
       const replaceUrls = (css: string) =>
-        css.replace(
-          RELATIVE_URL_REGEXP,
-          (_match, p1, _p2, p3, p4) =>
-            p1 + transformUrl(p3, outputFilename, filename) + p4
-        );
+        rewriteRelativeUrls(css, filename, outputFilename);
 
       Object.assign(element, {
         children:

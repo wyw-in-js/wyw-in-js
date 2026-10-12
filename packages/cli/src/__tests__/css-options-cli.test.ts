@@ -114,7 +114,7 @@ describe('CLI CSS options', () => {
     {
       flags: ['--preprocessor', 'none'],
       expected:
-        ' {\n  display: flex inline;\n  /* rtl:ignore */\n  mask: url(./mask.svg);\n  /* note */\n  user-select: none;\n}\n\n',
+        ' {\n  display: flex inline;\n  /* rtl:ignore */\n  mask: url(../../src/mask.svg);\n  /* note */\n  user-select: none;\n}\n\n',
     },
   ];
 

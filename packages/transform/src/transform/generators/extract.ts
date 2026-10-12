@@ -5,7 +5,10 @@ import type { Replacements, Rules } from '@wyw-in-js/shared';
 
 import type { Options, PreprocessorFn } from '../../types';
 import type { IExtractAction, SyncScenarioForAction } from '../types';
-import { createStylisPreprocessor } from './createStylisPreprocessor';
+import {
+  createStylisPreprocessor,
+  rewriteRelativeUrls,
+} from './createStylisPreprocessor';
 
 export function extractCssFromAst(
   rules: Rules,
@@ -25,9 +28,20 @@ export function extractCssFromAst(
     preprocessor = options.preprocessor;
   } else {
     switch (options.preprocessor) {
-      case 'none':
-        preprocessor = (selector, text) => `${selector} {${text}}\n`;
+      case 'none': {
+        // Stylis rewrites url() in its plugin; custom preprocessors get the
+        // original paths.
+        const { filename, outputFilename } = options;
+        preprocessor = outputFilename
+          ? (selector, text) =>
+              `${selector} {${rewriteRelativeUrls(
+                text,
+                filename,
+                outputFilename
+              )}}\n`
+          : (selector, text) => `${selector} {${text}}\n`;
         break;
+      }
       case 'stylis':
       default:
         preprocessor = createStylisPreprocessor(options);
