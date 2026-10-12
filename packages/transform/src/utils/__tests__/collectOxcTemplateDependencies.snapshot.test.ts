@@ -229,6 +229,83 @@ describe('collectOxcTemplateDependencies local snapshot replay', () => {
     }
   );
 
+  it.each(
+    [
+      ['a literal undefined', '', '{ f: undefined }'],
+      [
+        'a constant holding undefined',
+        'const none = undefined;',
+        '{ f: none }',
+      ],
+      [
+        'a conditional that may be undefined',
+        'let flag = true;',
+        '{ f: flag ? undefined : 1 }',
+      ],
+      ['a missing member', 'const empty = {};', '{ f: empty.missing }'],
+    ].flatMap(([source, setup, value]) =>
+      [
+        ['disabled', false],
+        ['enabled', true],
+      ].map(([mode, evaluate]) => [source, mode, setup, value, evaluate])
+    )
+  )(
+    'fails closed when a destructuring default object replaces %s when evaluation is %s',
+    (_source, _mode, setup, value, evaluate) => {
+      const code = dedent`
+        function Component() {
+          ${setup}
+          const { f = () => {} } = ${value};
+          tag\`${'${f}'}\`;
+        }
+      `;
+
+      expect(() =>
+        collectOxcTemplateDependencies(code, filename, evaluate as boolean)
+      ).toThrow(unsafeSnapshotMessage);
+    }
+  );
+
+  it.each([
+    ['disabled', false],
+    ['enabled', true],
+  ])(
+    'fails closed when an array destructuring default object replaces a constant holding undefined when evaluation is %s',
+    (_name, evaluate) => {
+      const code = dedent`
+        function Component() {
+          const none = undefined;
+          const [f = () => {}] = [none];
+          tag\`${'${f}'}\`;
+        }
+      `;
+
+      expect(() =>
+        collectOxcTemplateDependencies(code, filename, evaluate)
+      ).toThrow(unsafeSnapshotMessage);
+    }
+  );
+
+  it.each([
+    ['disabled', false],
+    ['enabled', true],
+  ])(
+    'accepts a primitive that a destructuring default never replaces when evaluation is %s',
+    (_name, evaluate) => {
+      const code = dedent`
+        function Component() {
+          const one = 1;
+          const { f = () => {} } = { f: one };
+          tag\`${'${f}'}\`;
+        }
+      `;
+
+      expect(() =>
+        collectOxcTemplateDependencies(code, filename, evaluate)
+      ).not.toThrow();
+    }
+  );
+
   it.each([
     ['disabled', false],
     ['enabled', true],

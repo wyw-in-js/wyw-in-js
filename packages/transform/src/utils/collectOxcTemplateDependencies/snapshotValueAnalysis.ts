@@ -378,6 +378,35 @@ export const inferSnapshotExpressionKind = (
   return 'unknown';
 };
 
+// A destructuring default replaces exactly the `undefined` values, so the kind
+// follows the value the evaluator sees, not only the `undefined` syntax:
+// `undefined` takes the kind of the default, another known value its own
+// kind, and an unknown value may be either.
+const inferSnapshotDefaultedKind = (
+  value: Expression,
+  fallback: Expression,
+  tail: SnapshotProjectionSegment[],
+  ctx: ExtractionContext,
+  stack: Set<string>
+): SnapshotValueKind => {
+  const outcome = isDefinitelyUndefinedSnapshotExpression(value, ctx)
+    ? ({ kind: 'known', value: undefined } as const)
+    : evaluateStaticOutcome(unwrapSnapshotExpression(value) as Expression, ctx);
+  if (outcome.kind === 'known') {
+    return inferSnapshotProjectionKind(
+      outcome.value === undefined ? fallback : value,
+      tail,
+      ctx,
+      stack
+    );
+  }
+
+  return joinSnapshotValueKinds(
+    inferSnapshotProjectionKind(value, tail, ctx, stack),
+    inferSnapshotProjectionKind(fallback, tail, ctx, stack)
+  );
+};
+
 const inferSnapshotObjectPropertyKind = (
   expression: Extract<Expression, { type: 'ObjectExpression' }>,
   segments: SnapshotProjectionSegment[],
@@ -401,11 +430,14 @@ const inferSnapshotObjectPropertyKind = (
     if (property.kind !== 'init' || property.method) {
       return 'unknown';
     }
-    if (
-      head.fallback &&
-      isDefinitelyUndefinedSnapshotExpression(property.value, ctx)
-    ) {
-      return inferSnapshotProjectionKind(head.fallback, tail, ctx, stack);
+    if (head.fallback) {
+      return inferSnapshotDefaultedKind(
+        property.value,
+        head.fallback,
+        tail,
+        ctx,
+        stack
+      );
     }
     return inferSnapshotProjectionKind(property.value, tail, ctx, stack);
   }
@@ -444,8 +476,8 @@ const inferSnapshotArrayPropertyKind = (
     }
     return tail.length === 0 ? 'missing' : 'abrupt';
   }
-  if (head.fallback && isDefinitelyUndefinedSnapshotExpression(element, ctx)) {
-    return inferSnapshotProjectionKind(head.fallback, tail, ctx, stack);
+  if (head.fallback) {
+    return inferSnapshotDefaultedKind(element, head.fallback, tail, ctx, stack);
   }
   return inferSnapshotProjectionKind(element, tail, ctx, stack);
 };
