@@ -43,7 +43,7 @@ export const warnCustomHandlersDeprecated = (): void =>
 // from its call options, never from the config file.
 const CSS_OPTION_KEYS = ['prefixer', 'keepComments', 'preprocessor'] as const;
 
-const formatKeys = (keys: readonly string[]): string => {
+export const formatKeys = (keys: readonly string[]): string => {
   const quoted = keys.map((key) => `\`${key}\``);
   return quoted.length > 1
     ? `${quoted.slice(0, -1).join(', ')} and ${quoted[quoted.length - 1]}`

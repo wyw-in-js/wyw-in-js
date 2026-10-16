@@ -78,7 +78,9 @@ export type WorkerToMainMessage =
   | { error?: SerializedError; jobId: number; result?: Result; type: 'done' }
   | { type: 'ready' };
 
-const isCloneablePrimitive = (value: unknown): boolean =>
+const isCloneablePrimitive = (
+  value: unknown
+): value is boolean | number | string | null | undefined =>
   value === null ||
   ['boolean', 'number', 'string', 'undefined'].includes(typeof value);
 
@@ -123,49 +125,57 @@ export const deserializeError = (serialized: SerializedError): Error => {
 };
 
 /**
+ * Returns the paths of all options that cannot be sent to a worker
+ * (typically functions), or an empty array if all options are
+ * structured-cloneable.
+ */
+export const findNonTransferableOptions = (
+  value: unknown,
+  path = '',
+  // Each object is walked once, which keeps cycles and shared subtrees
+  // linear; an object shared by two options is reported under its first path.
+  visited = new WeakSet<object>()
+): string[] => {
+  if (isCloneablePrimitive(value) || value instanceof RegExp) {
+    return [];
+  }
+
+  if (typeof value === 'function' || typeof value === 'symbol') {
+    return [path];
+  }
+
+  if (typeof value !== 'object' || visited.has(value)) {
+    return [];
+  }
+
+  visited.add(value);
+
+  if (Array.isArray(value)) {
+    return value.flatMap((item, i) =>
+      findNonTransferableOptions(item, `${path}[${i}]`, visited)
+    );
+  }
+
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    try {
+      structuredClone(value);
+      return [];
+    } catch {
+      return [path];
+    }
+  }
+
+  return Object.entries(value).flatMap(([key, item]) =>
+    findNonTransferableOptions(item, path ? `${path}.${key}` : key, visited)
+  );
+};
+
+/**
  * Returns the path of the first option that cannot be sent to a worker
  * (typically a function), or null if all options are structured-cloneable.
  */
 export const findNonTransferableOption = (
   value: unknown,
   path = ''
-): string | null => {
-  if (isCloneablePrimitive(value) || value instanceof RegExp) {
-    return null;
-  }
-
-  if (typeof value === 'function' || typeof value === 'symbol') {
-    return path;
-  }
-
-  if (Array.isArray(value)) {
-    for (let i = 0; i < value.length; i += 1) {
-      const found = findNonTransferableOption(value[i], `${path}[${i}]`);
-      if (found !== null) return found;
-    }
-
-    return null;
-  }
-
-  if (typeof value === 'object') {
-    const prototype = Object.getPrototypeOf(value);
-    if (prototype !== Object.prototype && prototype !== null) {
-      try {
-        structuredClone(value);
-        return null;
-      } catch {
-        return path;
-      }
-    }
-
-    for (const [key, item] of Object.entries(value as object)) {
-      const found = findNonTransferableOption(
-        item,
-        path ? `${path}.${key}` : key
-      );
-      if (found !== null) return found;
-    }
-  }
-
-  return null;
-};
+): string | null => findNonTransferableOptions(value, path)[0] ?? null;

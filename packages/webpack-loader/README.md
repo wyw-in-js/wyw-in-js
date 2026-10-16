@@ -91,11 +91,16 @@ Set `parallel: true` to run transforms in up to four worker threads, or pass a n
 use: [{ loader: '@wyw-in-js/webpack-loader', options: { parallel: true } }],
 ```
 
+`parallel: 1` already takes transforms off webpack's main thread and uses the least memory; each further worker keeps
+its own caches.
+
 Options are sent to the workers as data, so function options (for example `tagResolver`) must be defined in a wyw-in-js
-config file. Otherwise, or when `WYWinJSDebugPlugin` is used, the loader warns and runs transforms on the main thread.
+config file, found automatically or passed as `configFile`. Options such as `parallel`, `sourceMap`, `prefixer`,
+`keepComments` and `preprocessor` stay in the loader options. Otherwise, or when `WYWinJSDebugPlugin` is used, the
+loader warns and runs transforms on the main thread.
 
 Each worker starts with a 1.5 GB heap limit and is restarted with a larger one if it runs out of memory; an explicit
-`--max-old-space-size` applies to every worker instead.
+`--max-old-space-size` applies to every worker instead, so leave it out unless webpack itself needs it.
 
 ## Disabling vendor prefixing
 
