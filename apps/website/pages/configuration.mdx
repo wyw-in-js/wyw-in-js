@@ -18,6 +18,14 @@ export default {
 
 `.mjs` config files are loaded synchronously. Keep them free of top-level `await` and async-only ESM dependency chains.
 
+An explicit `configFile` can also be a TypeScript file (`.ts`, `.mts` or `.cts`). On Node.js, a `.ts` file is compiled
+with the TypeScript compiler API when the installed `typescript` package provides it, as before. Otherwise (TypeScript 7
+does not ship it), and always for `.mts` and `.cts`, a runtime that strips types itself (Node.js 22.18+ and 23.6+, Bun)
+loads the file with `require()`; Bun loads `.ts` that way too. Node.js only strips types: the file has to be
+synchronous, like an `.mjs` config, use only erasable syntax (no `enum`) and the module format its `package.json` `type`
+implies, and import relative files with their extension; `tsconfig.json` is not read.
+Config discovery does not look for TypeScript files.
+
 Legacy/CommonJS compatibility (`wyw-in-js.config.cjs`):
 
 ```js
