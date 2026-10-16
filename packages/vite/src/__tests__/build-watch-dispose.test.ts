@@ -43,3 +43,30 @@ describe('vite build --watch eval runner', () => {
     );
   });
 });
+
+describe('vite dev server eval runners', () => {
+  it('are disposed when a middleware-mode server closes', async () => {
+    const { default: wywInJS } = await loadWywInJS();
+    const plugin = wywInJS();
+    plugin.configResolved?.({
+      root: process.cwd(),
+      mode: 'development',
+      command: 'serve',
+      base: '/',
+      build: {},
+      createResolver: () => jest.fn(),
+      logger: { warn: jest.fn() },
+    } as any);
+    // Middleware mode: Vite passes no httpServer, so no 'close' event fires.
+    (plugin.configureServer as any)({
+      httpServer: null,
+      middlewares: { use: jest.fn() },
+    });
+    disposeEvalBrokerMock.mockClear();
+
+    // ViteDevServer#close runs buildEnd through the plugin container.
+    await (plugin.buildEnd as any).call({});
+
+    expect(disposeEvalBrokerMock).toHaveBeenCalled();
+  });
+});

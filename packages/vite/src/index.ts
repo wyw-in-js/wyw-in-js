@@ -528,7 +528,14 @@ export default function wywInJS({
         disposeEvalBrokers();
         if (config.build.watch) parallelTransforms?.disposeEvalBrokers();
         else await disposeParallelTransforms();
+        return;
       }
+
+      // The dev server runs buildEnd when it closes. A middleware-mode server
+      // has no httpServer to emit 'close', and Vite does not call closeWatcher
+      // in dev, so this is the only hook that sees it go.
+      disposeEvalBrokers();
+      await disposeParallelTransforms();
     },
     async closeWatcher() {
       await disposeParallelTransforms();
