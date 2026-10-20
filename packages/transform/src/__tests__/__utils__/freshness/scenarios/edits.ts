@@ -29,7 +29,7 @@ const cyclicB = (value: string): string =>
 export const editScenarios: FreshnessScenario[] = [
   {
     id: 'root-edit',
-    title: 'правка корня',
+    title: 'root edit',
     refs: ['#135'],
     files: { 'root.ts': rootWithDep, 'dep.ts': runtimeValue('color', 'blue') },
     steps: [
@@ -59,7 +59,7 @@ export const editScenarios: FreshnessScenario[] = [
       {
         do: 'transform',
         calls: [{ file: 'root.ts' }],
-        note: 'зависимость не менялась: пересчитывается только корень',
+        note: 'the dependency did not change: only the root is recomputed',
         expect: {
           css: { 'root.ts': ['background:blue;'] },
           prepared: ['root.ts'],
@@ -70,7 +70,7 @@ export const editScenarios: FreshnessScenario[] = [
   },
   {
     id: 'dep-edit-repeated',
-    title: 'правка зависимости, дважды подряд',
+    title: 'dependency edit, twice in a row',
     refs: ['#135', '#263'],
     files: { 'root.ts': rootWithDep, 'dep.ts': runtimeValue('color', 'blue') },
     steps: [
@@ -97,7 +97,7 @@ export const editScenarios: FreshnessScenario[] = [
       {
         do: 'transform',
         calls: [{ file: 'root.ts' }],
-        note: '#263: вторая правка подряд тоже должна дойти до корня',
+        note: '#263: the second edit in a row must reach the root too',
         expect: {
           css: { 'root.ts': ['color:green;'] },
           prepared: ['dep.ts', 'root.ts'],
@@ -113,7 +113,7 @@ export const editScenarios: FreshnessScenario[] = [
   },
   {
     id: 'transitive-dep-edit',
-    title: 'правка транзитивной зависимости (root → theme → palette), дважды',
+    title: 'transitive dependency edit (root → theme → palette), twice',
     refs: ['#263'],
     files: {
       'root.ts': styled(
@@ -155,13 +155,13 @@ export const editScenarios: FreshnessScenario[] = [
         knownBug: {
           impact: 'correctness',
           description:
-            'Вторая правка транзитивной зависимости не доходит до корня: ' +
-            'корень пересобирается, но theme.ts и palette.ts остаются ' +
-            'закэшированными EvaluatedEntrypoint предыдущего поколения, ' +
-            'eval берёт их старые значения, CSS устаревший (red вместо ' +
-            'green). Первая правка той же цепочки работает — симптом ' +
-            '#263 («первая правка работает, следующие нет») для ' +
-            'runtime-зависимостей.',
+            'The second edit of a transitive dependency does not reach the ' +
+            'root: the root is rebuilt, but theme.ts and palette.ts stay ' +
+            'cached EvaluatedEntrypoints of the previous generation, eval ' +
+            'takes their old values, and the CSS is stale (red instead of ' +
+            'green). The first edit of the same chain works: the #263 ' +
+            'symptom ("the first edit works, the next ones do not") for ' +
+            'runtime dependencies.',
           intended: {
             css: { 'root.ts': ['color:green-accent;'] },
             prepared: ['palette.ts', 'root.ts', 'theme.ts'],
@@ -180,9 +180,9 @@ export const editScenarios: FreshnessScenario[] = [
         knownBug: {
           impact: 'performance',
           description:
-            'Следствие предыдущего шага: пропущенная правка обнаруживается ' +
-            'только на следующем холостом transform, и он пересчитывает ' +
-            'всю цепочку.',
+            'A consequence of the previous step: the missed edit is detected ' +
+            'only on the next transform with no changes, and that transform ' +
+            'recomputes the whole chain.',
           intended: fromCache,
         },
       },
@@ -190,7 +190,7 @@ export const editScenarios: FreshnessScenario[] = [
   },
   {
     id: 'transitive-static-dep-edit',
-    title: 'правка транзитивной статической зависимости, дважды',
+    title: 'transitive static dependency edit, twice',
     refs: ['#263'],
     files: {
       'root.ts': styled(
@@ -204,7 +204,7 @@ export const editScenarios: FreshnessScenario[] = [
       {
         do: 'transform',
         calls: [{ file: 'root.ts' }],
-        note: 'вся цепочка разрешается статически при подготовке корня',
+        note: 'the whole chain is resolved statically while preparing the root',
         expect: {
           css: { 'root.ts': ['color:blue;'] },
           prepared: ['root.ts'],
@@ -225,7 +225,7 @@ export const editScenarios: FreshnessScenario[] = [
       {
         do: 'transform',
         calls: [{ file: 'root.ts' }],
-        note: 'в отличие от runtime-цепочки вторая правка доходит',
+        note: 'unlike the runtime chain, the second edit gets through',
         expect: {
           css: { 'root.ts': ['color:green;'] },
           prepared: ['root.ts'],
@@ -241,7 +241,7 @@ export const editScenarios: FreshnessScenario[] = [
   },
   {
     id: 'other-root-after-dep-edit',
-    title: 'правку зависимости видит другой корень, затем первый',
+    title: 'a dependency edit is seen by another root, then by the first one',
     refs: ['#279'],
     files: {
       'a.ts': styled(["import { color } from './dep';"], 'color: ${color};'),
@@ -265,7 +265,7 @@ export const editScenarios: FreshnessScenario[] = [
       {
         do: 'transform',
         calls: [{ file: 'b.ts' }],
-        note: '#279: закэшированная вычисленная зависимость сверяется с диском',
+        note: '#279: a cached evaluated dependency is checked against the disk',
         expect: {
           css: { 'b.ts': ['background:red;'] },
           prepared: ['b.ts', 'dep.ts'],
@@ -285,7 +285,7 @@ export const editScenarios: FreshnessScenario[] = [
   },
   {
     id: 'dep-rename',
-    title: 'переименование зависимости',
+    title: 'dependency rename',
     refs: ['#278'],
     files: { 'root.ts': rootWithDep, 'dep.ts': runtimeValue('color', 'blue') },
     steps: [
@@ -331,7 +331,7 @@ export const editScenarios: FreshnessScenario[] = [
   },
   {
     id: 'dep-delete-unused',
-    title: 'удаление зависимости, которую корень перестал импортировать',
+    title: 'deletion of a dependency the root no longer imports',
     refs: ['#278'],
     files: {
       'root.ts': styled(
@@ -356,7 +356,7 @@ export const editScenarios: FreshnessScenario[] = [
       {
         do: 'transform',
         calls: [{ file: 'root.ts' }],
-        note: '#278: удалённый файл из старого графа не роняет проверку',
+        note: '#278: a deleted file of the old graph does not break the check',
         expect: {
           css: { 'root.ts': ['color:blue;'] },
           prepared: ['root.ts'],
@@ -372,7 +372,7 @@ export const editScenarios: FreshnessScenario[] = [
   },
   {
     id: 'dep-delete-imported',
-    title: 'удаление импортируемой зависимости и её восстановление',
+    title: 'deletion of an imported dependency and its restoration',
     refs: ['#278'],
     files: { 'root.ts': rootWithDep, 'dep.ts': runtimeValue('color', 'blue') },
     steps: [
@@ -390,8 +390,8 @@ export const editScenarios: FreshnessScenario[] = [
         do: 'transform',
         calls: [{ file: 'root.ts' }],
         note:
-          'ошибку даёт резолвер eval-раннера: резолвер бандлера при ' +
-          'подготовке корня не вызывается повторно',
+          'the error comes from the eval runner resolver: the bundler ' +
+          'resolver is not called again while preparing the root',
         expect: {
           error: { 'root.ts': "Cannot find module './dep'" },
           prepared: ['root.ts'],
@@ -403,8 +403,9 @@ export const editScenarios: FreshnessScenario[] = [
         do: 'transform',
         calls: [{ file: 'root.ts' }],
         note:
-          'корень подготовлен на прошлом шаге; dep.ts готовит eval-брокер ' +
-          'по требованию, без публикации результата подготовки',
+          'the root was prepared on the previous step; the eval broker ' +
+          'prepares dep.ts on demand, without publishing the preparation ' +
+          'result',
         expect: {
           css: { 'root.ts': ['color:red;'] },
           prepared: [],
@@ -415,7 +416,7 @@ export const editScenarios: FreshnessScenario[] = [
   },
   {
     id: 'cyclic-deps-edit',
-    title: 'циклические зависимости (a ↔ b)',
+    title: 'cyclic dependencies (a ↔ b)',
     refs: ['#148'],
     files: {
       'root.ts': styled(["import { a } from './a';"], 'color: ${a};'),
@@ -441,7 +442,7 @@ export const editScenarios: FreshnessScenario[] = [
       {
         do: 'transform',
         calls: [{ file: 'root.ts' }],
-        note: '#148: проверка свежести не зацикливается и видит правку',
+        note: '#148: the freshness check does not loop and sees the edit',
         expect: {
           css: { 'root.ts': ['color:a-b2;'] },
           prepared: ['a.ts', 'b.ts', 'root.ts'],
@@ -459,9 +460,9 @@ export const editScenarios: FreshnessScenario[] = [
         knownBug: {
           impact: 'performance',
           description:
-            'Холостой transform после правки внутри цикла снова ' +
-            'пересчитывает корень (подготовка и eval), хотя ничего не ' +
-            'менялось.',
+            'A transform with no changes after an edit inside the cycle ' +
+            'recomputes the root again (preparation and eval), although ' +
+            'nothing changed.',
           intended: fromCache,
         },
       },
@@ -469,7 +470,7 @@ export const editScenarios: FreshnessScenario[] = [
   },
   {
     id: 'mtime-gate',
-    title: 'touch без изменений и правка с сохранённым mtime',
+    title: 'touch without changes and an edit with a preserved mtime',
     refs: ['#283'],
     files: { 'root.ts': rootWithDep, 'dep.ts': runtimeValue('color', 'blue') },
     steps: [
@@ -486,7 +487,7 @@ export const editScenarios: FreshnessScenario[] = [
       {
         do: 'transform',
         calls: [{ file: 'root.ts' }],
-        note: 'новый mtime при том же содержимом — не изменение',
+        note: 'a new mtime with the same content is not a change',
         expect: { css: { 'root.ts': ['color:blue;'] }, ...fromCache },
       },
       {
@@ -497,7 +498,7 @@ export const editScenarios: FreshnessScenario[] = [
       {
         do: 'transform',
         calls: [{ file: 'root.ts' }],
-        note: 'mtime и размер прежние, но отпечаток (ctime) другой',
+        note: 'same mtime and size, but the fingerprint (ctime) differs',
         expect: {
           css: { 'root.ts': ['color:pink;'] },
           prepared: ['dep.ts', 'root.ts'],

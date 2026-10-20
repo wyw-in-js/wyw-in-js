@@ -8,12 +8,12 @@ const barrelRecovery = (
 ): KnownBug => ({
   impact: 'performance',
   description:
-    `${description} Каждый повторный transform корня, чей импорт ` +
-    'переписан на runtime-лист barrel, запускает fail-closed recovery ' +
-    '(сброс всего кэша) и полный пересчёт — даже холостой, сразу после ' +
-    'холодной сборки. Вероятная причина: eval исполняет barrel.ts, который ' +
-    'никогда не публикуется как подготовленный модуль, и его граф считается ' +
-    'неизвестным. Со статическими листьями recovery нет ' +
+    `${description} Every repeated transform of a root whose import is ` +
+    'rewritten to a runtime barrel leaf triggers the fail-closed recovery (a ' +
+    'reset of the whole cache) and a full recomputation, even one with no ' +
+    'changes right after the cold build. The likely cause: eval executes ' +
+    'barrel.ts, which is never published as a prepared module, so its graph ' +
+    'counts as unknown. Static leaves cause no recovery ' +
     '(barrel-static-leaf-edit).',
   intended: { reset: 'none', ...intended },
 });
@@ -59,11 +59,11 @@ const moduleCss = (color: string): string[] => [`background:${color}-accent;`];
 const rootCopyNarrowed = (description: string): KnownBug => ({
   impact: 'performance',
   description:
-    `${description} A.ts готовится заново, хотя ничего не менялось: eval ` +
-    'публикует вычисленную копию A.ts с экспортом accent, который в той же ' +
-    'eval-сессии запрашивал page.ts, и evaluatedOnly копии ' +
-    'перезаписывается списком сериализованных экспортов без __wywPreval. ' +
-    'Следующий transform A.ts такую копию переиспользовать не может.',
+    `${description} A.ts is prepared again although nothing changed: eval ` +
+    'publishes an evaluated copy of A.ts with the accent export that page.ts ' +
+    'requested in the same eval session, and the evaluatedOnly of the copy ' +
+    'is overwritten with the list of serialized exports without __wywPreval. ' +
+    'The next transform of A.ts cannot reuse such a copy.',
   intended: fromCache,
 });
 
@@ -71,7 +71,7 @@ const rootCopyNarrowed = (description: string): KnownBug => ({
 export const barrelScenarios: FreshnessScenario[] = [
   {
     id: 'barrel-leaf-edit',
-    title: 'правка листа barrel (именованные реэкспорты)',
+    title: 'barrel leaf edit (named re-exports)',
     refs: ['#268', '#271'],
     files: {
       'root.ts': styled(
@@ -90,7 +90,9 @@ export const barrelScenarios: FreshnessScenario[] = [
       {
         do: 'transform',
         calls: [{ file: 'root.ts' }],
-        note: 'импорт переписан на лист; barrel.ts исполняется, но не готовится',
+        note:
+          'the import is rewritten to the leaf; barrel.ts is evaluated but ' +
+          'not prepared',
         expect: {
           css: { 'root.ts': ['color:blue;'] },
           prepared: ['primary.ts', 'root.ts'],
@@ -107,7 +109,7 @@ export const barrelScenarios: FreshnessScenario[] = [
           reset: 'recovery',
         },
         knownBug: barrelRecovery(
-          'Холостой transform до любых правок.',
+          'Transform with no changes, before any edit.',
           fromCache
         ),
       },
@@ -121,7 +123,7 @@ export const barrelScenarios: FreshnessScenario[] = [
           evaluated: ['barrel.ts', 'primary.ts', 'root.ts'],
           reset: 'recovery',
         },
-        knownBug: barrelRecovery('Правка используемого листа.'),
+        knownBug: barrelRecovery('Edit of the used leaf.'),
       },
       {
         do: 'write',
@@ -137,7 +139,7 @@ export const barrelScenarios: FreshnessScenario[] = [
           reset: 'recovery',
         },
         knownBug: barrelRecovery(
-          'Правка неиспользуемого листа: вывод корня от неё не зависит.',
+          'Edit of an unused leaf: the root output does not depend on it.',
           fromCache
         ),
       },
@@ -150,13 +152,13 @@ export const barrelScenarios: FreshnessScenario[] = [
           evaluated: ['barrel.ts', 'primary.ts', 'root.ts'],
           reset: 'recovery',
         },
-        knownBug: barrelRecovery('Холостой transform.', fromCache),
+        knownBug: barrelRecovery('Transform with no changes.', fromCache),
       },
     ],
   },
   {
     id: 'barrel-retarget',
-    title: 'barrel перенаправляет реэкспорт на другой лист',
+    title: 'the barrel points the re-export to another leaf',
     refs: ['#268'],
     files: {
       'root.ts': styled(
@@ -184,14 +186,16 @@ export const barrelScenarios: FreshnessScenario[] = [
       {
         do: 'transform',
         calls: [{ file: 'root.ts' }],
-        note: '#268: barrel — зависимость инвалидации переписанного импорта',
+        note:
+          '#268: the barrel is an invalidation dependency of the rewritten ' +
+          'import',
         expect: {
           css: { 'root.ts': ['color:black;'] },
           prepared: ['dark.ts', 'root.ts'],
           evaluated: ['barrel.ts', 'dark.ts', 'root.ts'],
           reset: 'recovery',
         },
-        knownBug: barrelRecovery('Правка самого barrel.'),
+        knownBug: barrelRecovery('Edit of the barrel itself.'),
       },
       { do: 'write', files: { 'light.ts': runtimeValue('tone', 'ivory') } },
       {
@@ -204,7 +208,7 @@ export const barrelScenarios: FreshnessScenario[] = [
           reset: 'recovery',
         },
         knownBug: barrelRecovery(
-          'Правка листа, на который barrel больше не ссылается.',
+          'Edit of a leaf the barrel no longer points to.',
           fromCache
         ),
       },
@@ -217,13 +221,13 @@ export const barrelScenarios: FreshnessScenario[] = [
           evaluated: ['barrel.ts', 'dark.ts', 'root.ts'],
           reset: 'recovery',
         },
-        knownBug: barrelRecovery('Холостой transform.', fromCache),
+        knownBug: barrelRecovery('Transform with no changes.', fromCache),
       },
     ],
   },
   {
     id: 'export-star-leaf-edit',
-    title: 'правка листа за `export *`, дважды',
+    title: 'edit of a leaf behind `export *`, twice',
     refs: ['#271'],
     files: {
       'root.ts': styled(
@@ -247,14 +251,16 @@ export const barrelScenarios: FreshnessScenario[] = [
       {
         do: 'transform',
         calls: [{ file: 'root.ts' }],
-        note: '#271: кэш barrel-анализа зависит от листьев за `export *`',
+        note:
+          '#271: the barrel analysis cache depends on the leaves behind ' +
+          '`export *`',
         expect: {
           css: { 'root.ts': ['color:black;'] },
           prepared: ['leaf.ts', 'root.ts'],
           evaluated: ['barrel.ts', 'leaf.ts', 'root.ts'],
           reset: 'recovery',
         },
-        knownBug: barrelRecovery('Правка листа за `export *`.'),
+        knownBug: barrelRecovery('Edit of the leaf behind `export *`.'),
       },
       { do: 'write', files: { 'leaf.ts': runtimeValue('tone', 'gray') } },
       {
@@ -266,7 +272,7 @@ export const barrelScenarios: FreshnessScenario[] = [
           evaluated: ['barrel.ts', 'leaf.ts', 'root.ts'],
           reset: 'recovery',
         },
-        knownBug: barrelRecovery('Вторая правка листа за `export *`.'),
+        knownBug: barrelRecovery('Second edit of the leaf behind `export *`.'),
       },
       {
         do: 'transform',
@@ -277,13 +283,13 @@ export const barrelScenarios: FreshnessScenario[] = [
           evaluated: ['barrel.ts', 'leaf.ts', 'root.ts'],
           reset: 'recovery',
         },
-        knownBug: barrelRecovery('Холостой transform.', fromCache),
+        knownBug: barrelRecovery('Transform with no changes.', fromCache),
       },
     ],
   },
   {
     id: 'barrel-static-leaf-edit',
-    title: 'правка статического листа barrel',
+    title: 'edit of a static barrel leaf',
     refs: ['#268', '#271'],
     files: {
       'root.ts': styled(
@@ -302,7 +308,7 @@ export const barrelScenarios: FreshnessScenario[] = [
       {
         do: 'transform',
         calls: [{ file: 'root.ts' }],
-        note: 'значение разрешается статически через barrel',
+        note: 'the value is resolved statically through the barrel',
         expect: {
           css: { 'root.ts': ['color:blue;'] },
           prepared: ['root.ts'],
@@ -331,7 +337,7 @@ export const barrelScenarios: FreshnessScenario[] = [
       {
         do: 'transform',
         calls: [{ file: 'root.ts' }],
-        note: 'правка неиспользуемого листа не пересчитывает корень',
+        note: 'an edit of an unused leaf does not recompute the root',
         expect: { css: { 'root.ts': ['color:red;'] }, ...fromCache },
       },
       {
@@ -343,7 +349,7 @@ export const barrelScenarios: FreshnessScenario[] = [
   },
   {
     id: 'static-reexport-chain',
-    title: 'статическая цепочка реэкспортов (analysis roots)',
+    title: 'static re-export chain (analysis roots)',
     refs: ['#423'],
     files: {
       'root.ts': styled(
@@ -358,7 +364,7 @@ export const barrelScenarios: FreshnessScenario[] = [
       {
         do: 'transform',
         calls: [{ file: 'root.ts' }],
-        note: 'значение разрешается статически: eval-раннер не нужен',
+        note: 'the value is resolved statically: the eval runner is not needed',
         expect: {
           css: { 'root.ts': ['color:red;'] },
           prepared: ['root.ts'],
@@ -368,7 +374,7 @@ export const barrelScenarios: FreshnessScenario[] = [
       {
         do: 'transform',
         calls: [{ file: 'root.ts' }],
-        note: '#423: звенья цепочки — известный граф, а не recovery',
+        note: '#423: the links of the chain are a known graph, not a recovery',
         expect: { css: { 'root.ts': ['color:red;'] }, ...fromCache },
       },
       { do: 'write', files: { 'helpers.ts': staticValue('red', 'blue') } },
@@ -395,8 +401,7 @@ export const barrelScenarios: FreshnessScenario[] = [
   },
   {
     id: 'reexported-value-used-importer-first',
-    title:
-      'модуль реэкспортирует значение и сам его использует; импортёр первым',
+    title: 'a module re-exports a value and uses it itself; importer first',
     refs: [],
     files: reexportProject("export { accent } from './theme';"),
     steps: [
@@ -404,8 +409,8 @@ export const barrelScenarios: FreshnessScenario[] = [
         do: 'transform',
         calls: [{ file: 'page.ts' }],
         note:
-          'загрузка A.ts из eval page.ts несёт __wywPreval: A.ts готовится ' +
-          'из своего кода, прокси реэкспорта не строится',
+          'loading A.ts from the eval of page.ts carries __wywPreval: A.ts ' +
+          'is prepared from its own code, no re-export proxy is built',
         expect: {
           css: { 'page.ts': pageCss('blue') },
           prepared: ['page.ts', 'palette.ts', 'theme.ts'],
@@ -415,7 +420,7 @@ export const barrelScenarios: FreshnessScenario[] = [
       {
         do: 'transform',
         calls: [{ file: 'A.ts' }],
-        note: 'eval A.ts берёт модуль, подготовленный для page.ts',
+        note: 'the eval of A.ts takes the module prepared for page.ts',
         expect: {
           css: { 'A.ts': moduleCss('blue') },
           prepared: ['A.ts'],
@@ -451,13 +456,14 @@ export const barrelScenarios: FreshnessScenario[] = [
         knownBug: {
           impact: 'performance',
           description:
-            'Код A.ts снова отправляется в eval-раннер, хотя eval page.ts ' +
-            'на предыдущем шаге уже исполнил свежий A.ts. Готовя A.ts для ' +
-            'eval page.ts, брокер заново создаёт entrypoint A.ts; проверка ' +
-            'свежести находит устаревшей его публикацию до правки и снова ' +
-            'помечает A.ts инвалидированным, уже после того как эта загрузка ' +
-            'забрала прежнюю пометку. Загрузка корня A.ts забирает оставшуюся ' +
-            'пометку и сбрасывает модуль в раннере.',
+            'The code of A.ts goes to the eval runner again, although the ' +
+            'eval of page.ts on the previous step already evaluated the ' +
+            'fresh A.ts. While preparing A.ts for the eval of page.ts, the ' +
+            'broker creates the A.ts entrypoint anew; the freshness check ' +
+            'finds its pre-edit publication stale and marks A.ts invalidated ' +
+            'again, after this load has already taken the previous mark. ' +
+            'Loading the root A.ts takes the remaining mark and resets the ' +
+            'module in the runner.',
           intended: { evaluated: [] },
         },
       },
@@ -465,7 +471,7 @@ export const barrelScenarios: FreshnessScenario[] = [
   },
   {
     id: 'reexported-value-renamed-importer-first',
-    title: 'то же с переименованием при реэкспорте',
+    title: 'the same with a rename in the re-export',
     refs: [],
     files: reexportProject("export { accent as tone } from './theme';", 'tone'),
     steps: [
@@ -491,7 +497,7 @@ export const barrelScenarios: FreshnessScenario[] = [
   },
   {
     id: 'reexported-value-used-concurrently',
-    title: 'то же, импортёр и модуль параллельно',
+    title: 'the same, importer and module in parallel',
     refs: [],
     files: reexportProject("export { accent } from './theme';"),
     steps: [
@@ -518,14 +524,14 @@ export const barrelScenarios: FreshnessScenario[] = [
   },
   {
     id: 'reexported-star-value-used-importer-first',
-    title: 'то же через `export *`, импортёр первым',
+    title: 'the same through `export *`, importer first',
     refs: [],
     files: reexportProject("export * from './theme';"),
     steps: [
       {
         do: 'transform',
         calls: [{ file: 'page.ts' }],
-        note: 'за `export *` прокси не строится: A.ts исполняется целиком',
+        note: 'no proxy behind `export *`: A.ts is evaluated as a whole',
         expect: {
           css: { 'page.ts': pageCss('blue') },
           prepared: ['page.ts', 'palette.ts', 'theme.ts'],
@@ -545,7 +551,7 @@ export const barrelScenarios: FreshnessScenario[] = [
   },
   {
     id: 'reexported-value-used-module-first',
-    title: 'модуль реэкспортирует значение и сам его использует; модуль первым',
+    title: 'a module re-exports a value and uses it itself; module first',
     refs: [],
     files: reexportProject("export { accent } from './theme';"),
     steps: [
@@ -570,13 +576,13 @@ export const barrelScenarios: FreshnessScenario[] = [
       {
         do: 'transform',
         calls: [{ file: 'A.ts' }],
-        note: 'повторный transform A.ts в той же eval-сессии, что и page.ts',
+        note: 'repeated transform of A.ts in the same eval session as page.ts',
         expect: {
           css: { 'A.ts': moduleCss('blue') },
           prepared: ['A.ts'],
           evaluated: [],
         },
-        knownBug: rootCopyNarrowed('Холостой transform.'),
+        knownBug: rootCopyNarrowed('Transform with no changes.'),
       },
     ],
   },

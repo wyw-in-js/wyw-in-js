@@ -5,9 +5,9 @@ import { fromCache, rootWithDep, runtimeValue, styled } from './sources';
 const concurrentRecovery: KnownBug = {
   impact: 'performance',
   description:
-    'Параллельные transform после обычной правки общей зависимости ' +
-    'запускают fail-closed recovery: сбрасывается весь кэш, хотя вывод ' +
-    'верный. Бандлеры всегда трансформируют модули параллельно.',
+    'Parallel transforms after an ordinary edit of a shared dependency ' +
+    'trigger the fail-closed recovery: the whole cache is reset although the ' +
+    'output is correct. Bundlers always transform modules in parallel.',
   intended: { reset: 'none' },
 };
 
@@ -38,7 +38,7 @@ const styledWithRuntimeAccent = (color: string): string =>
 export const concurrencyScenarios: FreshnessScenario[] = [
   {
     id: 'concurrent-same-root',
-    title: 'конкурентные transform одного файла',
+    title: 'concurrent transforms of one file',
     refs: ['#427'],
     files: { 'root.ts': rootWithDep, 'dep.ts': runtimeValue('color', 'blue') },
     steps: [
@@ -48,7 +48,7 @@ export const concurrencyScenarios: FreshnessScenario[] = [
           { file: 'root.ts', id: 'first' },
           { file: 'root.ts', id: 'second' },
         ],
-        note: 'два вызова делят одну подготовку и один eval',
+        note: 'the two calls share one preparation and one eval',
         expect: {
           css: { first: ['color:blue;'], second: ['color:blue;'] },
           prepared: ['dep.ts', 'root.ts'],
@@ -74,7 +74,7 @@ export const concurrencyScenarios: FreshnessScenario[] = [
   },
   {
     id: 'concurrent-roots-shared-dep',
-    title: 'параллельные корни с общей зависимостью',
+    title: 'parallel roots with a shared dependency',
     refs: ['#423', '#427'],
     files: {
       'a.ts': styled(["import { color } from './theme';"], 'color: ${color};'),
@@ -105,7 +105,7 @@ export const concurrencyScenarios: FreshnessScenario[] = [
       {
         do: 'transform',
         calls: [{ file: 'a.ts' }, { file: 'b.ts' }, { file: 'c.ts' }],
-        note: '#423: повторная сборка без правок не запускает recovery',
+        note: '#423: a rebuild without edits does not trigger recovery',
         expect: {
           css: {
             'a.ts': ['color:blue;'],
@@ -135,7 +135,7 @@ export const concurrencyScenarios: FreshnessScenario[] = [
   },
   {
     id: 'watch-rebuild-cycle',
-    title: 'watch-цикл: параллельная пересборка всех изменённых модулей',
+    title: 'watch loop: parallel rebuild of all changed modules',
     refs: ['#263', '#279', '#283'],
     files: {
       'a.ts': styled(
@@ -173,7 +173,7 @@ export const concurrencyScenarios: FreshnessScenario[] = [
           { file: 'a.ts' },
           { file: 'b.ts' },
         ],
-        note: 'бандлер пересобирает изменённый файл и всех его импортёров',
+        note: 'the bundler rebuilds the changed file and all its importers',
         expect: {
           css: {
             'palette.ts': [],
@@ -197,8 +197,8 @@ export const concurrencyScenarios: FreshnessScenario[] = [
           { file: 'b.ts' },
         ],
         note:
-          'в отличие от transitive-dep-edit вторая правка доходит: ' +
-          'промежуточные модули тоже трансформируются',
+          'unlike transitive-dep-edit, the second edit gets through: the ' +
+          'intermediate modules are transformed too',
         expect: {
           css: {
             'palette.ts': [],
@@ -227,7 +227,7 @@ export const concurrencyScenarios: FreshnessScenario[] = [
   },
   {
     id: 'supersede-root-during-eval',
-    title: 'правка корня, пока его transform ждёт eval (supersede)',
+    title: 'root edit while its transform waits for eval (supersede)',
     refs: ['#427'],
     files: { 'root.ts': rootWithDep, 'dep.ts': runtimeValue('color', 'blue') },
     steps: [
@@ -249,7 +249,7 @@ export const concurrencyScenarios: FreshnessScenario[] = [
       {
         do: 'transform',
         calls: [{ file: 'root.ts' }],
-        note: 'включает подготовку удержанного вызова до точки удержания',
+        note: 'includes the preparation of the held call up to the hold point',
         expect: {
           css: { 'root.ts': ['background:blue;'] },
           prepared: ['dep.ts', 'root.ts'],
@@ -263,12 +263,13 @@ export const concurrencyScenarios: FreshnessScenario[] = [
         knownBug: {
           impact: 'correctness',
           description:
-            'Вытесненный (superseded) вызов transform со старым кодом ' +
-            'возвращает CSS новой ревизии файла: workflow перезапускается на ' +
-            'supersededWith. Это нарушает контракт «вывод соответствует ' +
-            'переданному коду»: бандлер с персистентным кэшем по хэшу входа ' +
-            'сохранит чужой вывод под старым содержимым. Спорно — так ' +
-            'задуман механизм supersede.',
+            'A superseded transform call with the old code returns the CSS ' +
+            'of the new revision of the file: the workflow restarts on ' +
+            'supersededWith. This breaks the contract "the output matches ' +
+            'the code passed in": a bundler with a persistent cache keyed by ' +
+            'the input hash would store the output of the new revision under ' +
+            'the old content. Debatable: the supersede mechanism is designed ' +
+            'this way.',
           intended: {
             css: { stale: ['color:blue;'] },
             prepared: undefined,
@@ -286,7 +287,7 @@ export const concurrencyScenarios: FreshnessScenario[] = [
   {
     id: 'supersede-dependency-in-resolve',
     title:
-      'корень удерживается в resolve, другой корень берёт его как зависимость',
+      'a root is held in resolve while another root takes it as a dependency',
     refs: ['#427'],
     files: sharedWithAccent('red'),
     steps: [
@@ -313,9 +314,9 @@ export const concurrencyScenarios: FreshnessScenario[] = [
         do: 'transform',
         calls: [{ file: 'shared.ts' }, { file: 'entry.ts' }],
         note:
-          'shared.ts готовится как корень ещё раз: его корневую публикацию ' +
-          'заменила вычисленная копия-зависимость от entry.ts (один узел ' +
-          'кэша на файл)',
+          'shared.ts is prepared as a root once more: its root publication ' +
+          'was replaced by the evaluated dependency copy from entry.ts (one ' +
+          'cache node per file)',
         expect: {
           css: {
             'shared.ts': ['color:red-accent;'],
@@ -361,7 +362,7 @@ export const concurrencyScenarios: FreshnessScenario[] = [
   },
   {
     id: 'dependency-then-root',
-    title: 'файл сначала зависимость, затем корень',
+    title: 'a file is first a dependency, then a root',
     refs: ['#427'],
     files: {
       'shared.ts': styled(
@@ -392,7 +393,7 @@ export const concurrencyScenarios: FreshnessScenario[] = [
       {
         do: 'transform',
         calls: [{ file: 'shared.ts' }],
-        note: 'корню нужен другой набор экспортов: подготовка заново, eval нет',
+        note: 'the root needs other exports: prepared again, no eval',
         expect: {
           css: { 'shared.ts': ['color:red-mixed;'] },
           prepared: ['shared.ts'],
@@ -410,7 +411,7 @@ export const concurrencyScenarios: FreshnessScenario[] = [
       {
         do: 'transform',
         calls: [{ file: 'shared.ts' }],
-        note: 'корень и зависимость больше не вытесняют друг друга',
+        note: 'the root and the dependency no longer evict each other',
         expect: { css: { 'shared.ts': ['color:red-mixed;'] }, ...fromCache },
       },
       {
@@ -447,7 +448,7 @@ export const concurrencyScenarios: FreshnessScenario[] = [
   },
   {
     id: 'root-after-importer-evaluated-all',
-    title: 'корень после импортёра, который вычислил все его экспорты',
+    title: 'a root after an importer that evaluated all of its exports',
     refs: ['#427'],
     files: {
       'A.ts': styledWithRuntimeAccent('blue'),
@@ -460,7 +461,7 @@ export const concurrencyScenarios: FreshnessScenario[] = [
       {
         do: 'transform',
         calls: [{ file: 'page.ts' }],
-        note: 'page.ts публикует вычисленную копию A.ts со всеми экспортами',
+        note: 'page.ts publishes an evaluated copy of A.ts with all exports',
         expect: {
           css: { 'page.ts': ['color:blue;', 'color:blue;'] },
           prepared: ['A.ts', 'page.ts'],
@@ -470,7 +471,7 @@ export const concurrencyScenarios: FreshnessScenario[] = [
       {
         do: 'transform',
         calls: [{ file: 'A.ts' }],
-        note: 'корень A.ts переиспользует эту копию, а не готовится заново',
+        note: 'the root A.ts reuses this copy instead of being prepared again',
         expect: {
           css: { 'A.ts': ['background:blue;'] },
           prepared: [],
@@ -500,7 +501,7 @@ export const concurrencyScenarios: FreshnessScenario[] = [
   },
   {
     id: 'root-and-importer-together-after-dependency-edit',
-    title: 'модуль и его импортёр в одном раунде после правки зависимости',
+    title: 'a module and its importer in one round after a dependency edit',
     refs: ['#442'],
     files: {
       'A.ts': styled(
@@ -539,8 +540,8 @@ export const concurrencyScenarios: FreshnessScenario[] = [
         do: 'transform',
         calls: [{ file: 'A.ts' }, { file: 'page.ts' }],
         note:
-          'проверка свежести page.ts вытесняет новый корень A.ts и ' +
-          'публикует A.ts заново для своего импорта; корень перезапускается',
+          'the freshness check of page.ts evicts the new root A.ts and ' +
+          'publishes A.ts again for its own import; the root restarts',
         expect: {
           css: {
             'A.ts': ['background:red-theme;'],
@@ -554,7 +555,7 @@ export const concurrencyScenarios: FreshnessScenario[] = [
   },
   {
     id: 'invalidation-cursor-api',
-    title: 'общий курсор consumeInvalidation: два потребителя одного файла',
+    title: 'shared consumeInvalidation cursor: two consumers of one file',
     refs: ['#411'],
     files: { 'dep.ts': runtimeValue('color', 'blue') },
     steps: [
@@ -562,28 +563,28 @@ export const concurrencyScenarios: FreshnessScenario[] = [
       {
         do: 'consumeInvalidation',
         file: 'dep.ts',
-        note: 'первый потребитель',
+        note: 'first consumer',
         expect: { consumed: true },
       },
       {
         do: 'consumeInvalidation',
         file: 'dep.ts',
-        note: 'второй потребитель того же файла',
+        note: 'second consumer of the same file',
         expect: { consumed: false },
         knownBug: {
           impact: 'correctness',
           description:
-            'Курсор один на имя файла, а не на потребителя: второй ' +
-            'потребитель (второй eval-брокер на том же кэше, module.ts) не ' +
-            'узнаёт об инвалидации, которую уже забрал первый. См. ' +
-            'invalidation-cursor-two-brokers.',
+            'There is one cursor per file name, not per consumer: the second ' +
+            'consumer (a second eval broker on the same cache, module.ts) ' +
+            'does not learn about an invalidation that the first one has ' +
+            'already taken. See invalidation-cursor-two-brokers.',
           intended: { consumed: true },
         },
       },
       {
         do: 'consumeInvalidation',
         file: 'dep.ts?raw',
-        note: 'у каждого ?query-варианта свой курсор',
+        note: 'every ?query variant has its own cursor',
         expect: { consumed: true },
       },
       { do: 'invalidate', files: ['dep.ts'] },
@@ -596,7 +597,7 @@ export const concurrencyScenarios: FreshnessScenario[] = [
   },
   {
     id: 'invalidation-cursor-two-brokers',
-    title: 'общий курсор consumeInvalidation: два eval-брокера на одном кэше',
+    title: 'shared consumeInvalidation cursor: two eval brokers on one cache',
     refs: ['#411', '#427'],
     files: { 'root.ts': rootWithDep, 'dep.ts': runtimeValue('color', 'blue') },
     sessions: {
@@ -616,7 +617,7 @@ export const concurrencyScenarios: FreshnessScenario[] = [
       {
         do: 'transform',
         calls: [{ file: 'root.ts', session: 'b' }],
-        note: 'подготовка общая (кэш), eval — в своём раннере',
+        note: 'preparation is shared (cache), eval runs in its own runner',
         expect: {
           css: { 'root.ts': ['color:blue;'] },
           prepared: [],
@@ -640,10 +641,10 @@ export const concurrencyScenarios: FreshnessScenario[] = [
         knownBug: {
           impact: 'correctness',
           description:
-            'Брокер b отдаёт закэшированный результат eval со старым ' +
-            'значением: корень в общем кэше уже свежий (его пересобрал ' +
-            'брокер a), а инвалидацию dep.ts забрал брокер a через общий ' +
-            'курсор consumeInvalidation. Устаревший CSS.',
+            'Broker b returns a cached eval result with the old value: the ' +
+            'root in the shared cache is already fresh (broker a rebuilt ' +
+            'it), and broker a took the dep.ts invalidation through the ' +
+            'shared consumeInvalidation cursor. Stale CSS.',
           intended: {
             css: { 'root.ts': ['color:red;'] },
             evaluated: ['dep.ts', 'root.ts'],

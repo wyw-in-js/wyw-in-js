@@ -10,10 +10,11 @@ const fullRecompute = {
 const loaderRootRecompute: KnownBug = {
   impact: 'performance',
   description:
-    'После правки зависимости, которая приходит из loadDependencyCode, ' +
-    'следующий повторный transform корня ещё раз готовит и исполняет ' +
-    'корень (сама зависимость из кэша): новый код загрузчика сообщается ' +
-    'вторым изменением уже после того, как корень учёл правку диска.',
+    'After an edit of a dependency that comes from loadDependencyCode, the ' +
+    'next repeated transform of the root prepares and evaluates the root ' +
+    'once more (the dependency itself comes from the cache): the new loader ' +
+    'code is reported as a second change after the root has already taken ' +
+    'the disk edit into account.',
   intended: fromCache,
 };
 
@@ -82,7 +83,7 @@ const reexportOverLoadedPalette = (base: string): Record<string, string> => ({
 export const sessionScenarios: FreshnessScenario[] = [
   {
     id: 'salt-resolver-key',
-    title: 'смена соли: другой ключ резолвера и возврат к прежнему',
+    title: 'salt change: another resolver key and back to the previous one',
     refs: ['#234'],
     files: { 'root.ts': rootWithDep, 'dep.ts': runtimeValue('color', 'blue') },
     sessions: { other: { resolverKey: 'freshness-other' } },
@@ -104,7 +105,9 @@ export const sessionScenarios: FreshnessScenario[] = [
       {
         do: 'transform',
         calls: [{ file: 'root.ts' }],
-        note: 'кэш одной соли за раз: возврат к прежней снова всё сбрасывает',
+        note:
+          'the cache holds one salt at a time: going back to the previous ' +
+          'one resets everything again',
         expect: {
           css: { 'root.ts': ['color:blue;'] },
           ...fullRecompute,
@@ -120,7 +123,7 @@ export const sessionScenarios: FreshnessScenario[] = [
   },
   {
     id: 'salt-plugin-options',
-    title: 'смена соли: опции плагина',
+    title: 'salt change: plugin options',
     refs: ['#234'],
     files: { 'root.ts': rootWithDep, 'dep.ts': runtimeValue('color', 'blue') },
     sessions: {
@@ -136,7 +139,9 @@ export const sessionScenarios: FreshnessScenario[] = [
       {
         do: 'transform',
         calls: [{ file: 'root.ts', session: 'sameOptionsNewObject' }],
-        note: 'соль считается по содержимому опций, а не по identity объекта',
+        note:
+          'the salt is computed from the content of the options, not from ' +
+          'the object identity',
         expect: { css: { 'root.ts': ['color:blue;'] }, ...fromCache },
       },
       {
@@ -152,7 +157,9 @@ export const sessionScenarios: FreshnessScenario[] = [
   },
   {
     id: 'resolver-identity-salt',
-    title: 'без asyncResolveKey соль зависит от identity функции резолвера',
+    title:
+      'without asyncResolveKey the salt depends on the identity of the ' +
+      'resolver function',
     refs: ['#234'],
     files: { 'root.ts': rootWithDep, 'dep.ts': runtimeValue('color', 'blue') },
     sessions: {
@@ -168,7 +175,7 @@ export const sessionScenarios: FreshnessScenario[] = [
       {
         do: 'transform',
         calls: [{ file: 'root.ts' }],
-        note: 'контракт API: новая функция резолвера без ключа — новая соль',
+        note: 'API contract: a new keyless resolver function is a new salt',
         expect: {
           css: { 'root.ts': ['color:blue;'] },
           ...fullRecompute,
@@ -193,7 +200,7 @@ export const sessionScenarios: FreshnessScenario[] = [
   },
   {
     id: 'loaded-dependency-code',
-    title: 'код зависимости из loadDependencyCode отличается от диска',
+    title: 'dependency code from loadDependencyCode differs from the disk',
     refs: ['#234', '#238'],
     files: {
       'root.ts': rootWithDep,
@@ -206,7 +213,7 @@ export const sessionScenarios: FreshnessScenario[] = [
       {
         do: 'transform',
         calls: [{ file: 'root.ts' }],
-        note: 'исполняется код загрузчика, а не байты с диска',
+        note: 'the loader code is evaluated, not the bytes on disk',
         expect: {
           css: { 'root.ts': ['color:blue-loaded;'] },
           ...fullRecompute,
@@ -216,8 +223,8 @@ export const sessionScenarios: FreshnessScenario[] = [
         do: 'transform',
         calls: [{ file: 'root.ts' }],
         note:
-          '#234, #422: расхождение «загрузчик ≠ диск» не инвалидирует ' +
-          'dep.ts и не пересчитывает корень',
+          '#234, #422: the "loader ≠ disk" mismatch neither invalidates ' +
+          'dep.ts nor recomputes the root',
         expect: { css: { 'root.ts': ['color:blue-loaded;'] }, ...fromCache },
       },
       { do: 'write', files: { 'dep.ts': runtimeValue('color', 'red-disk') } },
@@ -243,7 +250,7 @@ export const sessionScenarios: FreshnessScenario[] = [
   },
   {
     id: 'loaded-then-disk',
-    title: 'зависимость сначала из загрузчика, затем с диска и обратно',
+    title: 'dependency first from the loader, then from the disk and back',
     refs: ['#423', '#427'],
     files: {
       'root.ts': rootWithDep,
@@ -266,8 +273,8 @@ export const sessionScenarios: FreshnessScenario[] = [
         do: 'transform',
         calls: [{ file: 'root.ts', session: 'disk' }],
         note:
-          '#427: байты на диске не менялись — повторно используется ' +
-          'прежний код загрузчика',
+          '#427: the bytes on disk did not change, so the previous loader ' +
+          'code is reused',
         expect: { css: { 'root.ts': ['color:blue-loaded;'] }, ...fromCache },
       },
       { do: 'write', files: { 'dep.ts': runtimeValue('color', 'red-disk') } },
@@ -283,16 +290,16 @@ export const sessionScenarios: FreshnessScenario[] = [
         do: 'transform',
         calls: [{ file: 'root.ts' }],
         note:
-          'ревизия на диске та же: корень из кэша, загрузчик не ' +
-          'спрашивается, остаётся исполненный дисковый код (одинаковый ' +
-          'loadDependencyCodeKey обещает одинаковую семантику)',
+          'the revision on disk is the same: the root comes from the cache, ' +
+          'the loader is not asked, and the evaluated disk code stays (the ' +
+          'same loadDependencyCodeKey promises the same semantics)',
         expect: { css: { 'root.ts': ['color:red-disk;'] }, ...fromCache },
       },
     ],
   },
   {
     id: 'root-loaded-source',
-    title: 'код корня от бандлера отличается от диска',
+    title: 'root code from the bundler differs from the disk',
     refs: ['#234', '#427'],
     files: {
       'root.ts': styled(
@@ -341,7 +348,8 @@ export const sessionScenarios: FreshnessScenario[] = [
   {
     id: 'loaded-root-after-importers',
     title:
-      'корень с кодом загрузчика (≠ диск) после импортёров, читавших его с диска',
+      'root with loader code (≠ disk) after importers that read it from the ' +
+      'disk',
     refs: ['#422', '#427'],
     files: loaderChain('16px'),
     steps: [
@@ -356,7 +364,7 @@ export const sessionScenarios: FreshnessScenario[] = [
       {
         do: 'transform',
         calls: [{ file: 'image.ts', source: 'loaded' }],
-        note: 'корень исполняет код загрузчика, а не прочитанные с диска байты',
+        note: 'the root evaluates the loader code, not the bytes on disk',
         expect: {
           css: { 'image.ts': ['width:16px;outline:none-loaded;'] },
           prepared: ['image.ts'],
@@ -367,15 +375,16 @@ export const sessionScenarios: FreshnessScenario[] = [
         do: 'transform',
         calls: [{ file: 'page.ts' }],
         note:
-          '#422: диск не менялся, код загрузчика — не новость для ' +
-          'импортёров: ни каскада вытеснений, ни recovery',
+          '#422: the disk did not change, so the loader code is no news to ' +
+          'the importers: no eviction cascade and no recovery',
         expect: { css: { 'page.ts': ['min-height:16px-card;'] }, ...fromCache },
       },
     ],
   },
   {
     id: 'loaded-root-importer-in-flight',
-    title: 'корень с кодом загрузчика (≠ диск), пока импортёр-корень ждёт eval',
+    title:
+      'root with loader code (≠ disk) while an importer root waits for eval',
     refs: ['#422', '#427'],
     files: loaderChain('16px'),
     steps: [
@@ -396,7 +405,7 @@ export const sessionScenarios: FreshnessScenario[] = [
       {
         do: 'transform',
         calls: [{ file: 'image.ts', source: 'loaded' }],
-        note: 'включает подготовку удержанного корня card.ts',
+        note: 'includes the preparation of the held root card.ts',
         expect: {
           css: { 'image.ts': ['width:16px;outline:none-loaded;'] },
           prepared: ['card.ts', 'image.ts'],
@@ -407,14 +416,14 @@ export const sessionScenarios: FreshnessScenario[] = [
         do: 'transform',
         calls: [{ file: 'page.ts' }],
         note:
-          '#422: проверка свежести page.ts не вытесняет удержанный корень ' +
+          '#422: the freshness check of page.ts does not evict the held root ' +
           'card.ts',
         expect: { css: { 'page.ts': ['min-height:16px-card;'] }, ...fromCache },
       },
       { do: 'release', id: 'card' },
       {
         do: 'join',
-        note: 'корень card.ts не перезапускается',
+        note: 'the root card.ts is not restarted',
         expect: { css: { card: ['height:16px-card;'] }, ...fromCache },
       },
     ],
@@ -422,8 +431,8 @@ export const sessionScenarios: FreshnessScenario[] = [
   {
     id: 'loaded-root-after-edit',
     title:
-      'правка файла между чтением с диска импортёром и приходом корня ' +
-      'с кодом загрузчика',
+      'file edit between an importer reading it from the disk and the ' +
+      'arrival of the root with loader code',
     refs: ['#422', '#427'],
     files: loaderChain('16px'),
     steps: [
@@ -449,8 +458,8 @@ export const sessionScenarios: FreshnessScenario[] = [
         do: 'transform',
         calls: [{ file: 'page.ts' }],
         note:
-          'диск уже не совпадает с тем, что прочли импортёры: правка ' +
-          'доходит до них, хотя первой её увидела проверка корня',
+          'the disk no longer matches what the importers read: the edit ' +
+          'reaches them, even though the root check saw it first',
         expect: {
           css: { 'page.ts': ['min-height:20px-card;'] },
           prepared: ['card.ts', 'page.ts'],
@@ -462,8 +471,8 @@ export const sessionScenarios: FreshnessScenario[] = [
   {
     id: 'loaded-root-after-edit-and-invalidation',
     title:
-      'правка и invalidateForFile файла, его новые байты читает другой ' +
-      'импортёр, затем корень с кодом загрузчика',
+      'edit and invalidateForFile of a file, another importer reads its new ' +
+      'bytes, then the root with loader code',
     refs: ['#422', '#427'],
     files: {
       ...loaderChain('16px'),
@@ -486,7 +495,7 @@ export const sessionScenarios: FreshnessScenario[] = [
       {
         do: 'transform',
         calls: [{ file: 'card2.ts' }],
-        note: 'запоминает хеш новых байтов image.ts без версии изменения',
+        note: 'records the new image.ts byte hash without a change version',
         expect: {
           css: { 'card2.ts': ['max-height:20px;'] },
           prepared: ['card2.ts', 'image.ts'],
@@ -506,9 +515,9 @@ export const sessionScenarios: FreshnessScenario[] = [
         do: 'transform',
         calls: [{ file: 'page.ts' }],
         note:
-          'диск совпадает с последним прочитанным, но page.ts и card.ts ' +
-          'читали прежние байты: после invalidateForFile код загрузчика ' +
-          'по-прежнему сообщается как изменение',
+          'the disk matches what was read last, but page.ts and card.ts read ' +
+          'the previous bytes: after invalidateForFile the loader code is ' +
+          'still reported as a change',
         expect: {
           css: { 'page.ts': ['min-height:20px-card;'] },
           prepared: ['card.ts', 'page.ts'],
@@ -529,8 +538,9 @@ export const sessionScenarios: FreshnessScenario[] = [
   {
     id: 'loaded-dependency-reexport-second-edit',
     title:
-      'вторая правка транзитивной зависимости из loadDependencyCode за ' +
-      'реэкспортом стилизованного модуля, между правками собран другой импортёр',
+      'second edit of a transitive dependency from loadDependencyCode behind ' +
+      'a re-export of a styled module, with another importer built between ' +
+      'the edits',
     refs: ['#263', '#422'],
     files: reexportOverLoadedPalette('blue'),
     sessions: {
@@ -571,9 +581,10 @@ export const sessionScenarios: FreshnessScenario[] = [
         knownBug: {
           impact: 'performance',
           description:
-            'Пересборка page2.ts после правки palette.ts запускает ' +
-            'fail-closed recovery (сброс всего кэша). Так же и без ' +
-            'загрузчика; причину в этой строке не разбирали.',
+            'Rebuilding page2.ts after the palette.ts edit triggers the ' +
+            'fail-closed recovery (a reset of the whole cache). The same ' +
+            'happens without the loader; the cause has not been investigated ' +
+            'in this row.',
           intended: { reset: 'none' },
         },
       },
@@ -594,15 +605,15 @@ export const sessionScenarios: FreshnessScenario[] = [
         knownBug: {
           impact: 'correctness',
           description:
-            'Вторая правка транзитивной зависимости не доходит до page.ts, ' +
-            'если первую видел только page2.ts: page.ts пересобирается, но ' +
-            'palette.ts, theme.ts и A.ts заново в eval-раннер не попадают, ' +
-            'и он берёт их значения после первой правки (red вместо green). ' +
-            'Загрузчик, возвращающий байты с диска, и сборка без загрузчика ' +
-            'устаревают здесь так же, в том числе до исправления #422. С ' +
-            'кодом загрузчика, отличным от диска, до #422 строка была ' +
-            'свежей: этот код сообщался как изменение palette.ts и вытеснял ' +
-            'её импортёров.',
+            'The second edit of a transitive dependency does not reach ' +
+            'page.ts if only page2.ts saw the first one: page.ts is rebuilt, ' +
+            'but palette.ts, theme.ts and A.ts do not reach the eval runner ' +
+            'again, and it takes their values after the first edit (red ' +
+            'instead of green). A loader that returns the bytes on disk and ' +
+            'a build without a loader go stale here the same way, including ' +
+            'before the #422 fix. With loader code that differs from the ' +
+            'disk, the row was fresh before #422: that code was reported as ' +
+            'a change of palette.ts and evicted its importers.',
           intended: {
             css: { 'page.ts': ['color:green-accent;', 'margin:0;'] },
             evaluated: ['A.ts', 'page.ts', 'palette.ts', 'theme.ts'],
@@ -613,7 +624,7 @@ export const sessionScenarios: FreshnessScenario[] = [
   },
   {
     id: 'query-variants',
-    title: 'варианты одного файла с ?query / #hash',
+    title: 'variants of one file with ?query / #hash',
     refs: ['#234', '#278'],
     files: {
       'root.ts': styled(
@@ -626,7 +637,7 @@ export const sessionScenarios: FreshnessScenario[] = [
       {
         do: 'transform',
         calls: [{ file: 'root.ts?variant=a' }, { file: 'root.ts#b' }],
-        note: 'каждый вариант — отдельный узел кэша',
+        note: 'each variant is a separate cache node',
         expect: {
           css: {
             'root.ts?variant=a': ['color:blue;'],
@@ -661,9 +672,9 @@ export const sessionScenarios: FreshnessScenario[] = [
         knownBug: {
           impact: 'performance',
           description:
-            'Два варианта корня, параллельно пересобираемые после правки ' +
-            'общей зависимости, запускают fail-closed recovery (сброс ' +
-            'всего кэша).',
+            'Two variants of the root, rebuilt in parallel after an edit of ' +
+            'a shared dependency, trigger the fail-closed recovery (a reset ' +
+            'of the whole cache).',
           intended: { reset: 'none' },
         },
       },
@@ -680,7 +691,7 @@ export const sessionScenarios: FreshnessScenario[] = [
   },
   {
     id: 'explicit-invalidate',
-    title: 'явная инвалидация (invalidateForFile, как в Vite HMR)',
+    title: 'explicit invalidation (invalidateForFile, as in Vite HMR)',
     refs: ['#411', '#423'],
     files: { 'root.ts': rootWithDep, 'dep.ts': runtimeValue('color', 'blue') },
     steps: [
@@ -693,7 +704,7 @@ export const sessionScenarios: FreshnessScenario[] = [
       {
         do: 'transform',
         calls: [{ file: 'root.ts' }],
-        note: 'вытеснение без изменения содержимого не заставляет пересчитывать',
+        note: 'an eviction without a content change forces no recomputation',
         expect: { css: { 'root.ts': ['color:blue;'] }, ...fromCache },
       },
       {

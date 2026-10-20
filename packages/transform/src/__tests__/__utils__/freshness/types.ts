@@ -92,7 +92,7 @@ export interface StepExpectation {
 }
 
 export interface KnownBug {
-  /** What is wrong with the current behaviour (in Russian, like the plan). */
+  /** What is wrong with the current behaviour. */
   description: string;
   /** `correctness` — wrong or stale output; `performance` — wasted work. */
   impact: 'correctness' | 'performance';
@@ -141,7 +141,7 @@ export type ObservedStep = Extract<Step, { do: ObservingStepKind }>;
 export interface FreshnessScenario {
   /** Stable identifier, used as the test name. */
   id: string;
-  /** One-line description (Russian, like the plan). */
+  /** One-line description. */
   title: string;
   /** Historical fixes the scenario pins (PR numbers such as `#263`). */
   refs: string[];
