@@ -354,8 +354,17 @@ const extractExpression = (
 ): ExtractedExpression => {
   const source = ctx.code.slice(expression.start, expression.end);
   const expressionReferences = getReferences(expression, ctx.bindingIndex);
-  const requiresSnapshotReplayForExpression = memoizeBindingFact((binding) =>
-    requiresSnapshotReplay(binding, ctx)
+  // Only inline function expressions are function-valued here. A bare
+  // identifier that points to a local function may be a styled runtime
+  // component, so it has to stay as a lazy `_exp()` reference.
+  const isFunction =
+    expression.type === 'FunctionExpression' ||
+    expression.type === 'ArrowFunctionExpression';
+  // Bindings declared inside the function run on call, so nothing to replay
+  const requiresSnapshotReplayForExpression = memoizeBindingFact(
+    (binding) =>
+      !(isFunction && isBindingDeclaredWithin(binding, expression)) &&
+      requiresSnapshotReplay(binding, ctx)
   );
   const eagerNodeStarts = collectEagerNodeStarts(expression);
   const eagerMutationTargetStarts = new Set(
@@ -417,12 +426,6 @@ const extractExpression = (
     });
   let preserveRuntimeIdentity = false;
   let preservedStaticValue: unknown;
-  // Only inline function expressions are function-valued here. A bare
-  // identifier that points to a local function may be a styled runtime
-  // component, so it has to stay as a lazy `_exp()` reference.
-  const isFunction =
-    expression.type === 'FunctionExpression' ||
-    expression.type === 'ArrowFunctionExpression';
 
   if (evaluate && !expressionHasNestedCallTimeUncertainty(expression, ctx)) {
     const outcome = evaluateStaticOutcome(expression, ctx);

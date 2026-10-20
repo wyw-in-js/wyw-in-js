@@ -77,6 +77,21 @@ const options = (
   },
 });
 
+const applyLinariaStyled = (code: string) =>
+  applyOxcProcessors(
+    code,
+    fileContext,
+    {
+      displayName: false,
+      extensions: ['.js', '.ts', '.tsx'],
+      tagResolver: (source, imported) =>
+        source === '@linaria/react' && imported === 'styled'
+          ? linariaStyledProcessorPath
+          : null,
+    },
+    () => {}
+  );
+
 describe('applyOxcProcessors', () => {
   it('returns the original module when no imports resolve to processors', () => {
     const source = `
@@ -956,21 +971,6 @@ describe('applyOxcProcessors', () => {
   });
 
   describe('processors required inside a function', () => {
-    const applyLinariaStyled = (code: string) =>
-      applyOxcProcessors(
-        code,
-        fileContext,
-        {
-          displayName: false,
-          extensions: ['.js', '.ts', '.tsx'],
-          tagResolver: (source, imported) =>
-            source === '@linaria/react' && imported === 'styled'
-              ? linariaStyledProcessorPath
-              : null,
-        },
-        () => {}
-      );
-
     it('are processed', () => {
       const result = applyLinariaStyled(`
         export function make() {
@@ -1030,6 +1030,68 @@ describe('applyOxcProcessors', () => {
 
       expect(result.processors).toHaveLength(1);
       expect(result.code).toContain('styled(Box)');
+    });
+  });
+
+  describe('bindings declared inside an interpolation function', () => {
+    it('do not require snapshot replay', () => {
+      const result = applyLinariaStyled(`
+        import { styled } from '@linaria/react';
+
+        const sizes = { normal: { radius: '50%' }, wide: { radius: 13 } };
+
+        export const Box = styled.div\`
+          border-radius: \${({ size }) => {
+            const { radius } = sizes[size];
+            return typeof radius === 'string' ? radius : \`\${radius}px\`;
+          }};
+        \`;
+      `);
+
+      expect(result.processors).toHaveLength(1);
+      expect(result.code).toContain(
+        'const { radius } = ({"normal":{"radius":"50%"},"wide":{"radius":13}})[size];'
+      );
+      expect(result.code).toContain('border-radius: ${_exp()};');
+    });
+
+    it('do not require snapshot replay in a function expression', () => {
+      const result = applyLinariaStyled(`
+        import { styled } from '@linaria/react';
+
+        const sizes = { normal: { radius: '50%' }, wide: { radius: 13 } };
+
+        export const Box = styled.div\`
+          border-radius: \${function ({ size }) {
+            const { radius } = sizes[size];
+            return radius;
+          }};
+        \`;
+      `);
+
+      expect(result.processors).toHaveLength(1);
+      expect(result.code).toContain(
+        'const _exp = () => (function ({ size }) {'
+      );
+    });
+
+    it('still need it for a destructured local of the enclosing function', () => {
+      expect(() =>
+        applyLinariaStyled(`
+          import { styled } from '@linaria/react';
+          import cfg from './cfg';
+
+          export function make() {
+            const { sizes } = cfg;
+            return styled.div\`
+              border-radius: \${({ size }) => {
+                const { radius } = sizes[size];
+                return radius;
+              }};
+            \`;
+          }
+        `)
+      ).toThrow(unsafeSnapshotMessage);
     });
   });
 
