@@ -1,5 +1,18 @@
 # @wyw-in-js/vite
 
+## 2.7.0
+
+### Minor Changes
+
+- Bump versions
+
+### Patch Changes
+
+- 42219d4: Dispose the transform workers and eval runners when the dev server closes, also in middleware mode. The plugin listened only for the `close` event of `httpServer`, which a middleware-mode server does not have, and Vite does not call `closeWatcher` in dev, so the workers stayed alive until the process exited.
+- Updated dependencies
+  - @wyw-in-js/shared@2.7.0
+  - @wyw-in-js/transform@2.7.0
+
 ## 2.6.0
 
 ### Minor Changes

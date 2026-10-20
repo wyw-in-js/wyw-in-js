@@ -1,5 +1,24 @@
 # @wyw-in-js/transform
 
+## 2.7.0
+
+### Minor Changes
+
+- 6a552a2: An explicit `configFile` can now be a `.mts` or `.cts` file, and a `.ts` one can load without the TypeScript compiler API (TypeScript 7 ships none) or use `import.meta`: a runtime that strips types itself (Node.js 22.18+ and 23.6+, Bun) loads such files with `require()`. Node.js only strips erasable syntax: no `enum`, and relative imports name their extension.
+
+### Patch Changes
+
+- 17231eb: Fix an `AbortError: superseded` failure in concurrent cold builds on a shared cache when a loader changes a module's code before wyw, for example Storybook's `react-docgen-loader`, which appends `Component.__docgenInfo = …` to component modules (#422). While such a module waited for its own evaluation, other transforms that needed it replaced its cache entry with a new entrypoint of the same code, and after a few restarts the module failed to build. A request that the module being transformed already covers is now served by that module, so it keeps its cache entry and finishes. A module whose code changes on disk or in the loader output is still restarted or rejected as before.
+- e648d68: Fix exponential time in the entrypoint loop check. When many modules share deep dependencies, walking every ancestor path took exponentially long and could block the main thread. Each ancestor is now visited once.
+- e5ccc73: Fix interpolation functions that declare variables with destructuring, such as `${({ size }) => { const { radius } = sizes[size]; return radius; }}`. They no longer fail with "local snapshot depends on executed side effects that cannot be safely hoisted": a declaration inside the function runs when the function is called, so nothing has to be hoisted for it.
+- 421b261: When options keep transforms on the main thread, the warning names the options that cannot be sent to a worker (the first five, and how many more), not only the first one, and suggests a config file only for the options a config file can hold: options that only the plugin reads, such as a `preprocessor` function, are named without that advice.
+- 5fbefdf: Checking which options can be sent to a worker no longer throws `RangeError: Maximum call stack size exceeded` on an option that refers to itself, such as a `window` stub in `eval.globals` whose `self` points back at it.
+- 5c87ccd: Stop treating calls to local bindings that shadow a processor import as processor usages. A parameter or inner variable that happens to share the imported name is no longer matched as a processor call.
+- e0518dc: Compile `.ts` config files in memory instead of through cosmiconfig's loader, which writes the output to a shared `<name>.cjs` next to the config, on Node.js and Bun alike. Worker threads loading the same config at once (`parallel`) no longer delete that file under each other, and a read-only config directory works.
+- Updated dependencies
+  - @wyw-in-js/processor-utils@2.7.0
+  - @wyw-in-js/shared@2.7.0
+
 ## 2.6.0
 
 ### Minor Changes
