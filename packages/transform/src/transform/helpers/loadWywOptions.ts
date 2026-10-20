@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { createRequire } from 'module';
+import Module, { createRequire } from 'module';
 import path from 'path';
 
 import { cosmiconfigSync } from 'cosmiconfig';
@@ -41,11 +41,159 @@ const searchPlaces = [
   `wyw-in-js.config.cjs`,
 ];
 
-const explorerSync = cosmiconfigSync('wyw-in-js', {
-  searchPlaces: searchPlaces.filter(
-    (searchPlace) => !searchPlace.endsWith('.mjs')
-  ),
-});
+type TsConfig = { compilerOptions?: Record<string, unknown> };
+
+/** The part of the TypeScript compiler API that compiles a config file. */
+type TypeScriptCompiler = {
+  ModuleKind: { NodeNext: number };
+  ModuleResolutionKind: { NodeNext: number };
+  ScriptTarget: { ES2022: number };
+  findConfigFile(
+    directory: string,
+    fileExists: (fileName: string) => boolean
+  ): string | undefined;
+  readConfigFile(
+    fileName: string,
+    readFile: (fileName: string) => string | undefined
+  ): { config?: TsConfig; error?: { messageText: unknown } };
+  sys: {
+    fileExists(fileName: string): boolean;
+    readFile(fileName: string): string | undefined;
+  };
+  transpileModule(input: string, options: TsConfig): { outputText: string };
+};
+
+const { _nodeModulePaths: nodeModulePaths } = Module as typeof Module & {
+  _nodeModulePaths(directory: string): string[];
+};
+
+// Resolved like cosmiconfig resolves it. TypeScript 7 ships no compiler API.
+let typeScriptCompiler: TypeScriptCompiler | null | undefined;
+const getTypeScriptCompiler = (): TypeScriptCompiler | null => {
+  if (typeScriptCompiler === undefined) {
+    try {
+      const candidate = createRequire(
+        createRequire(import.meta.url).resolve('cosmiconfig')
+      )('typescript') as Partial<TypeScriptCompiler>;
+      typeScriptCompiler =
+        typeof candidate.transpileModule === 'function'
+          ? (candidate as TypeScriptCompiler)
+          : null;
+    } catch {
+      typeScriptCompiler = null;
+    }
+  }
+
+  return typeScriptCompiler;
+};
+
+const getErrorCode = (error: unknown): string | undefined =>
+  error && typeof error === 'object' && 'code' in error
+    ? (error as { code?: string }).code
+    : undefined;
+
+const typeScriptErrorPrefix = (filepath: string): string =>
+  `TypeScript Error in ${filepath}:\n`;
+
+// Config loading is synchronous, so a config with top-level await cannot load.
+const synchronousLoadingError = (
+  configFile: string,
+  error: unknown
+): Error | null => {
+  const message = error instanceof Error ? error.message : String(error);
+  if (
+    getErrorCode(error) !== 'ERR_REQUIRE_ASYNC_MODULE' &&
+    !message.includes('require() async module') &&
+    !message.includes('top-level await')
+  ) {
+    return null;
+  }
+
+  return new Error(
+    `[wyw-in-js] Failed to load ${configFile}. ` +
+      `WyW config loading is synchronous, so ${path.extname(
+        configFile
+      )} config files must not use top-level await ` +
+      'or depend on async ESM modules. Remove top-level await or switch to a synchronous config.'
+  );
+};
+
+// Compiles like cosmiconfig's .ts loader but evaluates the output in memory:
+// cosmiconfig writes it to a shared <name>.cjs next to the config, which loads
+// from several worker threads delete under each other.
+const compileTypeScriptConfig = (
+  filepath: string,
+  content: string
+): unknown => {
+  const typescript = getTypeScriptCompiler();
+  if (!typescript) {
+    throw new Error(
+      `[wyw-in-js] Loading ${filepath} needs the TypeScript compiler API or a runtime that strips types.`
+    );
+  }
+
+  try {
+    const tsconfigPath = typescript.findConfigFile(
+      path.dirname(filepath),
+      (fileName) => typescript.sys.fileExists(fileName)
+    );
+    let tsconfig: TsConfig = {};
+    if (tsconfigPath !== undefined) {
+      const { config, error } = typescript.readConfigFile(
+        tsconfigPath,
+        (fileName) => typescript.sys.readFile(fileName)
+      );
+      if (error) {
+        throw new Error(
+          `Error in ${tsconfigPath}: ${String(error.messageText)}`
+        );
+      }
+      tsconfig = config ?? {};
+    }
+
+    const { outputText } = typescript.transpileModule(content, {
+      ...tsconfig,
+      compilerOptions: {
+        ...tsconfig.compilerOptions,
+        module: typescript.ModuleKind.NodeNext,
+        moduleResolution: typescript.ModuleResolutionKind.NodeNext,
+        target: typescript.ScriptTarget.ES2022,
+        noEmit: false,
+      },
+    });
+    // Where require() of the compiled <name>.cjs next to the config ran it.
+    const realFilepath = path.join(
+      fs.realpathSync(path.dirname(filepath)),
+      path.basename(filepath)
+    );
+    const compiled = new Module(realFilepath) as Module & {
+      _compile(code: string, filename: string): void;
+    };
+    compiled.filename = realFilepath;
+    compiled.paths = nodeModulePaths(path.dirname(realFilepath));
+    compiled._compile(outputText, realFilepath);
+    return (compiled.exports as { default?: unknown }).default;
+  } catch (error) {
+    const asyncError = synchronousLoadingError(filepath, error);
+    if (asyncError) {
+      throw asyncError;
+    }
+
+    // Node can rethrow the same error object for the same source.
+    const prefix = typeScriptErrorPrefix(filepath);
+    if (error instanceof Error && !error.message.startsWith(prefix)) {
+      error.message = `${prefix}${error.message}`;
+    }
+    throw error;
+  }
+};
+
+const isBun = 'bun' in process.versions;
+
+// Node.js 22.18+ and 23.6+ and Bun strip types themselves, so require() loads a
+// TypeScript config; .mts and .cts configs need that (cosmiconfig has no loader
+// for them).
+const runtimeStripsTypes = Boolean(process.features.typescript) || isBun;
 
 export type PartialOptions = Partial<Omit<PluginOptions, 'features'>> & {
   features?: Partial<FeatureFlags>;
@@ -110,27 +258,82 @@ const loadMjsConfig = (configFile: string): Partial<StrictOptions> => {
   try {
     return normalizeLoadedConfig(configRequire(resolvedConfigFile));
   } catch (error) {
-    const code =
-      error && typeof error === 'object' && 'code' in error
-        ? (error as { code?: string }).code
-        : undefined;
-    const message = error instanceof Error ? error.message : String(error);
-
-    if (
-      code === 'ERR_REQUIRE_ASYNC_MODULE' ||
-      message.includes('require() async module') ||
-      message.includes('top-level await')
-    ) {
-      throw new Error(
-        `[wyw-in-js] Failed to load ${resolvedConfigFile}. ` +
-          'WyW config loading is synchronous, so .mjs config files must not use top-level await ' +
-          'or depend on async ESM modules. Remove top-level await or switch to a synchronous config.'
-      );
-    }
-
-    throw error;
+    throw synchronousLoadingError(resolvedConfigFile, error) ?? error;
   }
 };
+
+const usesImportMeta = (content: string): boolean =>
+  /\bimport\.meta\b/.test(content);
+
+// The compiled config behaves as with cosmiconfig's .ts loader, on Node.js and
+// Bun alike. Its CommonJS output cannot hold import.meta, so a runtime that
+// strips types loads such a config with require(), and every .ts config when
+// there is no compiler API.
+const loadTypeScriptConfig = (filepath: string, content: string): unknown => {
+  if (
+    runtimeStripsTypes &&
+    (getTypeScriptCompiler() === null || usesImportMeta(content))
+  ) {
+    return loadMjsConfig(filepath);
+  }
+
+  try {
+    return compileTypeScriptConfig(filepath, content);
+  } catch (error) {
+    // Bun refuses CommonJS output it cannot run, such as one that keeps
+    // top-level await or a syntax error, with an error of its own that names
+    // neither. Loading the config as Bun would names the cause.
+    if (
+      !isBun ||
+      !(error instanceof Error) ||
+      !error.message.includes(
+        'Expected CommonJS module to have a function wrapper'
+      )
+    ) {
+      throw error;
+    }
+
+    try {
+      return loadMjsConfig(filepath);
+    } catch (bunError) {
+      if (
+        bunError instanceof Error &&
+        bunError.message.startsWith('[wyw-in-js]')
+      ) {
+        throw bunError;
+      }
+
+      // Bun throws build messages, which are not Errors.
+      const message =
+        bunError && typeof bunError === 'object' && 'message' in bunError
+          ? String(bunError.message)
+          : String(bunError);
+      throw new Error(`${typeScriptErrorPrefix(filepath)}${message}`);
+    }
+  }
+};
+
+const loadStrippedTypeScriptConfig = (filepath: string): unknown => {
+  if (!runtimeStripsTypes) {
+    throw new Error(
+      `[wyw-in-js] Loading ${filepath} needs a runtime that strips types (Node.js 22.18+ or 23.6+, or Bun).`
+    );
+  }
+
+  return loadMjsConfig(filepath);
+};
+
+// TypeScript configs go through the explorer for its per-path cache.
+const explorerSync = cosmiconfigSync('wyw-in-js', {
+  loaders: {
+    '.ts': loadTypeScriptConfig,
+    '.mts': loadStrippedTypeScriptConfig,
+    '.cts': loadStrippedTypeScriptConfig,
+  },
+  searchPlaces: searchPlaces.filter(
+    (searchPlace) => !searchPlace.endsWith('.mjs')
+  ),
+});
 
 const loadConfigFromFile = (configFile: string): Partial<StrictOptions> => {
   const resolvedConfigFile = resolveConfigFilePath(configFile);

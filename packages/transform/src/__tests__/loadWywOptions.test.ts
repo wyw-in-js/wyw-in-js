@@ -1,4 +1,4 @@
-import fs, { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import fs, { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { createRequire } from 'module';
 import path from 'path';
@@ -169,6 +169,195 @@ describe('loadWywOptions', () => {
       const options = loadWywOptions({ configFile });
 
       expect(options.displayName).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['.ts', '.mts'])('loads explicit %s configFile paths', (ext) => {
+    const root = mkdtempSync(path.join(tmpdir(), 'wyw-options-'));
+    const configFile = path.join(root, `wyw-in-js.config${ext}`);
+
+    writeFileSync(
+      path.join(root, `shared${ext}`),
+      'export const suffix: string = "-slug";\n'
+    );
+    writeFileSync(
+      configFile,
+      [
+        "import type { PluginOptions } from '@wyw-in-js/transform';",
+        `import { suffix } from './shared${ext}';`,
+        '',
+        'const options: Partial<PluginOptions> = {',
+        '  displayName: true,',
+        '  classNameSlug: (hash: string) => `${hash}${suffix}`,',
+        '};',
+        '',
+        'export default options;',
+        '',
+      ].join('\n')
+    );
+
+    try {
+      const options = loadWywOptions({ configFile });
+
+      expect(options.displayName).toBe(true);
+      expect(typeof options.classNameSlug).toBe('function');
+      expect((options.classNameSlug as (hash: string) => string)('abc')).toBe(
+        'abc-slug'
+      );
+      expect(loadWywOptions({ configFile }).classNameSlug).toBe(
+        options.classNameSlug
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // chmod does not stop root from writing.
+  (process.getuid?.() === 0 ? it.skip : it)(
+    'loads a .ts config without writing next to it',
+    () => {
+      const root = mkdtempSync(path.join(tmpdir(), 'wyw-options-'));
+      const configFile = path.join(root, 'wyw-in-js.config.ts');
+
+      writeFileSync(
+        configFile,
+        [
+          "enum Slug { Suffix = '-ts' }",
+          'export default {',
+          '  classNameSlug: (hash: string) => `${hash}${Slug.Suffix}`,',
+          '  root: __dirname,',
+          '};',
+          '',
+        ].join('\n')
+      );
+      chmodSync(root, 0o555);
+
+      try {
+        const options = loadWywOptions({ configFile }) as ReturnType<
+          typeof loadWywOptions
+        > & { root?: string };
+
+        expect((options.classNameSlug as (hash: string) => string)('abc')).toBe(
+          'abc-ts'
+        );
+        expect(options.root).toBe(fs.realpathSync(root));
+        expect(fs.readdirSync(root)).toEqual(['wyw-in-js.config.ts']);
+      } finally {
+        chmodSync(root, 0o755);
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it('reads __dirname and relative files of a symlinked .ts config next to the link', () => {
+    const root = fs.realpathSync(
+      mkdtempSync(path.join(tmpdir(), 'wyw-options-'))
+    );
+    const real = path.join(root, 'real');
+    const link = path.join(root, 'link');
+    fs.mkdirSync(real);
+    fs.mkdirSync(link);
+    writeFileSync(path.join(real, 'flag.js'), 'module.exports = false;\n');
+    writeFileSync(path.join(link, 'flag.js'), 'module.exports = true;\n');
+    writeFileSync(
+      path.join(real, 'wyw-in-js.config.ts'),
+      [
+        "const flag: boolean = require('./flag.js');",
+        'export default { displayName: flag, root: __dirname };',
+        '',
+      ].join('\n')
+    );
+    const configFile = path.join(link, 'wyw-in-js.config.ts');
+    fs.symlinkSync(path.join(real, 'wyw-in-js.config.ts'), configFile);
+
+    try {
+      const options = loadWywOptions({ configFile }) as ReturnType<
+        typeof loadWywOptions
+      > & { root?: string };
+
+      expect(options.displayName).toBe(true);
+      expect(options.root).toBe(link);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('names the .ts config file in a syntax error', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'wyw-options-'));
+    const configFile = path.join(root, 'wyw-in-js.config.ts');
+    writeFileSync(configFile, 'export default { displayName: ;\n');
+
+    try {
+      expect(() => loadWywOptions({ configFile })).toThrow(
+        `TypeScript Error in ${configFile}`
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('explains that a .ts config with top-level await cannot load', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'wyw-options-'));
+    const configFile = path.join(root, 'wyw-in-js.config.ts');
+    writeFileSync(
+      configFile,
+      'const value = await Promise.resolve(true);\nexport default { displayName: value };\n'
+    );
+
+    try {
+      expect(() => loadWywOptions({ configFile })).toThrow(
+        'WyW config loading is synchronous'
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('loads a .ts config that reads import.meta', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'wyw-options-'));
+    const configFile = path.join(root, 'wyw-in-js.config.ts');
+    writeFileSync(
+      configFile,
+      "export default { displayName: import.meta.url.startsWith('file:') };\n"
+    );
+
+    try {
+      expect(loadWywOptions({ configFile }).displayName).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('loads explicit CommonJS .cts configFile paths', () => {
+    const root = fs.realpathSync(
+      mkdtempSync(path.join(tmpdir(), 'wyw-options-'))
+    );
+    const configFile = path.join(root, 'wyw-in-js.config.cts');
+
+    writeFileSync(
+      configFile,
+      [
+        'module.exports = {',
+        '  classNameSlug: (hash: string) => hash,',
+        '  displayName: true,',
+        '  root: __dirname,',
+        '};',
+        '',
+      ].join('\n')
+    );
+
+    try {
+      const options = loadWywOptions({ configFile }) as ReturnType<
+        typeof loadWywOptions
+      > & { root?: string };
+
+      expect(options.displayName).toBe(true);
+      expect(options.root).toBe(root);
+      expect(loadWywOptions({ configFile }).classNameSlug).toBe(
+        options.classNameSlug
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

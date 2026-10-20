@@ -74,10 +74,39 @@ const runFixture = async (entrypoint, fixture, strategy, pluginOptions) => {
   }
 };
 
+// Every worker loads the TypeScript config file at the same time.
+const runTypeScriptConfig = async () => {
+  await runBuild('src/index.js', undefined, {
+    configFile: path.resolve(
+      PKG_DIR,
+      'fixtures/typescript-config/wyw-in-js.config.ts'
+    ),
+    parallel: 2,
+  });
+
+  const outDir = path.resolve(PKG_DIR, 'dist');
+  const cssFiles = (await fs.readdir(outDir)).filter((file) =>
+    file.endsWith('.css')
+  );
+  const css = (
+    await Promise.all(
+      cssFiles.map((file) => fs.readFile(path.resolve(outDir, file), 'utf8'))
+    )
+  ).join('\n');
+  const classNames = css.match(/\.[\w-]+-ts-config\s*\{/g) ?? [];
+
+  if (classNames.length !== 2) {
+    throw new Error(
+      `Expected two class names from the TypeScript config, got:\n${css}`
+    );
+  }
+};
+
 const main = async () => {
   console.log(colors.blue('Package directory:'), PKG_DIR);
   await runFixture('src/index.js', 'fixture.css');
   await runFixture('src/index.js', 'fixture.css', undefined, { parallel: 2 });
+  await runTypeScriptConfig();
   await runFixture(
     'fixtures/dangerous-controls/index.js',
     'fixtures/dangerous-controls/expected.css',
