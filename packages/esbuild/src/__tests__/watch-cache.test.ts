@@ -18,8 +18,23 @@ const getCssText = (result: esbuild.BuildResult) => {
   return css.text;
 };
 
+let cwd: string;
+let root: string;
+
+beforeEach(() => {
+  cwd = process.cwd();
+  root = fs.mkdtempSync(path.join(os.tmpdir(), 'wyw-esbuild-36-'));
+  process.chdir(root);
+});
+
+// Not in the test's `finally`: after a timeout bun starts the next test while
+// the test body still runs, and a late chdir would move that next test.
+afterEach(() => {
+  process.chdir(cwd);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 it('does not keep stale imported objects between rebuilds when globalCache is enabled', async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wyw-esbuild-36-'));
   const entryFile = path.join(root, 'main.ts');
   const tokensFile = path.join(root, 'tokens.ts');
   const outdir = path.join(root, 'dist');
@@ -51,12 +66,11 @@ it('does not keep stale imported objects between rebuilds when globalCache is en
     ].join('\n')
   );
 
-  const cwd = process.cwd();
-  process.chdir(root);
-
   const plugin = wywInJS({
     configFile: false,
-    features: { globalCache: true },
+    // Every build starts a new eval runner, and loading DOM emulation is most
+    // of its startup. This test does not need it.
+    features: { globalCache: true, happyDOM: false },
     tagResolver: (source, tag) => {
       if (source === 'test-css-processor' && tag === 'css') {
         return processorFile;
@@ -117,6 +131,5 @@ it('does not keep stale imported objects between rebuilds when globalCache is en
     expect(updatedCss).not.toContain('blue');
   } finally {
     build?.rebuild.dispose();
-    process.chdir(cwd);
   }
 });
