@@ -76,13 +76,18 @@ export default defineConfig(() => ({
 
 `true` starts up to four workers, leaving at least one CPU core free; a number sets the count. A file is always
 transformed by the same worker, and each worker keeps its own cache, so a module imported by many files is evaluated
-once per worker.
+once per worker. The first worker already takes transforms off Vite's main thread, and every further worker adds
+its own cache, so `parallel: 1` uses the least memory of the worker settings.
 
 Each worker starts with a 1.5 GB heap limit and is restarted with a larger one if it runs out of memory. An explicit
-`--max-old-space-size` (for example in `NODE_OPTIONS`) applies to every worker instead of that limit.
+`--max-old-space-size` (for example in `NODE_OPTIONS`) applies to every worker instead of that limit, and worker heaps
+grow into it; leave the flag out unless Vite itself needs it.
 
 Options are sent to the workers as data, so they cannot contain functions. Define function options, such as
-`tagResolver` or a `classNameSlug` function, in a [config file](/configuration): every worker loads it. If an option
+`tagResolver` or a `classNameSlug` function, in a [config file](/configuration), found automatically or passed as
+`configFile`: every worker loads it. Plugin options such as `parallel`, `sourceMap`, `prefixer`, `keepComments` and
+`preprocessor` are not read from a config file; keep them in the plugin options. A `preprocessor` function cannot be
+sent to a worker, so it keeps transforms on the main thread; `'stylis'` and `'none'` work with workers. If an option
 cannot be sent, or `debug` is set, the plugin warns and runs transforms on the main thread.
 
 ### Preserving generated CSS paths

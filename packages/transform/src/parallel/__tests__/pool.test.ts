@@ -5,7 +5,10 @@ import { pathToFileURL } from 'node:url';
 
 import { createParallelTransforms } from '../adapter';
 import { createTransformWorkerPool, TransformWorkerPool } from '../pool';
-import { findNonTransferableOption } from '../protocol';
+import {
+  findNonTransferableOption,
+  findNonTransferableOptions,
+} from '../protocol';
 
 const processorFile = resolve(
   __dirname,
@@ -239,6 +242,57 @@ describe('createParallelTransforms', () => {
     await parallel.dispose();
   });
 
+  it('names every function option in one fallback message', async () => {
+    const onFallback = jest.fn();
+    const parallel = createParallelTransforms({ onFallback, parallel: 1 })!;
+
+    expect(
+      parallel.scope(
+        'client',
+        config({
+          classNameSlug: () => 'slug',
+          tagResolver: () => null,
+        })
+      )
+    ).toBeNull();
+    expect(onFallback).toHaveBeenCalledWith(
+      'Transforms run on the main thread because the `classNameSlug` and `tagResolver` options cannot be passed to a worker thread; define them in a wyw-in-js config file instead.'
+    );
+    await parallel.dispose();
+  });
+
+  it('names the first five options and counts the rest', async () => {
+    const onFallback = jest.fn();
+    const parallel = createParallelTransforms({ onFallback, parallel: 1 })!;
+    const window = Object.fromEntries(
+      Array.from({ length: 30 }, (_, index) => [`method${index}`, () => index])
+    );
+
+    expect(
+      parallel.scope('client', config({ eval: { globals: { window } } }))
+    ).toBeNull();
+    expect(onFallback).toHaveBeenCalledWith(
+      'Transforms run on the main thread because the `eval.globals.window.method0`, `eval.globals.window.method1`, `eval.globals.window.method2`, `eval.globals.window.method3`, `eval.globals.window.method4` and 25 more options cannot be passed to a worker thread; define them in a wyw-in-js config file instead.'
+    );
+    await parallel.dispose();
+  });
+
+  it('does not send adapter options to a config file', async () => {
+    const onFallback = jest.fn();
+    const parallel = createParallelTransforms({ onFallback, parallel: 1 })!;
+
+    expect(
+      parallel.scope('client', () => ({
+        ...config({ classNameSlug: () => 'slug' })(),
+        preprocessor: () => '',
+      }))
+    ).toBeNull();
+    expect(onFallback).toHaveBeenCalledWith(
+      'Transforms run on the main thread because the `classNameSlug` option cannot be passed to a worker thread; define it in a wyw-in-js config file instead. The `preprocessor` option cannot be passed to a worker thread either.'
+    );
+    await parallel.dispose();
+  });
+
   it('creates one worker scope per key', async () => {
     const parallel = createParallelTransforms({ parallel: 1 })!;
     const scope = parallel.scope('client', config({ displayName: true }));
@@ -260,6 +314,37 @@ describe('findNonTransferableOption', () => {
         eval: { globals: { fn: () => 1 } },
       })
     ).toBe('eval.globals.fn');
+  });
+
+  it('lists every function-valued option', () => {
+    expect(
+      findNonTransferableOptions({
+        classNameSlug: () => 'slug',
+        eval: { globals: { fn: () => 1 } },
+        rules: [{ action: () => null, test: /x/ }],
+      })
+    ).toEqual(['classNameSlug', 'eval.globals.fn', 'rules[0].action']);
+  });
+
+  it('follows cyclic options once', () => {
+    const window: Record<string, unknown> = { name: 'stub' };
+    window.self = window;
+
+    expect(
+      findNonTransferableOptions({
+        eval: { globals: { window } },
+        tagResolver: () => null,
+      })
+    ).toEqual(['tagResolver']);
+  });
+
+  it('walks a shared object once', () => {
+    let node: Record<string, unknown> = { fn: () => 1 };
+    for (let level = 0; level < 40; level += 1) {
+      node = { a: node, b: node };
+    }
+
+    expect(findNonTransferableOptions(node)).toEqual([`${'a.'.repeat(40)}fn`]);
   });
 
   it('accepts plain data and regular expressions', () => {

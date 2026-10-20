@@ -76,11 +76,17 @@ wyw({
 });
 ```
 
+Each worker keeps its own caches, so `parallel: 1` uses the least memory of the worker settings.
+
 Options are sent to the workers as data, so function options (for example `tagResolver`) must be defined in a wyw-in-js
-config file. Otherwise, or when `debug` is set, the plugin warns and runs transforms on the main thread.
+config file, found automatically or passed as `configFile`. Options such as `parallel`, `sourceMap`, `prefixer`,
+`keepComments` and `preprocessor` are not read from a config file; keep them in the plugin options. A `preprocessor`
+function cannot be sent to a worker, so it keeps transforms on the main thread; `'stylis'` and `'none'` work with
+workers. If an option cannot be sent, or `debug` is set, the plugin warns and runs transforms on the main thread.
 
 Each worker starts with a 1.5 GB heap limit and is restarted with a larger one if it runs out of memory; an explicit
-`--max-old-space-size` applies to every worker instead.
+`--max-old-space-size` applies to every worker instead, so leave it out unless the Node.js process running esbuild
+needs it.
 
 ## Disabling vendor prefixing
 

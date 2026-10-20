@@ -1,6 +1,7 @@
+import { formatKeys } from '../transform/helpers/onceWarnings';
 import { TransformWorkerPool } from './pool';
 import type { TransformWorkerScopeConfig } from './protocol';
-import { findNonTransferableOption } from './protocol';
+import { findNonTransferableOptions } from './protocol';
 import type { TransformWorkerScope } from './scope';
 
 /** Adapter option: `true` uses the default worker count. */
@@ -36,11 +37,49 @@ export interface ParallelTransforms {
 const fallbackMessage = (reason: string) =>
   `Transforms run on the main thread because ${reason}.`;
 
-const findNonTransferableScopeOption = ({
+// An object of functions, such as a `window` stub in `eval.globals`, has a path
+// per function: name the first few and count the rest.
+const NAMED_OPTIONS = 5;
+
+const describeOptions = (keys: string[]) => {
+  if (keys.length > NAMED_OPTIONS) {
+    const named = keys.slice(0, NAMED_OPTIONS).map((key) => `\`${key}\``);
+    return `${named.join(', ')} and ${
+      keys.length - NAMED_OPTIONS
+    } more options`;
+  }
+
+  return `${formatKeys(keys)} ${keys.length > 1 ? 'options' : 'option'}`;
+};
+
+// Plugin options can move to a config file that every worker loads; the
+// adapter's own options, such as a `preprocessor` function, cannot.
+const findNonTransferableScopeReason = ({
   pluginOptions,
   ...config
-}: TransformWorkerScopeConfig): string | null =>
-  findNonTransferableOption(pluginOptions) ?? findNonTransferableOption(config);
+}: TransformWorkerScopeConfig): string | null => {
+  const fromPlugin = findNonTransferableOptions(pluginOptions);
+  const fromAdapter = findNonTransferableOptions(config);
+  if (fromPlugin.length === 0) {
+    return fromAdapter.length > 0
+      ? `the ${describeOptions(
+          fromAdapter
+        )} cannot be passed to a worker thread`
+      : null;
+  }
+
+  const pluginReason = `the ${describeOptions(
+    fromPlugin
+  )} cannot be passed to a worker thread; define ${
+    fromPlugin.length > 1 ? 'them' : 'it'
+  } in a wyw-in-js config file instead`;
+
+  return fromAdapter.length > 0
+    ? `${pluginReason}. The ${describeOptions(
+        fromAdapter
+      )} cannot be passed to a worker thread either`
+    : pluginReason;
+};
 
 /**
  * Shared adapter glue for running transforms in worker threads: owns the pool
@@ -94,9 +133,8 @@ export const createParallelTransforms = ({
       }
 
       const config = getConfig();
-      const nonTransferable = findNonTransferableScopeOption(config);
-      if (nonTransferable !== null) {
-        const reason = `the \`${nonTransferable}\` option cannot be passed to a worker thread; define it in a wyw-in-js config file instead`;
+      const reason = findNonTransferableScopeReason(config);
+      if (reason !== null) {
         if (!reported.has(reason)) {
           reported.add(reason);
           onFallback?.(fallbackMessage(reason));
