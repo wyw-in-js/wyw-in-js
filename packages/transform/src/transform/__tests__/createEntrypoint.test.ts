@@ -318,6 +318,25 @@ describe('createEntrypoint', () => {
     }
   });
 
+  it('finds a loop through every generation of a module', () => {
+    const child = (parent: Entrypoint, name: string, code: string) => {
+      const created = parent.createChild(name, ['default'], code);
+      if (created === 'loop') throw new Error(`unexpected loop at ${name}`);
+      return created;
+    };
+
+    // The second /x.js supersedes the first, but /c.js still has the first
+    // one as its parent: /s.js reaches /r2.js only through the second.
+    const r1 = createEntrypoint(services, '/foo/r1.js', ['default'], 'r1');
+    const c = child(child(r1, '/foo/x.js', 'x1'), '/foo/c.js', 'c');
+    const s = child(c, '/foo/s.js', 's');
+    const r2 = createEntrypoint(services, '/foo/r2.js', ['default'], 'r2');
+    const d = child(child(r2, '/foo/x.js', 'x2'), '/foo/d.js', 'd');
+    expect(child(d, '/foo/s.js', 's')).toBe(s);
+
+    expect(s.createChild('/foo/r2.js', ['default'], 'r2')).toBe('loop');
+  });
+
   it('should take from cache', () => {
     const entrypoint1 = createEntrypoint(services, '/foo/bar.js', ['default']);
     const entrypoint2 = createEntrypoint(services, '/foo/bar.js', ['default']);

@@ -14,6 +14,7 @@ import { isAborted } from '../actions/AbortError';
 import { toImportKey } from '../../utils/importOverrides';
 import { stripQueryAndHash } from '../../utils/parseRequest';
 import { isSuperSet, mergeOnly } from '../Entrypoint.helpers';
+import { hasLoop } from '../hasLoop';
 
 type ProcessImportsCachedEntrypoint = CachedEntrypointLike & {
   only: string[];
@@ -44,29 +45,6 @@ function getWarnedSlowImports(services: Services): Set<string> {
 
 function isWarningEnabled(value: string | undefined): boolean {
   return Boolean(value) && value !== '0' && value !== 'false';
-}
-
-function hasLoop(
-  name: string,
-  parent: {
-    name: string;
-    parents: { name: string; parents: { name: string }[] }[];
-  },
-  processed: string[] = []
-): boolean {
-  if (parent.name === name || processed.includes(parent.name)) {
-    return true;
-  }
-
-  for (const nextParent of parent.parents) {
-    if (
-      hasLoop(name, nextParent as typeof parent, [...processed, parent.name])
-    ) {
-      return true;
-    }
-  }
-
-  return false;
 }
 
 export function* processImports(

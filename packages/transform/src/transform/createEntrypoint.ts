@@ -5,6 +5,7 @@ import { recordPipelineEntrypoint } from '../debug/pipelineTelemetry';
 import { stripQueryAndHash } from '../utils/parseRequest';
 
 import { isSuperSet, mergeOnly } from './Entrypoint.helpers';
+import { hasLoop } from './hasLoop';
 import type {
   IEntrypointCode,
   IEntrypointDependency,
@@ -75,24 +76,6 @@ export interface EntrypointFactory {
     expectedCached: Entrypoint | IEvaluatedEntrypoint | undefined,
     assertExternalEpoch?: () => void
   ): Entrypoint;
-}
-
-function hasLoop(
-  name: string,
-  parent: ParentEntrypoint,
-  processed: string[] = []
-): boolean {
-  if (parent.name === name || processed.includes(parent.name)) {
-    return true;
-  }
-
-  for (const candidate of parent.parents) {
-    if (hasLoop(name, candidate, [...processed, parent.name])) {
-      return true;
-    }
-  }
-
-  return false;
 }
 
 export function createEntrypoint(
