@@ -414,7 +414,7 @@
       "dependencies": {
         "debug": "^4.3.4",
         "find-up": "^5.0.0",
-        "minimatch": "^9.0.3",
+        "minimatch": "^9.0.7",
       },
       "devDependencies": {
         "@types/debug": "^4.1.9",
@@ -433,8 +433,8 @@
         "@wyw-in-js/processor-utils": "workspace:*",
         "@wyw-in-js/shared": "workspace:*",
         "cosmiconfig": "^8.0.0",
-        "happy-dom": "^20.1.0",
-        "minimatch": "^9.0.5",
+        "happy-dom": "^20.8.9",
+        "minimatch": "^9.0.7",
         "oxc-parser": "^0.131.0",
         "oxc-resolver": "^11.19.1",
         "oxc-transform": "^0.131.0",

@@ -5,7 +5,7 @@
   "dependencies": {
     "debug": "^4.3.4",
     "find-up": "^5.0.0",
-    "minimatch": "^9.0.3"
+    "minimatch": "^9.0.7"
   },
   "devDependencies": {
     "@types/debug": "^4.1.9",
