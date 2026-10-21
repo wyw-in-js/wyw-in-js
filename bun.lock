@@ -20,7 +20,6 @@
         "@changesets/cli": "^2.26.2",
         "@changesets/get-release-plan": "^3.0.17",
         "@changesets/write": "^0.2.3",
-        "@napi-rs/cli": "^2.18.4",
         "@types/babel__core": "^7.20.5",
         "@types/babel__generator": "^7.6.7",
         "@types/babel__helper-module-imports": "^7.18.3",
@@ -81,13 +80,6 @@
     "configs/ts": {
       "name": "@wyw-in-js/ts-config",
       "version": "2.0.0",
-    },
-    "crates/wyw_sample_processor": {
-      "name": "@wyw-in-js/sample-processor",
-      "version": "2.0.0",
-      "devDependencies": {
-        "@napi-rs/cli": "^2.18.4",
-      },
     },
     "e2e/bun": {
       "name": "@wyw-in-js/e2e-bun",
@@ -967,8 +959,6 @@
 
     "@msgpackr-extract/msgpackr-extract-win32-x64": ["@msgpackr-extract/msgpackr-extract-win32-x64@3.0.3", "", { "os": "win32", "cpu": "x64" }, "sha512-x0fWaQtYp4E6sktbsdAqnehxDgEc/VwM7uLsRCYWaiGu0ykYdZPiS8zCWdnjHwyiumousxfBm4SO31eXqwEZhQ=="],
 
-    "@napi-rs/cli": ["@napi-rs/cli@2.18.4", "", { "bin": { "napi": "scripts/index.js" } }, "sha512-SgJeA4df9DE2iAEpr3M2H0OKl/yjtg1BnRI5/JyowS71tUWhrfSu2LT0V3vlHET+g1hBVlrO60PmEXwUEKp8Mg=="],
-
     "@napi-rs/simple-git": ["@napi-rs/simple-git@0.1.22", "", { "optionalDependencies": { "@napi-rs/simple-git-android-arm-eabi": "0.1.22", "@napi-rs/simple-git-android-arm64": "0.1.22", "@napi-rs/simple-git-darwin-arm64": "0.1.22", "@napi-rs/simple-git-darwin-x64": "0.1.22", "@napi-rs/simple-git-freebsd-x64": "0.1.22", "@napi-rs/simple-git-linux-arm-gnueabihf": "0.1.22", "@napi-rs/simple-git-linux-arm64-gnu": "0.1.22", "@napi-rs/simple-git-linux-arm64-musl": "0.1.22", "@napi-rs/simple-git-linux-ppc64-gnu": "0.1.22", "@napi-rs/simple-git-linux-s390x-gnu": "0.1.22", "@napi-rs/simple-git-linux-x64-gnu": "0.1.22", "@napi-rs/simple-git-linux-x64-musl": "0.1.22", "@napi-rs/simple-git-win32-arm64-msvc": "0.1.22", "@napi-rs/simple-git-win32-ia32-msvc": "0.1.22", "@napi-rs/simple-git-win32-x64-msvc": "0.1.22" } }, "sha512-bMVoAKhpjTOPHkW/lprDPwv5aD4R4C3Irt8vn+SKA9wudLe9COLxOhurrKRsxmZccUbWXRF7vukNeGUAj5P8kA=="],
 
     "@napi-rs/simple-git-android-arm-eabi": ["@napi-rs/simple-git-android-arm-eabi@0.1.22", "", { "os": "android", "cpu": "arm" }, "sha512-JQZdnDNm8o43A5GOzwN/0Tz3CDBQtBUNqzVwEopm32uayjdjxev1Csp1JeaqF3v9djLDIvsSE39ecsN2LhCKKQ=="],
@@ -1660,8 +1650,6 @@
     "@wyw-in-js/processor-utils": ["@wyw-in-js/processor-utils@workspace:packages/processor-utils"],
 
     "@wyw-in-js/rollup": ["@wyw-in-js/rollup@workspace:packages/rollup"],
-
-    "@wyw-in-js/sample-processor": ["@wyw-in-js/sample-processor@workspace:crates/wyw_sample_processor"],
 
     "@wyw-in-js/shared": ["@wyw-in-js/shared@workspace:packages/shared"],
 

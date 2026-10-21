@@ -20,7 +20,6 @@
     "@changesets/cli": "^2.26.2",
     "@changesets/get-release-plan": "^3.0.17",
     "@changesets/write": "^0.2.3",
-    "@napi-rs/cli": "^2.18.4",
     "@types/babel__core": "^7.20.5",
     "@types/babel__generator": "^7.6.7",
     "@types/babel__helper-module-imports": "^7.18.3",
@@ -99,7 +98,6 @@
     ".",
     "apps/*",
     "configs/*",
-    "crates/*",
     "e2e/*",
     "examples/*",
     "packages/*"
