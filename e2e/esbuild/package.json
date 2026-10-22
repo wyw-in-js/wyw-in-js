@@ -6,7 +6,7 @@
   },
   "devDependencies": {
     "@wyw-in-js/esbuild": "workspace:*",
-    "esbuild": "^0.20.2",
+    "esbuild": "^0.28.2",
     "picocolors": "^1.0.0",
     "prettier": "^3.2.5"
   },

@@ -25,7 +25,7 @@
     "@wyw-in-js/eslint-config": "workspace:*",
     "@wyw-in-js/ts-config": "workspace:*",
     "dedent": "^1.5.1",
-    "esbuild": "^0.15.16",
+    "esbuild": "^0.28.2",
     "glob": "^10.3.10",
     "strip-ansi": "^5.2.0",
     "typescript": "^5.2.2"
