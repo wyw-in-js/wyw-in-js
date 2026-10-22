@@ -16,13 +16,6 @@ tsconfig.tsbuildinfo
 types
 **/*.wyw-in-js.module.css
 
-# Rust related
-
-crates/*/index.d.ts
-crates/*/index.js
-
-target
-*.node
 tmp/*
 .tmp/*
 **/.tmp-check-*
