@@ -1,6 +1,6 @@
 {
   "name": "@wyw-in-js/shared",
-  "version": "2.7.0",
+  "version": "2.7.1",
   "type": "module",
   "dependencies": {
     "debug": "^4.3.4",
