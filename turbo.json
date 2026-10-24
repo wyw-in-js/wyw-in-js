@@ -6,8 +6,7 @@
     "scripts/helpers/relative-specifiers.mjs",
     "scripts/rewrite-dts-specifiers.mjs"
   ],
-  "extends": ["//"],
-  "pipeline": {
+  "tasks": {
     "build:esm": {
       "dependsOn": ["^build:esm"],
       "outputs": ["esm/**"]

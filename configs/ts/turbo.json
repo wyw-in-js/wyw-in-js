@@ -1,10 +1,10 @@
 {
   "$schema": "https://turborepo.org/schema.json",
   "extends": ["//"],
-  "pipeline": {
+  "tasks": {
     "check": {
       "inputs": ["./*.json"],
-      "outputMode": "new-only"
+      "outputLogs": "new-only"
     }
   }
 }
