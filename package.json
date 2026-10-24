@@ -18,7 +18,7 @@
     "@babel/traverse": "^7.23.5",
     "@babel/types": "^7.23.5",
     "@changesets/cli": "^2.26.2",
-    "@changesets/get-release-plan": "^3.0.17",
+    "@changesets/get-release-plan": "^5.0.2",
     "@changesets/write": "^0.2.3",
     "@types/babel__core": "^7.20.5",
     "@types/babel__generator": "^7.6.7",

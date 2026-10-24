@@ -1,12 +1,12 @@
 import { cwd } from 'node:process';
 
-import getReleasePlan from '@changesets/get-release-plan';
+import { getReleasePlan } from '@changesets/get-release-plan'; // eslint-disable-line import/no-unresolved
 import writeChangeset from '@changesets/write';
 import semver from 'semver';
 
 import { getWorkspaces } from './helpers/getWorkspaces.mjs';
 
-const { releases } = await getReleasePlan.default(cwd(), undefined, {});
+const { releases } = await getReleasePlan(cwd(), undefined, {});
 const workspaces = getWorkspaces(cwd(), { includePrivate: false });
 const publishableWorkspaceNames = new Set(Object.keys(workspaces));
 const publishableReleases = releases.filter((release) =>

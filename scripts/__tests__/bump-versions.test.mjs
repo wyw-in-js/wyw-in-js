@@ -43,6 +43,7 @@ test('bump-versions aligns only publishable workspaces', () => {
       version: '1.0.0',
       workspaces: ['.', 'packages/*', 'examples/*'],
     });
+    writeFileSync(join(root, 'bun.lock'), '');
 
     mkdirSync(join(root, '.changeset'), { recursive: true });
     writeJSON(join(root, '.changeset/config.json'), {
