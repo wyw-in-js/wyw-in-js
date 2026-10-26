@@ -1521,7 +1521,7 @@ export class EvalBroker {
       let message: RunnerToMainMessage;
       try {
         message = JSON.parse(line);
-      } catch (error) {
+      } catch (error /* eslint-disable-line @typescript-eslint/no-unused-vars */) {
         emitWarning(
           this.currentServices,
           `[wyw-eval-runner] Failed to parse message: ${line}`
