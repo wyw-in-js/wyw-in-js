@@ -259,6 +259,7 @@ module.exports = {
         '@typescript-eslint/no-explicit-any': 0,
         '@typescript-eslint/no-non-null-assertion': 0,
         '@typescript-eslint/no-var-requires': 0,
+        '@typescript-eslint/no-require-imports': 0,
         'global-require': 0,
         'no-template-curly-in-string': 0,
       },
