@@ -185,6 +185,17 @@ module.exports = {
         '@typescript-eslint/no-var-requires': 0,
         'global-require': 0,
 
+        // airbnb-typescript/base still enables two rules that typescript-eslint 8
+        // removed; enforce the same checks under the names that replace them
+        '@typescript-eslint/lines-between-class-members': 0,
+        '@typescript-eslint/no-throw-literal': 0,
+        '@typescript-eslint/only-throw-error': 'error',
+        'lines-between-class-members': [
+          'error',
+          'always',
+          {exceptAfterSingleLine: false},
+        ],
+
         // TODO
         'import/extensions': 0,
         'import/no-dynamic-require': 0,
