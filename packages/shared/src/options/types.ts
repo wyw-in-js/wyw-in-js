@@ -234,6 +234,7 @@ export type OxcOptions = {
   transform?: Record<string, unknown>;
 };
 
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export interface WywInJsProcessorOptions {}
 
 export type StrictOptions = {

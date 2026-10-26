@@ -504,6 +504,7 @@ export abstract class CacheLifecycle<
     return this.legacyGlobalRecoveryError?.error;
   }
 
+  /* eslint-disable lines-between-class-members */
   /** @deprecated Will be removed in 3.0. */
   public createGraphTraversalToken(): object;
   /** @internal An explicit epoch may only come from a transform attempt. */
@@ -816,6 +817,7 @@ export abstract class CacheLifecycle<
       recoveryOwner
     ).complete();
   }
+  /* eslint-enable lines-between-class-members */
 
   /** @internal Use beginSupersedeStormRecovery unless the pending epoch is observed. */
   public startSupersedeStormRecovery(
