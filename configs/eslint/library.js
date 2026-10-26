@@ -186,7 +186,9 @@ module.exports = {
         'global-require': 0,
 
         // airbnb-typescript/base still enables two rules that typescript-eslint 8
-        // removed; enforce the same checks under the names that replace them
+        // removed; enforce the same checks under the names that replace them.
+        // The core lines-between-class-members has no exceptAfterOverload, so a
+        // class with overload signatures needs a local eslint-disable.
         '@typescript-eslint/lines-between-class-members': 0,
         '@typescript-eslint/no-throw-literal': 0,
         '@typescript-eslint/only-throw-error': 'error',
