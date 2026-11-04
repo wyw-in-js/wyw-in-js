@@ -781,6 +781,53 @@ describe('applyOxcProcessors', () => {
     expect(result.code).not.toContain('const obj =');
   });
 
+  it('keeps a destructuring declaration when only some of its bindings are used at runtime', () => {
+    const result = applyOxcProcessors(
+      `
+        import { css } from 'test-package';
+        function createVars() {
+          return { gap: 1, pad: 2 };
+        }
+        const { gap, pad } = createVars();
+        export const title = css\`
+          gap: ${'${gap}'};
+          padding: ${'${pad}'};
+        \`;
+        export const getPad = () => pad;
+      `,
+      fileContext,
+      options(processorPath),
+      (processor) => processor.doRuntimeReplacement(),
+      true
+    );
+
+    expect(result.code).toContain('const { gap, pad } = createVars();');
+    expect(result.code).toContain('function createVars');
+  });
+
+  it('removes a destructuring declaration when none of its bindings are used at runtime', () => {
+    const result = applyOxcProcessors(
+      `
+        import { css } from 'test-package';
+        function createVars() {
+          return { gap: 1, pad: 2 };
+        }
+        const { gap, pad } = createVars();
+        export const title = css\`
+          gap: ${'${gap}'};
+          padding: ${'${pad}'};
+        \`;
+      `,
+      fileContext,
+      options(processorPath),
+      (processor) => processor.doRuntimeReplacement(),
+      true
+    );
+
+    expect(result.code).not.toContain('createVars');
+    expect(result.code).not.toContain('const { gap, pad }');
+  });
+
   it('removes empty top-level blocks after static template evaluation cleanup', () => {
     const result = applyOxcProcessors(
       `

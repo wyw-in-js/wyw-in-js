@@ -48,6 +48,8 @@ export const collectScopedBindingInfos = (
   program: Program
 ): Map<string, ScopedBindingInfo> => {
   const bindings = new Map<string, ScopedBindingInfo>();
+  // Binding ids introduced together by one destructuring pattern.
+  const destructuredGroups: string[][] = [];
   let sequence = 0;
 
   const addBinding = (
@@ -324,7 +326,12 @@ export const collectScopedBindingInfos = (
       declarations.forEach((declarator) => {
         const { id } = declarator as AnyNode;
         if (isOxcNode(id)) {
-          addPatternBindings(scope, id, 'variable', node);
+          const ids = collectDeclaredNames(id).map((name) =>
+            addBinding(scope, name, 'variable', node)
+          );
+          if (ids.length > 1) {
+            destructuredGroups.push(ids);
+          }
         }
       });
 
@@ -406,6 +413,33 @@ export const collectScopedBindingInfos = (
   };
 
   walk(program, createScopedCleanupScope(null));
+
+  // The names of one pattern (`const { a, b } = f()`) are created and removed
+  // together, so they have to agree on whether they are still used.
+  destructuredGroups.forEach((ids) => {
+    const siblings = ids.flatMap((id) => bindings.get(id) ?? []);
+    const incoming = new Set(
+      siblings.flatMap((binding) => [...binding.incomingFromBindings])
+    );
+    ids.forEach((id) => incoming.delete(id));
+    const externalReferences = siblings.reduce(
+      (total, binding) => total + binding.externalReferences,
+      0
+    );
+
+    siblings.forEach((binding) => {
+      Object.assign(binding, {
+        externalReferences,
+        incomingFromBindings: incoming,
+      });
+      binding.dependencies.forEach((targetId) => {
+        ids.forEach(
+          (id) => bindings.get(targetId)?.incomingFromBindings.add(id)
+        );
+      });
+    });
+  });
+
   return bindings;
 };
 
