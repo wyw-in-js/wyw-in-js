@@ -261,13 +261,10 @@ export const collectProcessorUsages = (
   declarations: ProcessorDeclarations = new Map()
 ): ProcessorUsage[] => {
   const usages: ProcessorUsage[] = [];
+  const ancestors: Node[] = [];
   let mayBeShadowed = false;
 
-  const walk = (
-    node: Node,
-    ancestors: Node[],
-    parent: Node | null = null
-  ): void => {
+  const walk = (node: Node, parent: Node | null = null): void => {
     if (!mayBeShadowed && declarations.size > 0) {
       mayBeShadowed = redeclaresProcessorName(node, declarations);
     }
@@ -280,7 +277,7 @@ export const collectProcessorUsages = (
       );
       if (resolvedProcessor) {
         usages.push({
-          ancestors,
+          ancestors: [...ancestors],
           callee,
           collapseQualifiedCallee: resolvedProcessor.collapseQualifiedCallee,
           definedProcessor: resolvedProcessor.definedProcessor,
@@ -300,7 +297,7 @@ export const collectProcessorUsages = (
       );
       if (resolvedProcessor) {
         usages.push({
-          ancestors,
+          ancestors: [...ancestors],
           callee,
           collapseQualifiedCallee: resolvedProcessor.collapseQualifiedCallee,
           definedProcessor: resolvedProcessor.definedProcessor,
@@ -314,12 +311,15 @@ export const collectProcessorUsages = (
       }
     }
 
-    getOxcNodeChildren(node).forEach((child) =>
-      walk(child, [...ancestors, node], node)
-    );
+    ancestors.push(node);
+    const children = getOxcNodeChildren(node);
+    for (let index = 0; index < children.length; index += 1) {
+      walk(children[index], node);
+    }
+    ancestors.pop();
   };
 
-  walk(program, []);
+  walk(program);
 
   return (
     mayBeShadowed
