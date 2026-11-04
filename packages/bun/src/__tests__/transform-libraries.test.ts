@@ -6,6 +6,7 @@ const transformMock = jest.fn();
 
 jest.mock('@wyw-in-js/transform', () => ({
   __esModule: true,
+  createParallelTransforms: () => null,
   createFileReporter: () => ({
     emitter: { single: jest.fn() },
     onDone: jest.fn(),
