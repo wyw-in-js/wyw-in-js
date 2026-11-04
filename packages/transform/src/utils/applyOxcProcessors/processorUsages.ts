@@ -176,7 +176,7 @@ export const addProcessorDeclaration = (
   }
 };
 
-const getDeclaredPatterns = (node: Node): Node[] => {
+const getDeclaredPatterns = (node: Node): Node[] | null => {
   if (isOxcFunctionLike(node)) {
     return node.id ? [node.id as unknown as Node, ...node.params] : node.params;
   }
@@ -192,7 +192,19 @@ const getDeclaredPatterns = (node: Node): Node[] => {
     return [node.param];
   }
 
-  return node.type === 'VariableDeclarator' ? [node.id] : [];
+  return node.type === 'VariableDeclarator' ? [node.id] : null;
+};
+
+const isAnotherProcessorDeclaration = (
+  name: string,
+  pattern: Node,
+  declarations: ProcessorDeclarations
+): boolean => {
+  const starts = declarations.get(name);
+  return (
+    starts !== undefined &&
+    !starts.some((start) => pattern.start <= start && start < pattern.end)
+  );
 };
 
 // Whether the node declares the name of a processor other than through that
@@ -201,15 +213,13 @@ const redeclaresProcessorName = (
   node: Node,
   declarations: ProcessorDeclarations
 ): boolean =>
-  getDeclaredPatterns(node).some((pattern) =>
-    collectOxcPatternBindingNames(pattern).some((name) => {
-      const starts = declarations.get(name);
-      return (
-        starts !== undefined &&
-        !starts.some((start) => pattern.start <= start && start < pattern.end)
-      );
-    })
-  );
+  getDeclaredPatterns(node)?.some((pattern) =>
+    pattern.type === 'Identifier'
+      ? isAnotherProcessorDeclaration(pattern.name, pattern, declarations)
+      : collectOxcPatternBindingNames(pattern).some((name) =>
+          isAnotherProcessorDeclaration(name, pattern, declarations)
+        )
+  ) ?? false;
 
 // Usages are found by name, but a local binding can reuse the name of a
 // processor (minifiers pick short names per scope). Keep the usages whose name
