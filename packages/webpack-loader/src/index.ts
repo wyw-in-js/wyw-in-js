@@ -479,6 +479,23 @@ const webpack5Loader: Loader = function webpack5LoaderPlugin(
     .then(
       async (result: Result) => {
         try {
+          for (const diagnostic of result.diagnostics ?? []) {
+            const location = diagnostic.start
+              ? `${diagnostic.filename}:${diagnostic.start.line}:${
+                  diagnostic.start.column + 1
+                }`
+              : diagnostic.filename;
+            const error = new Error(
+              `${location} [${diagnostic.category}] ${diagnostic.message}`
+            );
+            delete error.stack;
+            if (diagnostic.severity === 'warning') {
+              this.emitWarning(error);
+            } else {
+              this.emitError(error);
+            }
+          }
+
           if (result.cssText) {
             let { cssText } = result;
 
