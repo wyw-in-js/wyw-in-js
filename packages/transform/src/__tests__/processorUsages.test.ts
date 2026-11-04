@@ -5,7 +5,10 @@ import {
   addProcessorDeclaration,
   collectProcessorUsages,
 } from '../utils/applyOxcProcessors/processorUsages';
-import type { DefinedProcessor } from '../utils/applyOxcProcessors/types';
+import type {
+  DefinedProcessor,
+  ProcessorUsage,
+} from '../utils/applyOxcProcessors/types';
 import { parseOxc } from '../utils/collectOxcTemplateDependencies/scopeAnalysis';
 import { walkOxc } from '../utils/oxc/ast';
 
@@ -87,4 +90,26 @@ it('retains independent ancestor snapshots across sibling and nested usages', ()
     ],
   ]);
   expect(usages[0].ancestors).not.toBe(usages[1].ancestors);
+});
+
+it('copies ancestor chains only for processor usages', () => {
+  const { program, declarations } = input();
+  let copies = 0;
+  const { [Symbol.iterator]: iterate } = Array.prototype;
+  const spy = jest
+    .spyOn(Array.prototype, Symbol.iterator)
+    .mockImplementation(function recordAncestorCopy(this: unknown[]) {
+      if (this[0] === program) {
+        copies += 1;
+      }
+      return iterate.call(this);
+    });
+  let usages: ProcessorUsage[];
+  try {
+    usages = collectProcessorUsages(program, processors, declarations);
+  } finally {
+    spy.mockRestore();
+  }
+  expect(usages).toHaveLength(2);
+  expect(copies).toBeLessThanOrEqual(usages.length);
 });
