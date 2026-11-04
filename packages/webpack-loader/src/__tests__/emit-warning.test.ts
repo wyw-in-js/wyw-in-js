@@ -118,8 +118,8 @@ describe('webpack-loader emitWarning', () => {
         );
       });
 
-      expect(emitWarning).toHaveBeenCalledTimes(withDiagnostics ? 2 : 1);
-      expect(emitError).toHaveBeenCalledTimes(withDiagnostics ? 1 : 0);
+      expect(emitWarning).toHaveBeenCalledTimes(withDiagnostics ? 3 : 1);
+      expect(emitError).not.toHaveBeenCalled();
       const warning = emitWarning.mock.calls[0][0];
 
       expect(warning).toBeInstanceOf(Error);
@@ -130,14 +130,16 @@ describe('webpack-loader emitWarning', () => {
       if (withDiagnostics) {
         expect(emitWarning.mock.calls[1][0]).toBeInstanceOf(Error);
         expect(emitWarning.mock.calls[1][0].message).toBe(
-          '/abs/test.tsx:2:5 [test-warning] A processor warning'
+          '[wyw-in-js] warning [test-warning] A processor warning\n' +
+            '  at /abs/test.tsx:2:5 (test)'
         );
         expect(emitWarning.mock.calls[1][0].stack).toBeUndefined();
-        expect(emitError.mock.calls[0][0]).toBeInstanceOf(Error);
-        expect(emitError.mock.calls[0][0].message).toBe(
-          '/abs/dependency.ts [test-error] A processor error'
+        expect(emitWarning.mock.calls[2][0]).toBeInstanceOf(Error);
+        expect(emitWarning.mock.calls[2][0].message).toBe(
+          '[wyw-in-js] error [test-error] A processor error\n' +
+            '  at /abs/dependency.ts (dependency)'
         );
-        expect(emitError.mock.calls[0][0].stack).toBeUndefined();
+        expect(emitWarning.mock.calls[2][0].stack).toBeUndefined();
       }
     }
   );
