@@ -828,6 +828,36 @@ describe('applyOxcProcessors', () => {
     expect(result.code).not.toContain('const { gap, pad }');
   });
 
+  it.each([
+    ['a default value', 'const { gap, pad = fallback() } = { gap: 1 };'],
+    ['a computed key', 'const { gap, [fallback()]: pad } = { gap: 1, 2: 2 };'],
+    ['a single binding', 'const { pad = fallback() } = {};'],
+  ])(
+    'keeps a helper that a kept destructuring declaration calls from %s',
+    (_, declaration) => {
+      const result = applyOxcProcessors(
+        `
+          import { css } from 'test-package';
+          function fallback() {
+            return 2;
+          }
+          ${declaration}
+          export const title = css\`
+            padding: ${'${fallback()}'};
+          \`;
+          export const getPad = () => pad;
+        `,
+        fileContext,
+        options(processorPath),
+        (processor) => processor.doRuntimeReplacement(),
+        true
+      );
+
+      expect(result.code).toContain(declaration);
+      expect(result.code).toContain('function fallback');
+    }
+  );
+
   it('removes empty top-level blocks after static template evaluation cleanup', () => {
     const result = applyOxcProcessors(
       `

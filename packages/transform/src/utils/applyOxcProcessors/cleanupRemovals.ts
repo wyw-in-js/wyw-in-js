@@ -338,14 +338,18 @@ export const collectScopedBindingInfos = (
       declarations.forEach((declarator) => {
         const { id } = declarator as AnyNode;
         const { init } = declarator as AnyNode;
-        if (!isOxcNode(id) || !isOxcNode(init)) {
+        if (!isOxcNode(id)) {
           return;
         }
 
         const ownerName = collectDeclaredNames(id)[0] ?? null;
         const nextOwner =
           ownerName !== null ? resolveScopedBinding(scope, ownerName) : null;
-        walk(init, scope, declarator as Node, nextOwner);
+        // Defaults and computed keys of the pattern run with the initializer.
+        walkPatternReferenceSubexpressions(id, scope, nextOwner);
+        if (isOxcNode(init)) {
+          walk(init, scope, declarator as Node, nextOwner);
+        }
       });
       return;
     }
