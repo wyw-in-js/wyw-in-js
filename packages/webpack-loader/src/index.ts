@@ -479,6 +479,25 @@ const webpack5Loader: Loader = function webpack5LoaderPlugin(
     .then(
       async (result: Result) => {
         try {
+          // Every processor diagnostic is a warning, whatever its severity,
+          // as in the other integrations: a diagnostic must not fail a build
+          // that passed before.
+          for (const diagnostic of result.diagnostics ?? []) {
+            const location = diagnostic.start
+              ? `${diagnostic.filename}:${diagnostic.start.line}:${
+                  diagnostic.start.column + 1
+                }`
+              : diagnostic.filename;
+            const warning = new Error(
+              [
+                `[wyw-in-js] ${diagnostic.severity} [${diagnostic.category}] ${diagnostic.message}`,
+                `  at ${location} (${diagnostic.displayName})`,
+              ].join('\n')
+            );
+            delete warning.stack;
+            this.emitWarning(warning);
+          }
+
           if (result.cssText) {
             let { cssText } = result;
 

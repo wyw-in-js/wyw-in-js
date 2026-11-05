@@ -2,10 +2,13 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
+import { createParallelTransforms } from '@wyw-in-js/transform';
+
 const transformMock = jest.fn();
 
 jest.mock('@wyw-in-js/transform', () => ({
   __esModule: true,
+  createParallelTransforms,
   createFileReporter: () => ({
     emitter: { single: jest.fn() },
     onDone: jest.fn(),
