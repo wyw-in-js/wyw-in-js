@@ -781,6 +781,83 @@ describe('applyOxcProcessors', () => {
     expect(result.code).not.toContain('const obj =');
   });
 
+  it('keeps a destructuring declaration when only some of its bindings are used at runtime', () => {
+    const result = applyOxcProcessors(
+      `
+        import { css } from 'test-package';
+        function createVars() {
+          return { gap: 1, pad: 2 };
+        }
+        const { gap, pad } = createVars();
+        export const title = css\`
+          gap: ${'${gap}'};
+          padding: ${'${pad}'};
+        \`;
+        export const getPad = () => pad;
+      `,
+      fileContext,
+      options(processorPath),
+      (processor) => processor.doRuntimeReplacement(),
+      true
+    );
+
+    expect(result.code).toContain('const { gap, pad } = createVars();');
+    expect(result.code).toContain('function createVars');
+  });
+
+  it('removes a destructuring declaration when none of its bindings are used at runtime', () => {
+    const result = applyOxcProcessors(
+      `
+        import { css } from 'test-package';
+        function createVars() {
+          return { gap: 1, pad: 2 };
+        }
+        const { gap, pad } = createVars();
+        export const title = css\`
+          gap: ${'${gap}'};
+          padding: ${'${pad}'};
+        \`;
+      `,
+      fileContext,
+      options(processorPath),
+      (processor) => processor.doRuntimeReplacement(),
+      true
+    );
+
+    expect(result.code).not.toContain('createVars');
+    expect(result.code).not.toContain('const { gap, pad }');
+  });
+
+  it.each([
+    ['a default value', 'const { gap, pad = fallback() } = { gap: 1 };'],
+    ['a computed key', 'const { gap, [fallback()]: pad } = { gap: 1, 2: 2 };'],
+    ['a single binding', 'const { pad = fallback() } = {};'],
+  ])(
+    'keeps a helper that a kept destructuring declaration calls from %s',
+    (_, declaration) => {
+      const result = applyOxcProcessors(
+        `
+          import { css } from 'test-package';
+          function fallback() {
+            return 2;
+          }
+          ${declaration}
+          export const title = css\`
+            padding: ${'${fallback()}'};
+          \`;
+          export const getPad = () => pad;
+        `,
+        fileContext,
+        options(processorPath),
+        (processor) => processor.doRuntimeReplacement(),
+        true
+      );
+
+      expect(result.code).toContain(declaration);
+      expect(result.code).toContain('function fallback');
+    }
+  );
+
   it('removes empty top-level blocks after static template evaluation cleanup', () => {
     const result = applyOxcProcessors(
       `

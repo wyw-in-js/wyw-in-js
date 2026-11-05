@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
 import colors from 'picocolors';
@@ -326,6 +326,68 @@ async function runShadowedProcessorCase() {
   }
 }
 
+// Only some names of one destructuring declaration are consumed by the
+// template; the module must still run, with the rest of them defined.
+async function runPartiallyUsedDestructuringCase() {
+  const outDir = path.resolve(PKG_DIR, 'dist-partially-used-destructuring');
+
+  try {
+    await fs.rm(outDir, { recursive: true, force: true });
+    await build({
+      build: {
+        cssMinify: false,
+        lib: {
+          entry: path.resolve(
+            PKG_DIR,
+            'src/partially-used-destructuring/index.js'
+          ),
+          fileName: 'index',
+          formats: ['es'],
+        },
+        outDir,
+      },
+      configFile: false,
+      logLevel: 'silent',
+      plugins: [wyw()],
+      root: PKG_DIR,
+    });
+
+    const cssFile = await findFileMatching(outDir, (filePath) =>
+      filePath.endsWith('.css')
+    );
+    const css = normalizeLineEndings(await fs.readFile(cssFile, 'utf-8'));
+    for (const declaration of [
+      /gap:\s*var\(--gap\)/,
+      /padding:\s*var\(--pad\)/,
+      /margin:\s*2px/,
+    ]) {
+      if (!declaration.test(css)) {
+        throw new Error(`Expected ${declaration} in the CSS, got:\n${css}`);
+      }
+    }
+
+    const modulePath = await findFileMatching(
+      outDir,
+      (filePath, contents) =>
+        /\.(?:mjs|js)$/.test(filePath) && contents.includes('clipPath')
+    );
+    const script = `
+      const mod = await import(process.argv[1]);
+      console.log(mod.clipPath(10));
+    `;
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      ['--input-type=module', '-e', script, pathToFileURL(modulePath).href],
+      { cwd: PKG_DIR }
+    );
+    if (stdout.trim() !== 'calc(10px - var(--pad) - 2px)') {
+      throw new Error(`Unexpected clipPath(10) result: ${stdout.trim()}`);
+    }
+  } finally {
+    await fs.rm(outDir, { recursive: true, force: true });
+  }
+}
+
 async function assertFileMatches(filePath, pattern) {
   const contents = normalizeLineEndings(await fs.readFile(filePath, 'utf-8'));
 
@@ -513,6 +575,9 @@ const main = async () => {
 
   console.log(colors.blue('Running case:'), 'shadowedProcessor');
   await runShadowedProcessorCase();
+
+  console.log(colors.blue('Running case:'), 'partiallyUsedDestructuring');
+  await runPartiallyUsedDestructuringCase();
 
   console.log(colors.blue('Running case:'), 'loadedCode');
   await assertLoadedCode(PKG_DIR);
