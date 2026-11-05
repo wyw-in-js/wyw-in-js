@@ -31,68 +31,118 @@ describe('webpack-loader emitWarning', () => {
     transformMock.mockReset();
   });
 
-  it('emits Error without stack to prevent webpack ModuleWarning duplication', async () => {
-    const { default: webpackLoader } = await import('../index');
-    const emitWarning = jest.fn();
+  it.each([
+    { withDiagnostics: false, cssText: undefined },
+    { withDiagnostics: true, cssText: undefined },
+    { withDiagnostics: true, cssText: '.test { color: red; }' },
+  ])(
+    'forwards warnings and processor diagnostics without duplicate stacks: %j',
+    async ({ withDiagnostics, cssText }) => {
+      const { default: webpackLoader } = await import('../index');
+      const emitWarning = jest.fn();
+      const emitError = jest.fn();
 
-    transformMock.mockImplementation(
-      async (services: { emitWarning: (msg: string) => void }) => {
-        services.emitWarning('[wyw-eval-runner] defsFromColors: 5.312ms');
-        return {
-          code: 'module.exports = 1;',
-          sourceMap: null,
-          cssText: null,
-          cssSourceMapText: '',
-          dependencies: [],
-        };
-      }
-    );
-
-    await new Promise<void>((resolve, reject) => {
-      webpackLoader.call(
-        {
-          hot: false,
-          addDependency: jest.fn(),
-          async: jest.fn(),
-          callback: (err: Error | null) => {
-            if (err) {
-              reject(err);
-              return;
-            }
-            resolve();
-          },
-          context: process.cwd(),
-          emitWarning,
-          getDependencies: () => [],
-          getOptions: () => ({}),
-          getResolve: () =>
-            jest.fn(
-              (
-                _ctx: string,
-                _token: string,
-                cb: (err: unknown, res: unknown) => void
-              ) => cb(null, null)
-            ),
-          resourcePath: '/abs/test.tsx',
-          rootContext: process.cwd(),
-          utils: {
-            contextify: (_ctx: string, request: string) => request,
-          },
-        } as never,
-        'module.exports = 1;',
-        null
+      transformMock.mockImplementation(
+        async (services: { emitWarning: (msg: string) => void }) => {
+          services.emitWarning('[wyw-eval-runner] defsFromColors: 5.312ms');
+          return {
+            code: 'module.exports = 1;',
+            sourceMap: null,
+            cssText,
+            cssSourceMapText: '',
+            dependencies: [],
+            ...(withDiagnostics
+              ? {
+                  diagnostics: [
+                    {
+                      category: 'test-warning',
+                      severity: 'warning',
+                      message: 'A processor warning',
+                      filename: '/abs/test.tsx',
+                      className: 'test',
+                      displayName: 'test',
+                      start: { line: 2, column: 4 },
+                      end: { line: 2, column: 12 },
+                    },
+                    {
+                      category: 'test-error',
+                      severity: 'error',
+                      message: 'A processor error',
+                      filename: '/abs/dependency.ts',
+                      className: 'dependency',
+                      displayName: 'dependency',
+                      start: null,
+                      end: null,
+                    },
+                  ],
+                }
+              : {}),
+          };
+        }
       );
-    });
 
-    expect(emitWarning).toHaveBeenCalledTimes(1);
-    const warning = emitWarning.mock.calls[0][0];
+      await new Promise<void>((resolve, reject) => {
+        webpackLoader.call(
+          {
+            hot: false,
+            addDependency: jest.fn(),
+            async: jest.fn(),
+            callback: (err: Error | null) => {
+              if (err) {
+                reject(err);
+                return;
+              }
+              resolve();
+            },
+            context: process.cwd(),
+            emitWarning,
+            emitError,
+            getDependencies: () => [],
+            getOptions: () => ({}),
+            getResolve: () =>
+              jest.fn(
+                (
+                  _ctx: string,
+                  _token: string,
+                  cb: (err: unknown, res: unknown) => void
+                ) => cb(null, null)
+              ),
+            resourcePath: '/abs/test.tsx',
+            rootContext: process.cwd(),
+            utils: {
+              contextify: (_ctx: string, request: string) => request,
+            },
+          } as never,
+          'module.exports = 1;',
+          null
+        );
+      });
 
-    expect(warning).toBeInstanceOf(Error);
-    expect(warning.message).toBe('[wyw-eval-runner] defsFromColors: 5.312ms');
-    // stack is deleted so ModuleWarning.details stays undefined —
-    // webpack won't render the message a second time as "Error: <msg>"
-    expect(warning.stack).toBeUndefined();
-  });
+      expect(emitWarning).toHaveBeenCalledTimes(withDiagnostics ? 3 : 1);
+      expect(emitError).not.toHaveBeenCalled();
+      const warning = emitWarning.mock.calls[0][0];
+
+      expect(warning).toBeInstanceOf(Error);
+      expect(warning.message).toBe('[wyw-eval-runner] defsFromColors: 5.312ms');
+      // stack is deleted so ModuleWarning.details stays undefined —
+      // webpack won't render the message a second time as "Error: <msg>"
+      expect(warning.stack).toBeUndefined();
+      if (withDiagnostics) {
+        expect(emitWarning.mock.calls[1][0]).toBeInstanceOf(Error);
+        expect(emitWarning.mock.calls[1][0].message).toBe(
+          '[wyw-in-js] warning [test-warning] A processor warning\n' +
+            '  at /abs/test.tsx:2:5 (test)'
+        );
+        expect(emitWarning.mock.calls[1][0].stack).toBeUndefined();
+        expect(emitWarning.mock.calls[2][0]).toBeInstanceOf(Error);
+        expect(emitWarning.mock.calls[2][0].message).toBe(
+          '[wyw-in-js] error [test-error] A processor error\n' +
+            '  at /abs/dependency.ts (dependency)'
+        );
+        expect(emitWarning.mock.calls[2][0].stack).toBeUndefined();
+      }
+    }
+  );
 
   it('drops stale loader callbacks and routes cached services to the current compilation', async () => {
     const { default: webpackLoader } = await import('../index');
