@@ -1,5 +1,13 @@
 # @wyw-in-js/cli
 
+## 2.7.1
+
+### Patch Changes
+
+- Updated dependencies
+  - @wyw-in-js/shared@2.7.1
+  - @wyw-in-js/transform@2.7.1
+
 ## 2.7.0
 
 ### Minor Changes

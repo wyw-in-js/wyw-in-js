@@ -1,5 +1,20 @@
 # @wyw-in-js/transform
 
+## 2.7.1
+
+### Patch Changes
+
+- 4a2f37a: Avoid constructing binding-pattern caches for plain identifiers and empty declaration lists for other AST nodes while checking whether processor names are shadowed.
+
+  Reuse the traversal ancestor stack and take an independent snapshot only when a processor usage is found, instead of copying the chain for every visited AST node.
+
+- 537452e: Raise the minimum versions of dependencies with known security advisories: `minimatch` to 9.0.7 in `@wyw-in-js/shared` and `@wyw-in-js/transform`, and `happy-dom` to 20.8.9 in `@wyw-in-js/transform`, so a fresh install can no longer resolve the vulnerable releases.
+- a0779fd: Keep the helpers that the default values and computed keys of a destructuring declaration call when that declaration stays in the output. Previously such a helper was removed when a processor template also used it, and the module threw a `ReferenceError` when it ran.
+- d2f847c: Keep a destructuring declaration, and the helpers it calls, when only some of its bindings are consumed by a processor and the rest are still used at runtime. Previously the whole declaration was removed as soon as one binding was only used in a template, leaving the other bindings undefined in the emitted code.
+- Updated dependencies
+  - @wyw-in-js/processor-utils@2.7.1
+  - @wyw-in-js/shared@2.7.1
+
 ## 2.7.0
 
 ### Minor Changes
