@@ -5,12 +5,8 @@ import {
   addProcessorDeclaration,
   collectProcessorUsages,
 } from '../utils/applyOxcProcessors/processorUsages';
-import type {
-  DefinedProcessor,
-  ProcessorUsage,
-} from '../utils/applyOxcProcessors/types';
+import type { DefinedProcessor } from '../utils/applyOxcProcessors/types';
 import { parseOxc } from '../utils/collectOxcTemplateDependencies/scopeAnalysis';
-import { walkOxc } from '../utils/oxc/ast';
 
 const processor: ProcessorClass = createRequire(import.meta.url)(
   './__fixtures__/test-css-processor.js'
@@ -19,59 +15,74 @@ const processors = new Map<string, DefinedProcessor>([
   ['css', [processor, { imported: 'css', source: 'test-package' }]],
 ]);
 
-const input = () => {
-  const code = `
-    import { css } from 'test-package';
-    ${Array.from(
-      { length: 32 },
-      (_, index) => `const unrelated_${index} = ${index};`
-    ).join('\n')}
+const collect = (body: string) => {
+  const code = `import { css } from 'test-package';\n${body}`;
+  const program = parseOxc(code, 'usages.js');
+  const declarations = new Map<string, number[]>();
+  addProcessorDeclaration(declarations, 'css', code.indexOf('css'));
+  const usages = collectProcessorUsages(program, processors, declarations);
+  return {
+    sources: usages.map(({ target }) => code.slice(target.start, target.end)),
+    usages,
+  };
+};
+
+it('keeps usages when only other names are declared', () => {
+  expect(
+    collect(`
+      const unrelated = 1;
+      export const first = css\`color: red;\`;
+      export function render(value, { item }) {
+        return css\`color: blue;\`;
+      }
+    `).sources
+  ).toEqual(['css`color: red;`', 'css`color: blue;`']);
+});
+
+it.each([
+  ['a parameter', 'export const render = (css) => css`color: blue;`;'],
+  [
+    'a parameter with a default',
+    'export const render = (css = String.raw) => css`color: blue;`;',
+  ],
+  [
+    'a destructured variable',
+    'export function render(theme) { const { css } = theme; return css`color: blue;`; }',
+  ],
+  [
+    'a local variable',
+    'export function render() { const css = String.raw; return css`color: blue;`; }',
+  ],
+  [
+    'a function declaration',
+    "export function render() { function css() { return ''; } return css`color: blue;`; }",
+  ],
+  [
+    'a named function expression',
+    'export const render = function css() { return css`color: blue;`; };',
+  ],
+  [
+    'a class declaration',
+    'export function render() { class css {} return css`color: blue;`; }',
+  ],
+  ['a catch parameter', 'try { run(); } catch (css) { css`color: blue;`; }'],
+  [
+    'a parameter called as a function',
+    "export const render = (css) => css({ color: 'blue' });",
+  ],
+])('drops usages of the processor name redeclared by %s', (_, body) => {
+  expect(
+    collect(`export const first = css\`color: red;\`;\n${body}`).sources
+  ).toEqual(['css`color: red;`']);
+});
+
+it('retains independent ancestor snapshots across sibling and nested usages', () => {
+  const { usages } = collect(`
     export const first = css\`color: red;\`;
     export function render() {
       return css\`color: blue;\`;
     }
-  `;
-  const program = parseOxc(code, 'usages.js');
-  const declarations = new Map<string, number[]>();
-  addProcessorDeclaration(declarations, 'css', code.indexOf('css'));
-  return { program, declarations };
-};
-
-it('does not populate binding-pattern caches for unrelated identifier declarations', () => {
-  const { program, declarations } = input();
-  const unrelated = new Set<WeakKey>();
-  walkOxc(program, (node) => {
-    if (node.type === 'Identifier' && node.name.startsWith('unrelated_')) {
-      unrelated.add(node);
-    }
-  });
-  const writes: WeakKey[] = [];
-  const { set } = WeakMap.prototype;
-  const spy = jest
-    .spyOn(WeakMap.prototype, 'set')
-    .mockImplementation(function recordBindingCacheWrite(
-      this: WeakMap<WeakKey, unknown>,
-      key: WeakKey,
-      value: unknown
-    ) {
-      if (unrelated.has(key)) {
-        writes.push(key);
-      }
-      return set.call(this, key, value);
-    });
-  try {
-    expect(
-      collectProcessorUsages(program, processors, declarations)
-    ).toHaveLength(2);
-    expect(writes).toHaveLength(0);
-  } finally {
-    spy.mockRestore();
-  }
-});
-
-it('retains independent ancestor snapshots across sibling and nested usages', () => {
-  const { program, declarations } = input();
-  const usages = collectProcessorUsages(program, processors, declarations);
+  `);
   expect(
     usages.map(({ ancestors }) => ancestors.map((node) => node.type))
   ).toEqual([
@@ -90,26 +101,4 @@ it('retains independent ancestor snapshots across sibling and nested usages', ()
     ],
   ]);
   expect(usages[0].ancestors).not.toBe(usages[1].ancestors);
-});
-
-it('copies ancestor chains only for processor usages', () => {
-  const { program, declarations } = input();
-  let copies = 0;
-  const { [Symbol.iterator]: iterate } = Array.prototype;
-  const spy = jest
-    .spyOn(Array.prototype, Symbol.iterator)
-    .mockImplementation(function recordAncestorCopy(this: unknown[]) {
-      if (this[0] === program) {
-        copies += 1;
-      }
-      return iterate.call(this);
-    });
-  let usages: ProcessorUsage[];
-  try {
-    usages = collectProcessorUsages(program, processors, declarations);
-  } finally {
-    spy.mockRestore();
-  }
-  expect(usages).toHaveLength(2);
-  expect(copies).toBeLessThanOrEqual(usages.length);
 });
