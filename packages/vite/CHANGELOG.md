@@ -1,5 +1,14 @@
 # @wyw-in-js/vite
 
+## 2.7.1
+
+### Patch Changes
+
+- d831ff4: Serve the generated CSS of a module as a stylesheet in dev when it is requested with `?direct`, as Vite does for a `<link rel="stylesheet">`. The plugin dropped the query while resolving the id, so Vite answered with the JavaScript module that injects the styles instead of CSS. Requests without a query are unchanged.
+- Updated dependencies
+  - @wyw-in-js/shared@2.7.1
+  - @wyw-in-js/transform@2.7.1
+
 ## 2.7.0
 
 ### Minor Changes

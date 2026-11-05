@@ -1,5 +1,14 @@
 # @wyw-in-js/webpack-loader
 
+## 2.7.1
+
+### Patch Changes
+
+- 9e0d22b: Forward processor diagnostics from transform results to webpack as warnings, with their severity, category and source location, even when no CSS is extracted. Diagnostics with severity `error` are reported as warnings too, so they do not fail a build.
+- Updated dependencies
+  - @wyw-in-js/shared@2.7.1
+  - @wyw-in-js/transform@2.7.1
+
 ## 2.7.0
 
 ### Minor Changes
