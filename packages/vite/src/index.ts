@@ -670,11 +670,14 @@ export default function wywInJS({
       const [id] = url.split('?', 1);
       return cssLookup[id];
     },
+    // Keep the query: in dev, Vite serves `<css file>?direct` as a stylesheet
+    // and the bare id as a JavaScript module that injects it.
     /* eslint-disable-next-line consistent-return */
     resolveId(importeeUrl: string) {
       const [id] = importeeUrl.split('?', 1);
-      if (cssLookup[id]) return id;
-      return cssFileLookup[id];
+      if (cssLookup[id]) return importeeUrl;
+      const cssFilename = cssFileLookup[id];
+      if (cssFilename) return cssFilename + importeeUrl.slice(id.length);
     },
     handleHotUpdate(ctx) {
       // it's module, so just transform it
