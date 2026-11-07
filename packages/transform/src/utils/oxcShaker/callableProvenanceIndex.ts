@@ -41,6 +41,7 @@ import {
 } from './executableIndex';
 import { createCallableSyntaxFactsCache } from './callableSyntaxFacts';
 import {
+  addSelfProvenanceAliases,
   createMutableProvenanceClosureNode,
   createProvenanceClosureIndex,
   mergeProvenanceClosureNode,
@@ -732,14 +733,16 @@ export const createCallableProvenanceIndex = ({
       }
     }
 
-    const { assignmentPairs } = getCallableSyntaxFacts(callable.body);
+    const facts = getCallableSyntaxFacts(callable.body);
+    // Parameters already have entries; other outer names keep their own value.
+    addSelfProvenanceAliases(facts.outerAssignedBindings, aliases);
 
     let changed = true;
-    let passes = assignmentPairs.length + 1;
+    let passes = facts.assignmentPairs.length + 1;
     while (changed && passes > 0) {
       passes -= 1;
       changed = false;
-      for (const { pattern, value } of assignmentPairs) {
+      for (const { pattern, value } of facts.assignmentPairs) {
         const roots = collectContextualRoots(value, aliases);
         if (!consumeWork(Math.max(1, roots.size))) {
           return null;

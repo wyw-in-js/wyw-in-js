@@ -11,6 +11,7 @@ import {
   type ClassNode,
 } from './bindingProvenance';
 import {
+  collectExternalReferences,
   collectMutations,
   forEachModuleExecutedNode,
   unwrapAliasExpression,
@@ -29,6 +30,7 @@ type CallableSyntaxFacts = Readonly<{
   localCallables: ReadonlyMap<string, CallableNode>;
   localClasses: ReadonlyMap<string, ClassNode>;
   mutationBindings: ReadonlySet<string>;
+  outerAssignedBindings: ReadonlySet<string>;
 }>;
 
 export type CallableSyntaxCatalogs = Readonly<{
@@ -37,12 +39,32 @@ export type CallableSyntaxCatalogs = Readonly<{
   classes: ReadonlyMap<string, ClassNode>;
 }>;
 
+// Names the body assigns that it does not declare: they belong to an enclosing
+// scope, or to the callable's own parameters and name, which the body does not
+// see. A name declared in one block and assigned outside it counts as outer.
+const collectOuterBindings = (
+  body: Node,
+  assignedBindings: ReadonlySet<string>
+): ReadonlySet<string> => {
+  if (assignedBindings.size === 0) {
+    return assignedBindings;
+  }
+  const outer = new Set<string>();
+  collectExternalReferences(body).forEach((name) => {
+    if (assignedBindings.has(name)) {
+      outer.add(name);
+    }
+  });
+  return outer;
+};
+
 const collectCallableSyntaxFacts = (body: Node): CallableSyntaxFacts => {
   const assignmentPairs: AssignmentPair[] = [];
   const calleeCandidates = new Set<string>();
   const localAccessors = new Map<string, CallableNode>();
   const localCallables = new Map<string, CallableNode>();
   const localClasses = new Map<string, ClassNode>();
+  const assignedBindings = new Set<string>();
   const addClass = (name: string, classNode: ClassNode): void => {
     const path = createOxcRuntimePropertyPath(name).key;
     localClasses.set(name, classNode);
@@ -85,6 +107,9 @@ const collectCallableSyntaxFacts = (body: Node): CallableSyntaxFacts => {
       collectPatternNames(current.left).length > 0
     ) {
       assignmentPairs.push({ pattern: current.left, value: current.right });
+      collectPatternNames(current.left).forEach((name) =>
+        assignedBindings.add(name)
+      );
     }
 
     let callee: Node | null = null;
@@ -112,6 +137,7 @@ const collectCallableSyntaxFacts = (body: Node): CallableSyntaxFacts => {
     localCallables,
     localClasses,
     mutationBindings: collectMutations(body),
+    outerAssignedBindings: collectOuterBindings(body, assignedBindings),
   };
 };
 
