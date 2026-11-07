@@ -1,4 +1,5 @@
 import { createOxcLocationLookup } from '../oxc/sourceLocations';
+import { createCallableMutationHintsReader } from '../oxcShaker/callableMutations';
 import * as recursiveProof from './recursiveProof';
 import { collectPureAnnotatedInvocationSpans } from './pureAnnotations';
 import { analyzeProgram, createSpanLookup, parseOxc } from './scopeAnalysis';
@@ -45,6 +46,7 @@ const evaluateOxcStaticResultAt = (
 
   const ctx: ExtractionContext = {
     bindingIndex: analysis.bindingIndex,
+    callableMutationHints: createCallableMutationHintsReader(program),
     code,
     currentInsertionPoint: 0,
     currentExpressionStart: expression.start,
