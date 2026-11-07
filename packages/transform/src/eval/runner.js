@@ -854,15 +854,18 @@ const createWindow = async () => {
   try {
     debug('happyDom:import:start');
     const importStart = Date.now();
-    const { Window, GlobalWindow } = await withTimeout(
+    const { Window } = await withTimeout(
       loadHappyDom(),
       HAPPY_DOM_TIMEOUT_MS,
       'happy-dom import'
     );
     debug('happyDom:import:done', Date.now() - importStart);
-    const HappyWindow = GlobalWindow || Window;
     const windowStart = Date.now();
-    const win = new HappyWindow();
+    // Window contextifies itself and exposes its own realm's intrinsics.
+    // GlobalWindow is meant to replace the host global and overwrites them
+    // with the host's, so literals and global constructors would come from
+    // different realms in the evaluated code.
+    const win = new Window();
     debug('happyDom:window:done', Date.now() - windowStart);
     win.Buffer = Buffer;
     win.Uint8Array = Uint8Array;
