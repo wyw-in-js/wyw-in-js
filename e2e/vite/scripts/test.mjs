@@ -388,6 +388,41 @@ async function runPartiallyUsedDestructuringCase() {
   }
 }
 
+// DOM emulation is on by default; literals and global constructors seen by
+// the evaluated code must still belong to one realm.
+async function runEvalRealmCase() {
+  const outDir = path.resolve(PKG_DIR, 'dist-eval-realm');
+
+  try {
+    await fs.rm(outDir, { recursive: true, force: true });
+    await build({
+      build: {
+        cssMinify: false,
+        lib: {
+          entry: path.resolve(PKG_DIR, 'src/eval-realm/index.js'),
+          fileName: 'index',
+          formats: ['es'],
+        },
+        outDir,
+      },
+      configFile: false,
+      logLevel: 'silent',
+      plugins: [wyw()],
+      root: PKG_DIR,
+    });
+
+    const cssFile = await findFileMatching(outDir, (filePath) =>
+      filePath.endsWith('.css')
+    );
+    const css = normalizeLineEndings(await fs.readFile(cssFile, 'utf-8'));
+    if (!/--realm:\s*true true true true;/.test(css)) {
+      throw new Error(`Expected --realm: true true true true, got:\n${css}`);
+    }
+  } finally {
+    await fs.rm(outDir, { recursive: true, force: true });
+  }
+}
+
 async function assertFileMatches(filePath, pattern) {
   const contents = normalizeLineEndings(await fs.readFile(filePath, 'utf-8'));
 
@@ -578,6 +613,9 @@ const main = async () => {
 
   console.log(colors.blue('Running case:'), 'partiallyUsedDestructuring');
   await runPartiallyUsedDestructuringCase();
+
+  console.log(colors.blue('Running case:'), 'evalRealm');
+  await runEvalRealmCase();
 
   console.log(colors.blue('Running case:'), 'loadedCode');
   await assertLoadedCode(PKG_DIR);
