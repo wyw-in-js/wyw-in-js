@@ -1459,13 +1459,12 @@ export const collectDangerousCodeReplacementsWithOxc = (
         return;
       }
 
-      if (
-        node.type === 'UnaryExpression' &&
-        node.operator === 'typeof' &&
-        node.argument.type === 'Identifier' &&
-        ssrCheckFields.has(node.argument.name) &&
-        !hasBinding(scope, node.argument.name)
-      ) {
+      const operand =
+        node.type === 'UnaryExpression' && node.operator === 'typeof'
+          ? unwrapOxcRuntimeExpression(node.argument, false)
+          : null;
+      const name = operand?.type === 'Identifier' ? operand.name : null;
+      if (name && ssrCheckFields.has(name) && !hasBinding(scope, name)) {
         replacements.push({
           start: node.start,
           end: node.end,
