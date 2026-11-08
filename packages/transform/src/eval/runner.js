@@ -9,6 +9,10 @@ import NativeModule, { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { Minimatch } from 'minimatch';
 
+// The runner runs as plain ESM in Node, which needs the file extension.
+// eslint-disable-next-line import/extensions
+import { createHappyDomWindow } from './happyDomWindow.js';
+
 class LruCache {
   constructor(maxSize) {
     this.maxSize = Math.max(1, maxSize);
@@ -854,18 +858,14 @@ const createWindow = async () => {
   try {
     debug('happyDom:import:start');
     const importStart = Date.now();
-    const { Window } = await withTimeout(
+    const happyDom = await withTimeout(
       loadHappyDom(),
       HAPPY_DOM_TIMEOUT_MS,
       'happy-dom import'
     );
     debug('happyDom:import:done', Date.now() - importStart);
     const windowStart = Date.now();
-    // Window contextifies itself and exposes its own realm's intrinsics.
-    // GlobalWindow is meant to replace the host global and overwrites them
-    // with the host's, so literals and global constructors would come from
-    // different realms in the evaluated code.
-    const win = new Window();
+    const win = createHappyDomWindow(happyDom);
     debug('happyDom:window:done', Date.now() - windowStart);
     win.Buffer = Buffer;
     win.Uint8Array = Uint8Array;
