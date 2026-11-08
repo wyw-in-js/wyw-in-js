@@ -366,6 +366,36 @@ describe('oxc preeval transforms', () => {
       ).toBe('red');
     });
 
+    it('replaces SSR typeof checks of a parenthesized global', () => {
+      expect(
+        removeDangerousCodeWithOxc(
+          'if (typeof(window) !== "undefined") { doBrowserWork(); }',
+          filename
+        )
+      ).toContain('"undefined" !== "undefined"');
+    });
+
+    it.each([
+      'typeof (window as any)',
+      'typeof window!',
+      'typeof(document)',
+      'typeof ((window))',
+      'typeof (window as any)!',
+      'typeof (window satisfies object)',
+    ])('replaces the whole SSR typeof check %s', (check) => {
+      expect(
+        removeDangerousCodeWithOxc(`export const env = ${check};`, filename)
+      ).toBe('export const env = "undefined";');
+    });
+
+    it.each([
+      'const window = {}; export const env = typeof(window);',
+      'export const env = typeof (window.foo);',
+      'export const env = typeof (someOtherGlobal);',
+    ])('keeps a typeof check that is not an SSR check: %s', (code) => {
+      expect(removeDangerousCodeWithOxc(code, filename)).toBe(code);
+    });
+
     it('removes control statements whose bodies are stripped', () => {
       expect(
         removeDangerousCodeWithOxc(
