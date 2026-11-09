@@ -616,3 +616,37 @@ describe('eval realm', () => {
     EVAL_TEST_TIMEOUT
   );
 });
+
+describe('evaluated dependencies', () => {
+  it(
+    'sees an outer binding that a called function reassigns',
+    async () => {
+      await withProject(
+        {
+          'entry.js': dedent`
+            import { css } from 'test-css-processor';
+            import { V } from './dep';
+
+            export const className = css\`
+              --value: ${'${V}'};
+            \`;
+          `,
+          'dep.js': dedent`
+            let n = 0;
+            function init() {
+              n = 5;
+            }
+            init();
+            export const V = n;
+          `,
+        },
+        async ({ transformEntry }) => {
+          const css = await transformEntry();
+
+          expect(css.value).toBe('5');
+        }
+      );
+    },
+    EVAL_TEST_TIMEOUT
+  );
+});

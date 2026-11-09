@@ -55,9 +55,10 @@ export const mergeProvenanceClosureNode = (
 
 /**
  * Resolves a binding to the roots its alias graph reaches: bindings without an
- * alias entry. One depth-first walk visits every alias at most once, so the
- * work is linear in the graph; the roots keep the order of a walk over every
- * path, which is the order their first path is found in.
+ * alias entry, and bindings whose entry includes themselves because their own
+ * value is one of their sources. One depth-first walk visits every alias at
+ * most once, so the work is linear in the graph; the roots keep the order of a
+ * walk over every path, which is the order their first path is found in.
  */
 export const resolveProvenanceAliases = (
   binding: string,
@@ -68,9 +69,10 @@ export const resolveProvenanceAliases = (
   const pending: Iterator<string>[] = [];
   const enter = (current: string): void => {
     const mapped = aliases.get(current);
-    if (!mapped) {
+    if (!mapped || mapped.has(current)) {
       roots.add(current);
-    } else if (!visited.has(current)) {
+    }
+    if (mapped && !visited.has(current)) {
       visited.add(current);
       pending.push(mapped.values());
     }
@@ -86,6 +88,21 @@ export const resolveProvenanceAliases = (
     }
   }
   return roots;
+};
+
+/**
+ * Makes each binding without an alias entry keep itself as a root once it gains
+ * aliases, as an outer binding does when a callable replaces its value.
+ */
+export const addSelfProvenanceAliases = (
+  bindings: Iterable<string>,
+  aliases: Map<string, Set<string>>
+): void => {
+  for (const binding of bindings) {
+    if (!aliases.has(binding)) {
+      aliases.set(binding, new Set([binding]));
+    }
+  }
 };
 
 export const createNormalizedCatalogResolver = <T>(

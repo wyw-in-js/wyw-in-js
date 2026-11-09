@@ -547,6 +547,42 @@ async function runCalledMutationsCase() {
   }
 }
 
+// The values are set by a function and a class constructor that reassign
+// module bindings; the evaluated module must keep those calls. The module is
+// executed, so the shaker decides which of its statements run.
+async function runOuterReassignmentCase() {
+  const outDir = path.resolve(PKG_DIR, 'dist-outer-reassignment');
+
+  try {
+    await fs.rm(outDir, { recursive: true, force: true });
+    await build({
+      build: {
+        cssMinify: false,
+        outDir,
+        rollupOptions: {
+          input: path.resolve(PKG_DIR, 'src/outer-reassignment/index.js'),
+        },
+      },
+      configFile: false,
+      logLevel: 'silent',
+      plugins: [wyw({ eval: { strategy: 'execute' } })],
+      root: PKG_DIR,
+    });
+
+    const cssFile = await findFileMatching(outDir, (filePath) =>
+      filePath.endsWith('.css')
+    );
+    const css = normalizeLineEndings(await fs.readFile(cssFile, 'utf-8'));
+    for (const declaration of [/padding:\s*5px/, /z-index:\s*2;/]) {
+      if (!declaration.test(css)) {
+        throw new Error(`Expected ${declaration} in the CSS, got:\n${css}`);
+      }
+    }
+  } finally {
+    await fs.rm(outDir, { recursive: true, force: true });
+  }
+}
+
 async function assertFileMatches(filePath, pattern) {
   const contents = normalizeLineEndings(await fs.readFile(filePath, 'utf-8'));
 
@@ -749,6 +785,9 @@ const main = async () => {
 
   console.log(colors.blue('Running case:'), 'calledMutations');
   await runCalledMutationsCase();
+
+  console.log(colors.blue('Running case:'), 'outerReassignment');
+  await runOuterReassignmentCase();
 
   console.log(colors.blue('Running case:'), 'loadedCode');
   await assertLoadedCode(PKG_DIR);

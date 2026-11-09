@@ -4823,3 +4823,116 @@ describe('shakeOxcToESM', () => {
     expect(imports.has('./types')).toBe(false);
   });
 });
+
+describe('shakeOxcToESM outer binding reassignments', () => {
+  const runValue = (input: string): { code: string; value: unknown } => {
+    const { code } = run(['V'], input);
+    const emitted = emitOxcCommonJS(code, filename);
+    const module = { exports: {} as Record<string, unknown> };
+    vm.runInNewContext(emitted.code, { exports: module.exports, module });
+    return { code, value: module.exports.V };
+  };
+
+  it.each([
+    [
+      'a function assigns the binding',
+      'let n = 0; function init() { n = 5; } init(); export const V = n;',
+      'init();',
+      5,
+    ],
+    [
+      'a function destructures into the binding',
+      'let n = 0; function init() { [n] = [5]; } init(); export const V = n;',
+      'init();',
+      5,
+    ],
+    [
+      'a class constructor assigns the binding',
+      'let c = 0; class Q { constructor() { c = 2; } } new Q(); export const V = c;',
+      'new Q();',
+      2,
+    ],
+    [
+      'a function assigns the binding from its own value',
+      'let n = 0; function init() { n = n || 5; } init(); export const V = n;',
+      'init();',
+      5,
+    ],
+    [
+      'a nested call assigns a parameter to the binding',
+      'let n = 0; function set(v) { n = v; } function init() { set(5); } init(); export const V = n;',
+      'init();',
+      5,
+    ],
+    [
+      'a function assigns the binding after a block-scoped shadow',
+      'let n = 0; function init() { { let n; n = 1; } n = 5; } init(); export const V = n;',
+      'init();',
+      5,
+    ],
+    [
+      'a function assigns the binding with a compound operator',
+      'let n = 0; function init() { n += 5; } init(); export const V = n;',
+      'init();',
+      5,
+    ],
+    [
+      'a function updates the binding',
+      'let n = 0; function init() { n++; } init(); export const V = n;',
+      'init();',
+      1,
+    ],
+    [
+      'an arrow function assigns the binding',
+      'let n = 0; const init = () => { n = 5; }; init(); export const V = n;',
+      'init();',
+      5,
+    ],
+    [
+      'a function mutates a property of the binding',
+      'const o = { x: 0 }; function init() { o.x = 5; } init(); export const V = o.x;',
+      'init();',
+      5,
+    ],
+    [
+      'a function mutates the binding through a reassigned outer alias',
+      'const o = { x: 0 }; let n; function init() { n = o; n.x = 5; } init(); export const V = o.x;',
+      'init();',
+      5,
+    ],
+  ])('keeps the call when %s', (_, input, call, expected) => {
+    const { code, value } = runValue(input);
+
+    expect(code).toContain(call);
+    expect(value).toBe(expected);
+  });
+
+  it.each([
+    [
+      'a local declaration',
+      'let n = 0; function init() { let n; n = 5; } init(); export const V = n;',
+    ],
+    [
+      'a parameter',
+      'let n = 0; function init(n) { n = 5; } init(); export const V = n;',
+    ],
+    [
+      'a catch parameter',
+      'let n = 0; function init() { try { init.x(); } catch (n) { n = 5; } } init(); export const V = n;',
+    ],
+  ])('removes the call when the assigned binding is %s', (_, input) => {
+    const { code, value } = runValue(input);
+
+    expect(code).not.toContain('init();');
+    expect(value).toBe(0);
+  });
+
+  it('removes the call when the reassigned binding is not used', () => {
+    const { code, value } = runValue(
+      'let n = 0; function init() { n = 5; } init(); export const V = 1;'
+    );
+
+    expect(code).not.toContain('init();');
+    expect(value).toBe(1);
+  });
+});
