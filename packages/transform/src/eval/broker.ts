@@ -39,11 +39,13 @@ import { isSuperSet, mergeOnly } from '../transform/Entrypoint.helpers';
 import { oxcShaker } from '../shaker';
 import {
   beginEvalTelemetry,
-  hasEvalTelemetryReporter,
   recordEvalBrokerLifecycle,
   type EvalBrokerLifecycleEvent,
-  type EvalTelemetryToken,
 } from '../debug/evalTelemetry';
+import {
+  NOOP_EVAL_PREPARATION_OBSERVER,
+  type EvalObserver,
+} from '../telemetry/observer';
 
 import {
   type EvalRunnerInitPayload,
@@ -277,7 +279,7 @@ export class EvalBroker {
 
   private activeEntrypoint: Entrypoint | null = null;
 
-  private activeEvalTelemetry: EvalTelemetryToken | undefined;
+  private activeEvalTelemetry: EvalObserver | undefined;
 
   private currentServices: EpochServices;
 
@@ -348,9 +350,7 @@ export class EvalBroker {
     reason: string,
     includeMirror = false
   ): void {
-    const { eventEmitter } = this.currentServices;
-    if (!hasEvalTelemetryReporter(eventEmitter)) return;
-    recordEvalBrokerLifecycle(eventEmitter, this, () => ({
+    recordEvalBrokerLifecycle(this.currentServices.eventEmitter, this, () => ({
       event,
       reason,
       ...(includeMirror ? { mirror: this.loadMirror.snapshot() } : {}),
@@ -458,11 +458,11 @@ export class EvalBroker {
       getServicesCacheOwner(activeServices),
       this
     );
-    const telemetry = hasEvalTelemetryReporter(activeServices.eventEmitter)
-      ? beginEvalTelemetry(activeServices.eventEmitter, this, () => ({
-          entrypoint: entrypoint.name,
-        }))
-      : undefined;
+    const telemetry = beginEvalTelemetry(
+      activeServices.eventEmitter,
+      this,
+      () => ({ entrypoint: entrypoint.name })
+    );
     return new Promise<EvaluateResult>((resolve, reject) => {
       const pendingEval: PendingEval = {
         cacheGeneration: this.getCacheGeneration(
@@ -2719,40 +2719,35 @@ export class EvalBroker {
         requiredOnly.includes('__wywPreval') || !cached
           ? requiredOnly
           : mergeOnly(cached.only, requiredOnly);
-      const preparationTelemetry = telemetry?.beginPreparation(id, prepareOnly);
+      const preparation =
+        telemetry?.beginPreparation(id, prepareOnly) ??
+        NOOP_EVAL_PREPARATION_OBSERVER;
       let prepared: PreparedModule;
       try {
         assertPreparedPublication();
-        const preparedWithPublication = preparationTelemetry
-          ? preparationTelemetry.measureStage('prepare', () =>
-              prepareModuleOnDemand(
-                services,
-                id,
-                prepareOnly,
-                preparationTelemetry,
-                evaluatedEntrypoint?.graphTraversalToken,
-                evaluatedEntrypoint ?? undefined
-              )
-            )
-          : prepareModuleOnDemand(
+        const preparedWithPublication = preparation.measureStage(
+          'prepare',
+          () =>
+            prepareModuleOnDemand(
               services,
               id,
               prepareOnly,
-              undefined,
+              preparation,
               evaluatedEntrypoint?.graphTraversalToken,
               evaluatedEntrypoint ?? undefined
-            );
+            )
+        );
         prepared = preparedWithPublication;
         expectedPublication = preparedWithPublication[
           PREPARED_MODULE_PUBLICATION
         ] as EntrypointPublication;
         assertPreparedPublication();
       } catch (error) {
-        preparationTelemetry?.fail();
+        preparation.fail();
         throw error;
       }
       const hash = hashContent(prepared.code);
-      preparationTelemetry?.finish({
+      preparation.finish({
         code: prepared.code,
         imports: prepared.imports,
         only: prepared.only,
@@ -3107,13 +3102,11 @@ export const getEvalBroker = (
       getServicesCacheOwner(epochServices),
       cached.broker
     );
-    if (hasEvalTelemetryReporter(services.eventEmitter)) {
-      recordEvalBrokerLifecycle(services.eventEmitter, cached.broker, () => ({
-        event: 'broker-reused',
-        reason:
-          cached.key === cacheKey ? 'stable-cache-key' : 'shared-runner-scope',
-      }));
-    }
+    recordEvalBrokerLifecycle(services.eventEmitter, cached.broker, () => ({
+      event: 'broker-reused',
+      reason:
+        cached.key === cacheKey ? 'stable-cache-key' : 'shared-runner-scope',
+    }));
     cached.key = cacheKey;
     return cached.broker;
   }

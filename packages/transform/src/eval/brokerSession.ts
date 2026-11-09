@@ -13,7 +13,7 @@ import type {
 } from '@wyw-in-js/shared';
 
 import { TransformCacheCollection, type TransformCacheEpoch } from '../cache';
-import type { EvalTelemetryToken } from '../debug/evalTelemetry';
+import type { EvalObserver } from '../telemetry/observer';
 import type { ParentEntrypoint } from '../types';
 import type { Entrypoint } from '../transform/Entrypoint';
 import type { IEvaluatedEntrypoint } from '../transform/EvaluatedEntrypoint';
@@ -198,7 +198,7 @@ export type PendingEval = {
   cacheGeneration: CacheGeneration;
   entrypoint: Entrypoint;
   services: EpochServices;
-  telemetry: EvalTelemetryToken | undefined;
+  telemetry: EvalObserver | undefined;
   resolve: (value: EvaluateResult) => void;
   reject: (reason?: unknown) => void;
 };
