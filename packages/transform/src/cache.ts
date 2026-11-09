@@ -1,10 +1,6 @@
 import { logger } from '@wyw-in-js/shared';
 
 import {
-  recordPipelineCacheClear,
-  recordPipelineCacheRequest,
-} from './debug/pipelineTelemetry';
-import {
   CacheLifecycle,
   type TransformCacheEpoch,
 } from './cache/cacheLifecycle';
@@ -15,6 +11,7 @@ import {
 import type { BarrelManifestCacheEntry } from './transform/barrelManifest.types';
 import type { Entrypoint } from './transform/Entrypoint';
 import type { IEvaluatedEntrypoint } from './transform/EvaluatedEntrypoint';
+import { currentPipelineObserver } from './telemetry/observer';
 import { getFileIdx } from './utils/getFileIdx';
 
 interface ICaches<TEntrypoint extends IBaseCachedEntrypoint> {
@@ -63,16 +60,17 @@ export class TransformCacheCollection<
   }
 
   protected clearCachesForKeySaltChange(reason: string): void {
-    recordPipelineCacheClear(
+    const observer = currentPipelineObserver();
+    observer.recordCacheClear(
       'barrelManifests',
       reason,
       this.barrelManifests.size
     );
     this.barrelManifests.clear();
-    recordPipelineCacheClear('entrypoints', reason, this.entrypoints.size);
+    observer.recordCacheClear('entrypoints', reason, this.entrypoints.size);
     this.entrypoints.clear();
     this.publicationVersion += 1;
-    recordPipelineCacheClear('exports', reason, this.exports.size);
+    observer.recordCacheClear('exports', reason, this.exports.size);
     this.exports.clear();
   }
 
@@ -221,7 +219,11 @@ export class TransformCacheCollection<
       this.publicationVersion += 1;
     }
     const cache = this[cacheName] as Map<string, unknown>;
-    recordPipelineCacheClear(cacheName, 'explicit', cache.size);
+    currentPipelineObserver().recordCacheClear(
+      cacheName,
+      'explicit',
+      cache.size
+    );
     cache.clear();
     if (cacheName === 'entrypoints') {
       this.recordEntrypointsCleared();
@@ -251,7 +253,11 @@ export class TransformCacheCollection<
     const cache = this[cacheName] as Map<string, TValue>;
     const result = cache.get(this.getKey(key));
     loggers[cacheName]('get', key, result === undefined ? 'miss' : 'hit');
-    recordPipelineCacheRequest(cacheName, 'get', result !== undefined);
+    currentPipelineObserver().recordCacheRequest(
+      cacheName,
+      'get',
+      result !== undefined
+    );
     return result;
   }
 
@@ -259,7 +265,7 @@ export class TransformCacheCollection<
     const cache = this[cacheName] as Map<string, unknown>;
     const result = cache.has(this.getKey(key));
     loggers[cacheName]('has', key, result);
-    recordPipelineCacheRequest(cacheName, 'has', result);
+    currentPipelineObserver().recordCacheRequest(cacheName, 'has', result);
     return result;
   }
 
@@ -277,7 +283,7 @@ export class TransformCacheCollection<
       );
     }
     cache.delete(cacheKey);
-    recordPipelineCacheClear(cacheName, 'invalidate', 1);
+    currentPipelineObserver().recordCacheClear(cacheName, 'invalidate', 1);
     this.clearFreshness(cacheName, key);
   }
 }

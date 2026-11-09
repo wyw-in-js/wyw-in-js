@@ -5,7 +5,7 @@ import {
   type CacheRecoveryReason,
 } from '../transform/actions/CacheEpochAbortedError';
 import { CacheKeySaltBusyError } from '../transform/actions/CacheKeySaltBusyError';
-import { recordPipelineCacheSalt } from '../debug/pipelineTelemetry';
+import { currentPipelineObserver } from '../telemetry/observer';
 import { hashContent } from '../utils/contentHash';
 import { CacheFreshness, type PendingUnknownGraph } from './cacheFreshness';
 import type { IBaseCachedEntrypoint } from './cacheTypes';
@@ -166,7 +166,7 @@ export abstract class CacheLifecycle<
 
     const previous = this.keySalt;
     if (previous === keySalt) {
-      recordPipelineCacheSalt(previous, keySalt, 'unchanged');
+      currentPipelineObserver().recordCacheSalt(previous, keySalt, 'unchanged');
       return;
     }
     if (
@@ -284,7 +284,7 @@ export abstract class CacheLifecycle<
   private applyKeySalt(keySalt: string | null): void {
     const previous = this.keySalt;
     if (previous === keySalt) {
-      recordPipelineCacheSalt(previous, keySalt, 'unchanged');
+      currentPipelineObserver().recordCacheSalt(previous, keySalt, 'unchanged');
       return;
     }
 
@@ -293,7 +293,7 @@ export abstract class CacheLifecycle<
     this.resetVersion += 1;
 
     if (previous === null && keySalt) {
-      recordPipelineCacheSalt(previous, keySalt, 'migrate');
+      currentPipelineObserver().recordCacheSalt(previous, keySalt, 'migrate');
       const remap = (key: string) => this.getKey(key);
       this.migrateCacheKeys(remap);
       this.migrateFreshnessKeys(remap);
@@ -301,7 +301,7 @@ export abstract class CacheLifecycle<
     }
 
     const reason = keySalt === null ? 'salt-disable' : 'salt-change';
-    recordPipelineCacheSalt(
+    currentPipelineObserver().recordCacheSalt(
       previous,
       keySalt,
       keySalt === null ? 'disable' : 'clear'

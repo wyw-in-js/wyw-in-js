@@ -6,14 +6,8 @@ import { parseSync } from 'oxc-parser';
 const srcDir = resolve(__dirname, '..');
 const debugDir = join(srcDir, 'debug');
 
-// Cache modules may still report into pipeline telemetry through these
-// write-only sinks until the telemetry observer replaces them. Nothing that
-// the cache reads (hashes, memo lookups, flags) may come from debug modules.
-const WRITE_ONLY_TELEMETRY_SINKS = [
-  'recordPipelineCacheClear',
-  'recordPipelineCacheRequest',
-  'recordPipelineCacheSalt',
-];
+// Cache modules report into telemetry through the observer of the current
+// root; nothing in them, sinks included, may come from debug modules.
 
 type ImportedBinding = { name: string; target: string };
 
@@ -94,7 +88,7 @@ const cacheModules = [
 const toSrcPath = (file: string) => relative(srcDir, file).split(sep).join('/');
 
 describe('cache → debug boundary', () => {
-  it('lets cache modules use only write-only telemetry sinks from debug', () => {
+  it('keeps every debug module out of the imports of cache modules', () => {
     const debugImports = cacheModules.flatMap((file) =>
       collectRelativeImports(file)
         .filter(({ target }) => isInside(target, debugDir))
@@ -105,16 +99,7 @@ describe('cache → debug boundary', () => {
         }))
     );
 
-    expect(
-      debugImports.filter(
-        ({ name }) => !WRITE_ONLY_TELEMETRY_SINKS.includes(name)
-      )
-    ).toEqual([]);
-    // Keep the exception list honest: once a sink stops being imported, it
-    // must be removed from the list rather than silently re-allowed later.
-    expect([...new Set(debugImports.map(({ name }) => name))].sort()).toEqual(
-      WRITE_ONLY_TELEMETRY_SINKS
-    );
+    expect(debugImports).toEqual([]);
   });
 
   it('keeps content hashing and cache types out of reach of debug modules', () => {
