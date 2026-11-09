@@ -394,6 +394,15 @@ export const evaluateStatic = (
       return unknownOutcome(UnknownReason.FunctionParameter);
     }
 
+    // A function or class body may change a module-level binding whenever it
+    // runs, e.g. from a top-level call, a constructor, or a callback.
+    if (
+      binding.isRoot &&
+      ctx.callableMutationHints().mutatedNames.has(binding.name)
+    ) {
+      return unknownOutcome(UnknownReason.Mutation);
+    }
+
     const bindingMutations = getBindingDirectTimeline(binding, ctx);
     const bindingMutationHazards = getBindingHazardTimeline(binding, ctx);
     const bindingHasChanges =
@@ -600,6 +609,15 @@ export const evaluateStatic = (
       return bindingHasChanges && value.kind === 'opaque-runtime'
         ? unknownOutcome(UnknownReason.Mutation)
         : value;
+    }
+
+    if (
+      binding.isRoot &&
+      typeof value === 'object' &&
+      value !== null &&
+      ctx.callableMutationHints().callArgumentNames.has(binding.name)
+    ) {
+      return unknownOutcome(UnknownReason.Mutation);
     }
 
     if (!bindingHasChanges) {

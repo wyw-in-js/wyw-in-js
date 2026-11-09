@@ -505,6 +505,48 @@ async function runEvalRealmCase() {
   }
 }
 
+// Module-level values that functions change while the modules load. The
+// default eval strategy has to evaluate them, not take their initial values.
+async function runCalledMutationsCase() {
+  const outDir = path.resolve(PKG_DIR, 'dist-called-mutations');
+
+  try {
+    await fs.rm(outDir, { recursive: true, force: true });
+    await build({
+      build: {
+        cssMinify: false,
+        lib: {
+          entry: path.resolve(PKG_DIR, 'src/called-mutations/index.js'),
+          fileName: 'index',
+          formats: ['es'],
+        },
+        outDir,
+      },
+      configFile: false,
+      logLevel: 'silent',
+      plugins: [wyw()],
+      root: PKG_DIR,
+    });
+
+    const cssFile = await findFileMatching(outDir, (filePath) =>
+      filePath.endsWith('.css')
+    );
+    const css = normalizeLineEndings(await fs.readFile(cssFile, 'utf-8'));
+    for (const declaration of [
+      /padding:\s*5px/,
+      /z-index:\s*1;/,
+      /width:\s*7px/,
+      /gap:\s*3px/,
+    ]) {
+      if (!declaration.test(css)) {
+        throw new Error(`Expected ${declaration} in the CSS, got:\n${css}`);
+      }
+    }
+  } finally {
+    await fs.rm(outDir, { recursive: true, force: true });
+  }
+}
+
 async function assertFileMatches(filePath, pattern) {
   const contents = normalizeLineEndings(await fs.readFile(filePath, 'utf-8'));
 
@@ -704,6 +746,9 @@ const main = async () => {
 
   console.log(colors.blue('Running case:'), 'evalRealm');
   await runEvalRealmCase();
+
+  console.log(colors.blue('Running case:'), 'calledMutations');
+  await runCalledMutationsCase();
 
   console.log(colors.blue('Running case:'), 'loadedCode');
   await assertLoadedCode(PKG_DIR);
