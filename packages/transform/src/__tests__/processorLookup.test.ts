@@ -384,6 +384,64 @@ describe('getProcessorForImport', () => {
     );
   });
 
+  it('shares one package lookup between importers in the directories of a package', () => {
+    const packageName = 'test-package-lookup-self-reference';
+    const root = createTempRoot();
+    tempRoots.push(root);
+    // The package refers to itself by name: nothing is installed, so the
+    // lookup finds the nearest package.json by its name.
+    writeProcessorPackage(root, packageName, reexportFixtureProcessor);
+
+    const lookupFrom = (importer: string) =>
+      getProcessorForImport(
+        { imported: 'css', source: packageName },
+        importer,
+        { tagResolver: undefined }
+      )[0];
+
+    expect(lookupFrom(path.join(root, 'src', 'a', 'entry.tsx'))?.name).toBe(
+      'CssProcessor'
+    );
+
+    writeFileSync(
+      path.join(root, 'package.json'),
+      JSON.stringify({
+        name: `${packageName}-renamed`,
+        main: './index.js',
+        'wyw-in-js': { tags: { css: './processor.js' } },
+      })
+    );
+
+    expect(lookupFrom(path.join(root, 'src', 'b', 'entry.tsx'))?.name).toBe(
+      'CssProcessor'
+    );
+  });
+
+  it("keeps a self-referencing package's processor to its own directories", () => {
+    const packageName = 'test-package-lookup-self-reference-nested';
+    const root = createTempRoot();
+    tempRoots.push(root);
+    writeProcessorPackage(root, packageName, reexportFixtureProcessor);
+    const subPackageDir = path.join(root, 'sub');
+    mkdirSync(subPackageDir, { recursive: true });
+    writeFileSync(
+      path.join(subPackageDir, 'package.json'),
+      JSON.stringify({ name: `${packageName}-sub` })
+    );
+
+    const lookupFrom = (importer: string) =>
+      getProcessorForImport(
+        { imported: 'css', source: packageName },
+        importer,
+        { tagResolver: undefined }
+      )[0];
+
+    expect(lookupFrom(path.join(root, 'src', 'x.tsx'))?.name).toBe(
+      'CssProcessor'
+    );
+    expect(lookupFrom(path.join(subPackageDir, 'src', 'y.tsx'))).toBeNull();
+  });
+
   it('reuses the lookup for importers in the same directory', () => {
     const findPackageJSONSpy = jest.spyOn(shared, 'findPackageJSON');
     const packageName = 'test-package-lookup-same-directory';
