@@ -61,13 +61,6 @@ export type CodeMeasurementBucket =
   | CodeMeasurementEntry
   | CodeMeasurementEntry[];
 
-export type CodeMeasurementCache = {
-  codeUnits: number;
-  count: number;
-  entries: Map<number, CodeMeasurementBucket>;
-  evictionKeys: IterableIterator<number>;
-};
-
 export type CleanupRemovalKinds = {
   emptyBlocks: number;
   expressions: number;
@@ -119,7 +112,6 @@ export type PipelineAccumulator = {
     attemptedIterations: number;
     attemptedRanges: number;
   };
-  codeMeasurements: CodeMeasurementCache;
   closed: boolean;
   dangerousByFile: Map<string, { calls: number; durationMs: number }>;
   entrypoints: {
@@ -139,7 +131,6 @@ export type PipelineAccumulator = {
   }>;
   lastCode: string | undefined;
   lastMeasurement: CodeMeasurement | undefined;
-  lastSharedMissCode: string | undefined;
   localCodeMeasurements: Map<number, CodeMeasurementBucket>;
   onlyNormalizations: Map<readonly string[], { key: string; only: string[] }>;
   parse: {

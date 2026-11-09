@@ -100,7 +100,6 @@ type PipelineTelemetrySink = (
   summary: PipelineTelemetrySummary | PipelineTelemetryCompactSummary
 ) => void;
 type PipelineTelemetryReporter = {
-  codeMeasurements: PipelineAccumulator['codeMeasurements'];
   emit: (accumulator: PipelineAccumulator) => void;
 };
 
@@ -108,20 +107,11 @@ const registerPipelineTelemetryEmitter = (
   emitter: EventEmitter,
   emit: PipelineTelemetryReporter['emit']
 ): (() => void) => {
-  const codeMeasurementEntries: PipelineAccumulator['codeMeasurements']['entries'] =
-    new Map();
-  const reporter: PipelineTelemetryReporter = {
-    codeMeasurements: {
-      codeUnits: 0,
-      count: 0,
-      entries: codeMeasurementEntries,
-      evictionKeys: codeMeasurementEntries.keys(),
-    },
-    emit,
-  };
+  const reporter: PipelineTelemetryReporter = { emit };
   reporterByEmitter.set(emitter, reporter);
   // Revisions are keyed by the same SHA-256 digests the transform cache
-  // computes, so keep the shared digest memo alive while reporting.
+  // computes, so keep the shared digest memo alive while reporting: it is
+  // what spares hashing a revision again in every root that observes it.
   const releaseContentHashMemo = retainContentHashMemo();
   let registered = true;
 
@@ -132,11 +122,6 @@ const registerPipelineTelemetryEmitter = (
 
     registered = false;
     releaseContentHashMemo();
-    reporter.codeMeasurements.entries.clear();
-    reporter.codeMeasurements.evictionKeys =
-      reporter.codeMeasurements.entries.keys();
-    reporter.codeMeasurements.codeUnits = 0;
-    reporter.codeMeasurements.count = 0;
     if (reporterByEmitter.get(emitter) === reporter) {
       reporterByEmitter.delete(emitter);
     }
@@ -612,7 +597,7 @@ class RecordingPipelineObserver implements PipelineRootObserver {
       measurement = knownMeasurement
         ? getCodeMeasurement(accumulator, code) ??
           setMissingCodeMeasurement(accumulator, code, knownMeasurement)
-        : measureCode(accumulator, code, false);
+        : measureCode(accumulator, code);
     } catch {
       return undefined;
     }
@@ -854,7 +839,7 @@ export const createPipelineTelemetryObserver = (
 
   try {
     return new RecordingPipelineObserver(
-      createAccumulator(createRoot().filename, reporter.codeMeasurements),
+      createAccumulator(createRoot().filename),
       reporter
     );
   } catch {
@@ -885,9 +870,6 @@ const getAccumulator = (): PipelineAccumulator | undefined => {
     ? observer.accumulator
     : undefined;
 };
-
-export const isPipelineTelemetryActive = (): boolean =>
-  getAccumulator() !== undefined;
 
 export const hasPipelineTelemetryReporter = (emitter: EventEmitter): boolean =>
   reporterByEmitter.has(emitter);
