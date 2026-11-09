@@ -1,5 +1,5 @@
-import { readFileSync } from 'fs';
-import { dirname, isAbsolute } from 'path';
+import { existsSync, readFileSync } from 'fs';
+import { dirname, isAbsolute, join } from 'path';
 import { createRequire } from 'module';
 import findUp from 'find-up';
 
@@ -115,13 +115,67 @@ function createPackageJSONLookup(): PackageJSONLookup {
     return packageJSONByFile.get(resolved);
   };
 
-  // Processors look up the same packages from every module in a directory, and
+  // A bare specifier resolves the same way from every directory between the
+  // importer's directory and the nearest directory that holds one of these
+  // entries: Node's `require.resolve` walks the node_modules chain, Bun's also
+  // reads the `paths` of the nearest tsconfig.json or jsconfig.json and the
+  // self-reference of the nearest package.json, and the fallbacks below read
+  // the nearest package.json. That directory is the resolution scope.
+  const scopeMarkers = [
+    'node_modules',
+    'package.json',
+    'tsconfig.json',
+    'jsconfig.json',
+  ];
+
+  // The resolution scope of every directory seen so far.
+  const scopes = new Map<string, string>();
+
+  const hasScopeMarker = (dir: string) =>
+    scopeMarkers.some((marker) => existsSync(join(dir, marker)));
+
+  const resolutionScope = (dir: string): string => {
+    const walked: string[] = [];
+    let current = dir;
+    let scope = scopes.get(current);
+    while (scope === undefined) {
+      walked.push(current);
+      const parent = dirname(current);
+      if (parent === current || hasScopeMarker(current)) {
+        scope = current;
+      } else {
+        current = parent;
+        scope = scopes.get(current);
+      }
+    }
+
+    const found = scope;
+    walked.forEach((walkedDir) => scopes.set(walkedDir, found));
+    return found;
+  };
+
+  // Processors look up the same packages from every module of a package, and
   // a failed `require.resolve` (e.g. a bundler alias) walks every node_modules
-  // level before falling back to reading the nearest package.json.
+  // level before falling back to reading the nearest package.json, so lookups
+  // are shared by the directories of one resolution scope. A path specifier
+  // resolves against the importer's own directory and keeps it as the key.
   const lookups = new Map<string, string | undefined>();
 
+  const lookupDir = (pkgName: string, filename: string | null | undefined) => {
+    if (!filename) {
+      return '';
+    }
+
+    const dir = dirname(filename);
+    const isPathSpecifier =
+      pkgName !== '.' && (pkgName.startsWith('.') || isAbsolute(pkgName));
+    return isAbsolute(filename) && !isPathSpecifier
+      ? resolutionScope(dir)
+      : dir;
+  };
+
   return (pkgName, filename) => {
-    const lookupKey = `${pkgName}\0${filename ? dirname(filename) : ''}`;
+    const lookupKey = `${pkgName}\0${lookupDir(pkgName, filename)}`;
     if (lookups.has(lookupKey)) {
       return lookups.get(lookupKey);
     }
