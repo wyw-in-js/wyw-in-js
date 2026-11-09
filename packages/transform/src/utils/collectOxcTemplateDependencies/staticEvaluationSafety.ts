@@ -36,6 +36,7 @@ import type {
   ExtractionContext,
   MutationTimeline,
   OxcFunctionLikeNode,
+  VarReadRule,
 } from './types';
 
 const symbolIteratorPathPart = '\0wyw-static-Symbol.iterator';
@@ -440,11 +441,17 @@ export const isProcessEnvValueAccess = (
   );
 };
 
+export const createVarReadRule = (sourcePosition = false): VarReadRule => ({
+  decidedByExecutionPoint: false,
+  sourcePosition,
+});
+
 /**
  * Whether a `var` is not assigned yet where the read runs. A module `var` is
- * assigned once the execution point passes its declarator. A `var` of a
- * function keeps the source position of the expression: the evaluator does
- * not model where in the function the read runs.
+ * assigned once the execution point passes its declarator; the rule of the
+ * context records a read that the source position would decide otherwise. A
+ * `var` of a function keeps the source position of the expression: the
+ * evaluator does not model where in the function the read runs.
  */
 export const isVarUnassignedAtRead = (
   binding: Binding,
@@ -454,10 +461,17 @@ export const isVarUnassignedAtRead = (
     return false;
   }
 
-  const readPoint = binding.isRoot
-    ? ctx.executionPoint
-    : ctx.currentExpressionStart;
-  return readPoint < binding.declarator.end;
+  const { end } = binding.declarator;
+  const atSourcePosition = ctx.currentExpressionStart < end;
+  if (!binding.isRoot || ctx.varReadRule.sourcePosition) {
+    return atSourcePosition;
+  }
+
+  const atExecutionPoint = ctx.executionPoint < end;
+  if (atExecutionPoint !== atSourcePosition) {
+    ctx.varReadRule.decidedByExecutionPoint = true;
+  }
+  return atExecutionPoint;
 };
 
 /**

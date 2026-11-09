@@ -120,6 +120,19 @@ export type OxcPureCallHint = {
   expressionSource: string;
 };
 
+/**
+ * An expression whose static value in `eval.strategy` "static" is the one
+ * that the source position of a `var` read gives, as earlier versions
+ * computed it, because no value is known where the expression runs.
+ */
+export type OxcStaticVarReadFallback = {
+  /** Zero-based. */
+  column: number;
+  filename: string;
+  line: number;
+  source: string;
+};
+
 export type TemplateExtractionResult = {
   code: string;
   dependencyNames: string[];
@@ -128,6 +141,7 @@ export type TemplateExtractionResult = {
   replacements: OxcEdit[];
   staticValueCandidates: OxcStaticValueCandidate[];
   staticValues: OxcStaticValue[];
+  staticVarReadFallbacks?: OxcStaticVarReadFallback[];
 };
 
 export type StaticBindings = Record<string, Record<string, unknown>>;
@@ -144,6 +158,8 @@ export type ExtractedExpression = {
   staticImports: OxcStaticImportReference[];
   staticMutationGuards: StaticLocalExpression[];
   staticValue?: unknown;
+  /** The static value comes from the source position of a `var` read. */
+  staticValueFromSourcePosition?: boolean;
 };
 
 export type StaticLocalExpression = {
@@ -168,6 +184,23 @@ export type ProgramAnalysis = {
   targetExpressions: Expression[];
   templateLiterals: TemplateLiteral[];
   usedNames: Set<string>;
+};
+
+/**
+ * How the static evaluator decides whether a module `var` is assigned where
+ * it is read.
+ */
+export type VarReadRule = {
+  /**
+   * Set when the execution point decided a read that the source position of
+   * the expression would decide otherwise.
+   */
+  decidedByExecutionPoint: boolean;
+  /**
+   * Compare the source position of the expression instead of the execution
+   * point, as earlier versions did.
+   */
+  readonly sourcePosition: boolean;
 };
 
 export type ExtractionContext = {
@@ -204,4 +237,5 @@ export type ExtractionContext = {
   staticValueCandidates: OxcStaticValueCandidate[];
   staticValues: OxcStaticValue[];
   usedNames: Set<string>;
+  varReadRule: VarReadRule;
 };

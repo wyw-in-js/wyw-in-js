@@ -25,6 +25,7 @@ import {
   createOxcLocationLookup,
 } from '../oxc/sourceLocations';
 import { getProcessorForImport } from '../../processors/processorLookup';
+import { warnStaticVarReadBeforeDeclaration } from '../../transform/helpers/onceWarnings';
 import { normalizeDeclarativeProcessorSemantics } from '../../processors/declarativeSemantics';
 import { resolveProcessorStaticClassName } from '../processorStaticSemantics';
 import { collectUsedNames } from './cleanupBindings';
@@ -41,7 +42,7 @@ import {
   isTagReferenced,
 } from './displayName';
 import { buildParams } from './expressionValues';
-import { usesStaticEvaluation } from '../evalStrategy';
+import { getEvalStrategy, usesStaticEvaluation } from '../evalStrategy';
 import { createProcessor } from './processorFactory';
 import {
   addProcessorDeclaration,
@@ -307,7 +308,8 @@ export const applyOxcProcessors = (
         targetExpressionSpans,
         options.staticBindings,
         processorManagedExpressionSpans,
-        evaltimeRemovedSpans
+        evaltimeRemovedSpans,
+        getEvalStrategy(options)
       );
     } catch (error) {
       if (!(error instanceof OxcSnapshotWriteUnsupportedError)) {
@@ -337,6 +339,7 @@ export const applyOxcProcessors = (
           staticValueCandidates: [],
           staticValues: [],
         });
+  extracted.staticVarReadFallbacks?.forEach(warnStaticVarReadBeforeDeclaration);
 
   const templateExpressionValues = extracted.expressionValues.map(
     (value) =>
