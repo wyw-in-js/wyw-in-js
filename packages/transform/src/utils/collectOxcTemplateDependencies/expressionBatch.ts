@@ -1,6 +1,7 @@
-import type { ExpressionValue } from '@wyw-in-js/shared';
+import type { EvalStrategy, ExpressionValue } from '@wyw-in-js/shared';
 import { ValueType } from '@wyw-in-js/shared';
 import type { Expression, Program } from 'oxc-parser';
+import { DEFAULT_EVAL_STRATEGY } from '../evalStrategy';
 import { applyOxcEdits } from '../oxc/fileEdits';
 import { createOxcLocationLookup } from '../oxc/sourceLocations';
 import { createCallableMutationHintsReader } from '../oxcShaker/callableMutations';
@@ -10,6 +11,7 @@ import { addHoistedCode, expressionSpanKey } from './snapshotReplay';
 import { allocateExpressionName } from './staticLocalPlanning';
 import * as recursiveProof from './recursiveProof';
 import { collectPureAnnotatedInvocationSpans } from './pureAnnotations';
+import { createVarReadRule } from './staticEvaluationSafety';
 import type {
   Binding,
   ExtractedExpression,
@@ -17,6 +19,7 @@ import type {
   ExtractionContext,
   OxcPureCallHint,
   OxcStaticImportReference,
+  OxcStaticVarReadFallback,
   ProgramAnalysis,
   StaticBindings,
   StaticLocalExpression,
@@ -69,7 +72,8 @@ export const createExpressionExtractor = ({
     expression: Expression,
     ctx: ExtractionContext,
     evaluate: boolean,
-    fallbackBindings: ReadonlySet<Binding>
+    fallbackBindings: ReadonlySet<Binding>,
+    strategy: EvalStrategy
   ) => ExtractedExpression;
   literalExpressionValue: (
     expression: Expression,
@@ -93,7 +97,8 @@ export const createExpressionExtractor = ({
     expressions: Expression[],
     staticBindings?: StaticBindings,
     processorManagedExpressionSpans: ExpressionSpan[] = [],
-    allowSnapshotWriteFallback = false
+    allowSnapshotWriteFallback = false,
+    strategy: EvalStrategy = DEFAULT_EVAL_STRATEGY
   ): TemplateExtractionResult => {
     if (expressions.length === 0) {
       return {
@@ -115,6 +120,8 @@ export const createExpressionExtractor = ({
       currentInsertionPoint: insertionPoints[0] ?? 0,
       currentExpressionStart: expressions[0].start,
       dependencyNames: new Set(),
+      // Extracted expressions run lazily, after the whole module.
+      executionPoint: code.length,
       expressionValues: [],
       filename,
       hoistedBindingNames: new Map(),
@@ -141,10 +148,12 @@ export const createExpressionExtractor = ({
       staticValueCandidates: [],
       staticValues: [],
       usedNames: new Set(analysis.usedNames),
+      varReadRule: createVarReadRule(),
     };
 
     const snapshotWriteFallbackBindings = new Set<Binding>();
     const pureCallHints: OxcPureCallHint[] = [];
+    const staticVarReadFallbacks: OxcStaticVarReadFallback[] = [];
     if (allowSnapshotWriteFallback) {
       expressions.forEach((expression, index) => {
         ctx.currentInsertionPoint = insertionPoints[index] ?? 0;
@@ -178,11 +187,13 @@ export const createExpressionExtractor = ({
         staticImports,
         staticMutationGuards,
         staticValue,
+        staticValueFromSourcePosition,
       } = extractExpression(
         expression,
         ctx,
         evaluate,
-        snapshotWriteFallbackBindings
+        snapshotWriteFallbackBindings,
+        strategy
       );
       const expName = allocateExpressionName(ctx);
       pureCallHints.push(
@@ -203,6 +214,15 @@ export const createExpressionExtractor = ({
           name: expName,
           value: staticValue,
         });
+        if (staticValueFromSourcePosition) {
+          const { column, line } = ctx.loc(expression.start);
+          staticVarReadFallbacks.push({
+            column,
+            filename,
+            line,
+            source: ctx.code.slice(expression.start, expression.end),
+          });
+        }
       } else if (
         (staticImports.length > 0 ||
           hasInlinableLocalReference ||
@@ -268,6 +288,7 @@ export const createExpressionExtractor = ({
       replacements: ctx.replacements,
       staticValueCandidates: ctx.staticValueCandidates,
       staticValues: ctx.staticValues,
+      ...(staticVarReadFallbacks.length > 0 ? { staticVarReadFallbacks } : {}),
     };
   };
 };

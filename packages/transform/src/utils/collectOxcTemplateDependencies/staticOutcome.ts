@@ -17,8 +17,8 @@ export enum UnknownReason {
   /** The binding or one of its sources changes before the read. */
   Mutation = 'mutation',
   /**
-   * A `var` read before its declaration. Interpolations are evaluated at the
-   * end of the module, so the value is the one the declaration assigns.
+   * A `var` read where it is not assigned yet: before its declarator at the
+   * execution point. Fallback positions read it as `undefined`.
    */
   ReadBeforeDeclaration = 'read-before-declaration',
   /** An operand is a runtime-only value. */
@@ -27,6 +27,11 @@ export enum UnknownReason {
   Recursion = 'recursion',
   /** A lexical binding is read before its initialization. */
   TemporalDeadZone = 'temporal-dead-zone',
+  /**
+   * A module `var` read that stands before its declaration but runs after it,
+   * while the declaration is not the only write of the `var`.
+   */
+  UnknownAtExecutionPoint = 'unknown-at-execution-point',
   /** The identifier has no binding, so it is a runtime global. */
   UnresolvedBinding = 'unresolved-binding',
   /** The binding has no initializer the evaluator models. */
@@ -143,7 +148,8 @@ export const asOperandFailure = (
 /**
  * Whether the result is an unknown that the legacy fallback rules read as
  * `undefined` in some positions: a build-time `process.env` read or a `var`
- * read before its declaration. The rules live in `readsAsFallbackUndefined`.
+ * read where it is not assigned yet. The rules live in
+ * `readsAsFallbackUndefined`.
  */
 export const isFallbackUndefinedRead = (result: StaticResult): boolean =>
   result === unknownOutcomes[UnknownReason.BuildTimeEnvironment] ||

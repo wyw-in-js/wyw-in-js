@@ -1,6 +1,6 @@
 /* eslint-disable no-restricted-syntax,no-continue,@typescript-eslint/no-use-before-define */
 
-import type { ExpressionValue } from '@wyw-in-js/shared';
+import type { EvalStrategy, ExpressionValue } from '@wyw-in-js/shared';
 import { ValueType } from '@wyw-in-js/shared';
 import type { Expression, Node } from 'oxc-parser';
 import { createExpressionExtractor } from './expressionBatch';
@@ -28,8 +28,9 @@ import {
   getConstantReplacement,
   replaceIdentifierReferences,
 } from './expressionReplacements';
+import { createVarReadRule } from './staticEvaluationSafety';
 import { evaluateStaticOutcome } from './staticEvaluator';
-import { hasStaticRuntimeIdentity } from './staticOutcome';
+import { hasStaticRuntimeIdentity, type StaticOutcome } from './staticOutcome';
 import {
   cloneStaticValue,
   isStaticSerializableValue,
@@ -346,11 +347,42 @@ const literalExpressionValue = (
   } as unknown as Omit<ExpressionValue, 'buildCodeFrameError'>;
 };
 
+/**
+ * Evaluates an extracted expression where it runs, at the end of the module.
+ * In `eval.strategy` "static", an expression that a `var` read leaves without
+ * a value there keeps the value that the source position of the expression
+ * gives, as earlier versions computed it; the caller reports the place.
+ */
+const evaluateExtractedExpression = (
+  expression: Expression,
+  ctx: ExtractionContext,
+  strategy: EvalStrategy
+): { fromSourcePosition: boolean; outcome: StaticOutcome } => {
+  const varReadRule = createVarReadRule();
+  const outcome = evaluateStaticOutcome(expression, { ...ctx, varReadRule });
+  if (
+    outcome.kind === 'known' ||
+    strategy !== 'static' ||
+    !varReadRule.decidedByExecutionPoint
+  ) {
+    return { fromSourcePosition: false, outcome };
+  }
+
+  const earlier = evaluateStaticOutcome(expression, {
+    ...ctx,
+    varReadRule: createVarReadRule(true),
+  });
+  return earlier.kind === 'known'
+    ? { fromSourcePosition: true, outcome: earlier }
+    : { fromSourcePosition: false, outcome };
+};
+
 const extractExpression = (
   expression: Expression,
   ctx: ExtractionContext,
   evaluate: boolean,
-  snapshotWriteFallbackBindings: ReadonlySet<Binding>
+  snapshotWriteFallbackBindings: ReadonlySet<Binding>,
+  strategy: EvalStrategy
 ): ExtractedExpression => {
   const source = ctx.code.slice(expression.start, expression.end);
   const expressionReferences = getReferences(expression, ctx.bindingIndex);
@@ -426,9 +458,15 @@ const extractExpression = (
     });
   let preserveRuntimeIdentity = false;
   let preservedStaticValue: unknown;
+  let staticValueFromSourcePosition = false;
 
   if (evaluate && !expressionHasNestedCallTimeUncertainty(expression, ctx)) {
-    const outcome = evaluateStaticOutcome(expression, ctx);
+    const { fromSourcePosition, outcome } = evaluateExtractedExpression(
+      expression,
+      ctx,
+      strategy
+    );
+    staticValueFromSourcePosition = fromSourcePosition;
     const evaluated = outcome.kind === 'known' ? outcome.value : undefined;
     const literal = outcome.kind === 'known' ? literalCode(evaluated) : null;
     preserveRuntimeIdentity =
@@ -447,6 +485,7 @@ const extractExpression = (
         staticValue: isStaticSerializableValue(evaluated)
           ? cloneStaticValue(evaluated)
           : undefined,
+        staticValueFromSourcePosition,
       };
     }
   }
@@ -782,6 +821,8 @@ const extractExpression = (
       ? []
       : staticMutationGuards,
     staticValue: preservedStaticValue,
+    staticValueFromSourcePosition:
+      staticValueFromSourcePosition && preservedStaticValue !== undefined,
   };
 };
 
@@ -800,7 +841,8 @@ export const collectOxcExpressionDependencies = (
   targetExpressionSpans?: ExpressionSpan[],
   staticBindings?: StaticBindings,
   processorManagedExpressionSpans: ExpressionSpan[] = [],
-  removedExpressionSpans: ExpressionSpan[] = []
+  removedExpressionSpans: ExpressionSpan[] = [],
+  strategy?: EvalStrategy
 ): TemplateExtractionResult => {
   const program = parseOxc(code, filename);
   const analysis = analyzeProgram(program, {
@@ -820,7 +862,9 @@ export const collectOxcExpressionDependencies = (
     analysis,
     analysis.targetExpressions,
     staticBindings,
-    processorManagedExpressionSpans
+    processorManagedExpressionSpans,
+    false,
+    strategy
   );
 };
 

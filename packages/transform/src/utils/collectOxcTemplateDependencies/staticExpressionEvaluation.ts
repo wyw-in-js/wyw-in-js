@@ -4,6 +4,7 @@ import * as recursiveProof from './recursiveProof';
 import { collectPureAnnotatedInvocationSpans } from './pureAnnotations';
 import { analyzeProgram, createSpanLookup, parseOxc } from './scopeAnalysis';
 import { expressionSpanKey } from './snapshotReplay';
+import { createVarReadRule } from './staticEvaluationSafety';
 import { evaluateStatic } from './staticEvaluator';
 import {
   toLegacyStaticValue,
@@ -51,6 +52,7 @@ const evaluateOxcStaticResultAt = (
     currentInsertionPoint: 0,
     currentExpressionStart: expression.start,
     dependencyNames: new Set(),
+    executionPoint: expression.start,
     expressionValues: [],
     filename,
     hoistedBindingNames: new Map(),
@@ -77,6 +79,7 @@ const evaluateOxcStaticResultAt = (
     staticValueCandidates: [],
     staticValues: [],
     usedNames: new Set(analysis.usedNames),
+    varReadRule: createVarReadRule(),
   };
 
   return evaluateStatic(expression, ctx, new Map(env));

@@ -1,28 +1,36 @@
 import type { EvalRule, StrictOptions } from '@wyw-in-js/shared';
 
 /**
- * One-time warnings about the configuration and deprecated API of transform.
+ * One-time warnings about the configuration and deprecated API of transform,
+ * and about places in a file whose build output may change in 3.0.
  *
  * This module owns the record of the warnings already reported. The record
  * lives as long as the process (each worker thread has its own) and is never
- * reset: the warnings describe the setup rather than a file, and adapters that
- * build options for every file would repeat them otherwise. Nothing that
- * affects the output depends on it.
+ * reset: most warnings describe the setup rather than a file, and adapters that
+ * build options for every file would repeat them otherwise. A warning about a
+ * place in a file is reported once per place, also when the file is
+ * transformed again. Nothing that affects the output depends on it.
  */
 type OnceWarningId =
   | 'config-css-options'
   | 'custom-handlers'
   | 'custom-resolver-missing'
-  | 'rules-conflict';
+  | 'rules-conflict'
+  | 'static-var-read-before-declaration';
 
-const reported = new Set<OnceWarningId>();
+const reported = new Set<string>();
 
-const warnOnce = (id: OnceWarningId, report: () => void): void => {
-  if (reported.has(id)) {
+const warnOnce = (
+  id: OnceWarningId,
+  report: () => void,
+  place?: string
+): void => {
+  const key = place === undefined ? id : `${id}\0${place}`;
+  if (reported.has(key)) {
     return;
   }
 
-  reported.add(id);
+  reported.add(key);
   report();
 };
 
@@ -38,6 +46,41 @@ export const warnCustomHandlersDeprecated = (): void =>
       { code: CUSTOM_HANDLERS_DEPRECATION_CODE, type: 'DeprecationWarning' }
     );
   });
+
+/**
+ * Reports, once per place, an expression that `eval.strategy` "static" gives
+ * the value earlier versions computed, because it reads a `var` before its
+ * declaration and no value is known where the expression runs.
+ */
+export const warnStaticVarReadBeforeDeclaration = ({
+  column,
+  filename,
+  line,
+  source,
+}: {
+  /** Zero-based. */
+  column: number;
+  filename: string;
+  line: number;
+  source: string;
+}): void => {
+  const place = `${filename}:${line}:${column + 1}`;
+  // TODO(3.0): throw instead; this is a breaking change.
+  warnOnce(
+    'static-var-read-before-declaration',
+    () => {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[wyw-in-js] ${place}: eval.strategy "static" cannot determine the value of \`${source}\`: ` +
+          'it reads a `var` before its declaration, and the value the variable has where this code runs is not statically known. ' +
+          'The value that earlier versions computed is used instead, and evaluation may compute another one. ' +
+          'Assign the variable once, in a declaration above the code that reads it, or use eval.strategy "hybrid". ' +
+          'This will be an error in wyw-in-js 3.0.'
+      );
+    },
+    place
+  );
+};
 
 // Options of the bundler plugins (and CLI flags) that transform reads only
 // from its call options, never from the config file.

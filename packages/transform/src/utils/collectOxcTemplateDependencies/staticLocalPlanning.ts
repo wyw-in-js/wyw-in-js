@@ -753,6 +753,7 @@ function collectStaticDestructuringProjection(
   const snapshotCtx: ExtractionContext = {
     ...ctx,
     currentExpressionStart: declarator.start,
+    executionPoint: declarator.start,
   };
   const initializerReferences = getReferences(
     declarator.init,
