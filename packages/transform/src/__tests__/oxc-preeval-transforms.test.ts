@@ -326,6 +326,76 @@ describe('oxc preeval transforms', () => {
       ).toContain('"undefined" !== "undefined"');
     });
 
+    it('keeps statements that read new.target and still removes import.meta statements', () => {
+      const code = removeDangerousCodeWithOxc(
+        [
+          'function Color(v) {',
+          '  this.v = new.target ? v : "blue";',
+          '}',
+          'const hot = import.meta.hot;',
+          'export const out = new Color("red").v;',
+        ].join('\n'),
+        filename
+      );
+
+      expect(code).toContain('this.v = new.target ? v : "blue";');
+      expect(code).not.toContain('import.meta');
+    });
+
+    it('evaluates constructors that depend on new.target', () => {
+      expect(
+        evaluateOut(
+          [
+            'function Color(v) {',
+            '  this.v = new.target ? v : "blue";',
+            '}',
+            'export const out = new Color("red").v;',
+          ].join('\n')
+        )
+      ).toBe('red');
+      expect(
+        evaluateOut(
+          [
+            'function Color(v) {',
+            '  if (!new.target) return new Color(v);',
+            '  this.v = v;',
+            '}',
+            'export const out = Color("red").v;',
+          ].join('\n')
+        )
+      ).toBe('red');
+    });
+
+    it('replaces SSR typeof checks of a parenthesized global', () => {
+      expect(
+        removeDangerousCodeWithOxc(
+          'if (typeof(window) !== "undefined") { doBrowserWork(); }',
+          filename
+        )
+      ).toContain('"undefined" !== "undefined"');
+    });
+
+    it.each([
+      'typeof (window as any)',
+      'typeof window!',
+      'typeof(document)',
+      'typeof ((window))',
+      'typeof (window as any)!',
+      'typeof (window satisfies object)',
+    ])('replaces the whole SSR typeof check %s', (check) => {
+      expect(
+        removeDangerousCodeWithOxc(`export const env = ${check};`, filename)
+      ).toBe('export const env = "undefined";');
+    });
+
+    it.each([
+      'const window = {}; export const env = typeof(window);',
+      'export const env = typeof (window.foo);',
+      'export const env = typeof (someOtherGlobal);',
+    ])('keeps a typeof check that is not an SSR check: %s', (code) => {
+      expect(removeDangerousCodeWithOxc(code, filename)).toBe(code);
+    });
+
     it('removes control statements whose bodies are stripped', () => {
       expect(
         removeDangerousCodeWithOxc(

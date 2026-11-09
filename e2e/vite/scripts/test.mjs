@@ -326,6 +326,47 @@ async function runShadowedProcessorCase() {
   }
 }
 
+// SSR checks written as `typeof(window)` must fold like a bare `typeof window`:
+// the evaluator defines `window`, so an unfolded check takes the browser branch.
+async function runSsrTypeofCheckCase() {
+  const outDir = path.resolve(PKG_DIR, 'dist-ssr-typeof-check');
+
+  try {
+    await fs.rm(outDir, { recursive: true, force: true });
+    await build({
+      build: {
+        cssMinify: false,
+        outDir,
+        rollupOptions: {
+          input: path.resolve(PKG_DIR, 'src/ssr-typeof-check/index.js'),
+        },
+      },
+      configFile: false,
+      logLevel: 'silent',
+      plugins: [wyw()],
+      root: PKG_DIR,
+    });
+
+    const cssFile = await findFileMatching(outDir, (filePath) =>
+      filePath.endsWith('.css')
+    );
+    const css = normalizeLineEndings(await fs.readFile(cssFile, 'utf-8'));
+    for (const declaration of [
+      /--ssr-window:\s*server/,
+      /--ssr-document:\s*server/,
+    ]) {
+      if (!declaration.test(css)) {
+        throw new Error(`Expected ${declaration} in the CSS, got:\n${css}`);
+      }
+    }
+    if (css.includes('browser')) {
+      throw new Error(`Expected no browser value in the CSS, got:\n${css}`);
+    }
+  } finally {
+    await fs.rm(outDir, { recursive: true, force: true });
+  }
+}
+
 // Only some names of one destructuring declaration are consumed by the
 // template; the module must still run, with the rest of them defined.
 async function runPartiallyUsedDestructuringCase() {
@@ -382,6 +423,82 @@ async function runPartiallyUsedDestructuringCase() {
     );
     if (stdout.trim() !== 'calc(10px - var(--pad) - 2px)') {
       throw new Error(`Unexpected clipPath(10) result: ${stdout.trim()}`);
+    }
+  } finally {
+    await fs.rm(outDir, { recursive: true, force: true });
+  }
+}
+
+// Statements that read new.target take part in evaluation, so values built
+// by constructors that depend on it reach the CSS.
+async function runNewTargetCase() {
+  const outDir = path.resolve(PKG_DIR, 'dist-new-target');
+
+  try {
+    await fs.rm(outDir, { recursive: true, force: true });
+    await build({
+      build: {
+        cssMinify: false,
+        lib: {
+          entry: path.resolve(PKG_DIR, 'src/new-target/index.js'),
+          fileName: 'index',
+          formats: ['es'],
+        },
+        outDir,
+      },
+      configFile: false,
+      logLevel: 'silent',
+      plugins: [wyw()],
+      root: PKG_DIR,
+    });
+
+    const cssFile = await findFileMatching(outDir, (filePath) =>
+      filePath.endsWith('.css')
+    );
+    const css = normalizeLineEndings(await fs.readFile(cssFile, 'utf-8'));
+    for (const declaration of [
+      /color:\s*red/,
+      /width:\s*10px/,
+      /--error:\s*ValidationError/,
+    ]) {
+      if (!declaration.test(css)) {
+        throw new Error(`Expected ${declaration} in the CSS, got:\n${css}`);
+      }
+    }
+  } finally {
+    await fs.rm(outDir, { recursive: true, force: true });
+  }
+}
+
+// DOM emulation is on by default; literals and global constructors seen by
+// the evaluated code must still belong to one realm.
+async function runEvalRealmCase() {
+  const outDir = path.resolve(PKG_DIR, 'dist-eval-realm');
+
+  try {
+    await fs.rm(outDir, { recursive: true, force: true });
+    await build({
+      build: {
+        cssMinify: false,
+        lib: {
+          entry: path.resolve(PKG_DIR, 'src/eval-realm/index.js'),
+          fileName: 'index',
+          formats: ['es'],
+        },
+        outDir,
+      },
+      configFile: false,
+      logLevel: 'silent',
+      plugins: [wyw()],
+      root: PKG_DIR,
+    });
+
+    const cssFile = await findFileMatching(outDir, (filePath) =>
+      filePath.endsWith('.css')
+    );
+    const css = normalizeLineEndings(await fs.readFile(cssFile, 'utf-8'));
+    if (!/--realm:\s*true true true true;/.test(css)) {
+      throw new Error(`Expected --realm: true true true true, got:\n${css}`);
     }
   } finally {
     await fs.rm(outDir, { recursive: true, force: true });
@@ -618,8 +735,17 @@ const main = async () => {
   console.log(colors.blue('Running case:'), 'shadowedProcessor');
   await runShadowedProcessorCase();
 
+  console.log(colors.blue('Running case:'), 'ssrTypeofCheck');
+  await runSsrTypeofCheckCase();
+
   console.log(colors.blue('Running case:'), 'partiallyUsedDestructuring');
   await runPartiallyUsedDestructuringCase();
+
+  console.log(colors.blue('Running case:'), 'newTarget');
+  await runNewTargetCase();
+
+  console.log(colors.blue('Running case:'), 'evalRealm');
+  await runEvalRealmCase();
 
   console.log(colors.blue('Running case:'), 'calledMutations');
   await runCalledMutationsCase();
