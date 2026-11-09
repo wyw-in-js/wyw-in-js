@@ -49,6 +49,7 @@ const evaluateOxcStaticResultAt = (
     currentInsertionPoint: 0,
     currentExpressionStart: expression.start,
     dependencyNames: new Set(),
+    executionPoint: expression.start,
     expressionValues: [],
     filename,
     hoistedBindingNames: new Map(),

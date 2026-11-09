@@ -24,6 +24,7 @@ import {
   hasLexicalPreDeclarationChange,
   isPatternRuntimeExpressionStable,
   isProcessEnvValueAccess,
+  isVarUnassignedAtRead,
   mutationDirectlyTargetsBinding,
   readsAsFallbackUndefined,
 } from './staticEvaluationSafety';
@@ -62,7 +63,7 @@ import {
   type EvaluationStack,
 } from './staticEvaluationRuntime';
 import { evaluateStaticCall } from './staticCallEvaluation';
-import type { ExtractionContext } from './types';
+import type { Binding, ExtractionContext } from './types';
 
 export { createOxcStaticCallableValue } from './staticEvaluationRuntime';
 
@@ -314,14 +315,15 @@ export const evaluateStatic = (
 
   if (expression.type === 'Identifier') {
     const binding = resolveBindingAt(ctx, expression.name, expression.start);
+    const unassignedVar =
+      binding?.kind === 'variable' && isVarUnassignedAtRead(binding, ctx);
     if (
       binding?.kind === 'variable' &&
       binding.declarator &&
-      ctx.currentExpressionStart < binding.declarator.end
+      (unassignedVar || ctx.currentExpressionStart < binding.declarator.end)
     ) {
-      // Read before the declaration completes. A modeled call environment
-      // only vouches for `undefined`. A `var` is left to evaluation, which
-      // sees the value at the end of the module.
+      // Read before the declaration completes, in the source or where the
+      // read runs. A modeled call environment only vouches for `undefined`.
       if (env.has(expression.name)) {
         const envValue = env.get(expression.name);
         return envValue === undefined || isFallbackUndefinedRead(envValue)
@@ -329,11 +331,13 @@ export const evaluateStatic = (
           : unknownOutcome(UnknownReason.TemporalDeadZone);
       }
 
-      return unknownOutcome(
-        binding.declarationKind === 'var'
-          ? UnknownReason.ReadBeforeDeclaration
-          : UnknownReason.TemporalDeadZone
-      );
+      if (unassignedVar) {
+        return unknownOutcome(UnknownReason.ReadBeforeDeclaration);
+      }
+
+      return binding.declarationKind === 'var'
+        ? evaluateVarAtExecutionPoint(expression, binding, ctx, env, stack)
+        : unknownOutcome(UnknownReason.TemporalDeadZone);
     }
 
     if (env.has(expression.name)) {
@@ -447,7 +451,12 @@ export const evaluateStatic = (
         ) {
           return unknownOutcome(UnknownReason.Mutation);
         }
-        value = evaluateStatic(init, ctx, env, nextStack);
+        value = evaluateStatic(
+          init,
+          { ...ctx, executionPoint: declarator.start },
+          env,
+          nextStack
+        );
       } else {
         if (
           binding.declarationKind !== 'const' ||
@@ -471,6 +480,7 @@ export const evaluateStatic = (
         const snapshotCtx: ExtractionContext = {
           ...ctx,
           currentExpressionStart: declarator.start,
+          executionPoint: declarator.start,
         };
         const patternRuntimeExpressions = collectOxcPatternRuntimeExpressions(
           declarator.id
@@ -867,6 +877,40 @@ export const evaluateStatic = (
   }
 
   return evaluateBinary(expression, ctx, env, stack, evaluateStatic);
+};
+
+/**
+ * A module `var` read that stands before its declaration in the source but
+ * runs after it, such as an interpolation, which runs at the end of the
+ * module. The `var` holds the value it has there. It is static only when the
+ * declaration is the one write of the `var`; the hazards of the binding and
+ * the sources of its initializer are checked as for a read at that point.
+ */
+const evaluateVarAtExecutionPoint = (
+  expression: Expression,
+  binding: Binding,
+  ctx: ExtractionContext,
+  env: EvalEnv,
+  stack: EvaluationStack
+): StaticResult => {
+  if (
+    !binding.declarator?.init ||
+    binding.declarator.id.type !== 'Identifier' ||
+    getBindingDirectTimeline(binding, ctx).byStart.length > 0
+  ) {
+    return unknownOutcome(UnknownReason.UnknownAtExecutionPoint);
+  }
+
+  // Read the binding as an expression that stands at the execution point.
+  const value = evaluateStatic(
+    expression,
+    { ...ctx, currentExpressionStart: ctx.executionPoint },
+    env,
+    stack
+  );
+  return isStaticNonValue(value)
+    ? unknownOutcome(UnknownReason.UnknownAtExecutionPoint)
+    : value;
 };
 
 /**

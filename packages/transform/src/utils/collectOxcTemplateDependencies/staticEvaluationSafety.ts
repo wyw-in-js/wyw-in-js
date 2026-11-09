@@ -441,11 +441,31 @@ export const isProcessEnvValueAccess = (
 };
 
 /**
+ * Whether a `var` is not assigned yet where the read runs. A module `var` is
+ * assigned once the execution point passes its declarator. A `var` of a
+ * function keeps the source position of the expression: the evaluator does
+ * not model where in the function the read runs.
+ */
+export const isVarUnassignedAtRead = (
+  binding: Binding,
+  ctx: ExtractionContext
+): boolean => {
+  if (binding.declarationKind !== 'var' || !binding.declarator) {
+    return false;
+  }
+
+  const readPoint = binding.isRoot
+    ? ctx.executionPoint
+    : ctx.currentExpressionStart;
+  return readPoint < binding.declarator.end;
+};
+
+/**
  * Legacy fallback rules. In the fallback positions of the static evaluator
  * (`typeof`, `??`/`||`/`&&` left operands, comparison operands and
  * function-local initializers) these unknown reads count as `undefined`:
  * - a direct `process.env.X` read (build-time environment policy);
- * - a `var` read before its declaration;
+ * - a `var` read where it is not assigned yet (`isVarUnassignedAtRead`);
  * - a function-local variable initialized from one of them.
  * Everywhere else they stay unknown and are left to runtime evaluation.
  */
@@ -465,11 +485,7 @@ export const readsAsFallbackUndefined = (
     }
 
     const binding = resolveBindingAt(ctx, expression.name, expression.start);
-    return (
-      binding?.declarationKind === 'var' &&
-      !!binding.declarator &&
-      ctx.currentExpressionStart < binding.declarator.end
-    );
+    return !!binding && isVarUnassignedAtRead(binding, ctx);
   }
 
   return isProcessEnvValueAccess(expression, ctx, env);

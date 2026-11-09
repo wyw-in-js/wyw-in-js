@@ -113,6 +113,8 @@ export const createExpressionExtractor = ({
       currentInsertionPoint: insertionPoints[0] ?? 0,
       currentExpressionStart: expressions[0].start,
       dependencyNames: new Set(),
+      // Extracted expressions run lazily, after the whole module.
+      executionPoint: code.length,
       expressionValues: [],
       filename,
       hoistedBindingNames: new Map(),

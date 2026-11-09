@@ -176,6 +176,13 @@ export type ExtractionContext = {
   currentInsertionPoint: number;
   currentExpressionStart: number;
   dependencyNames: Set<string>;
+  /**
+   * The position in the module where the evaluated code runs: the end of the
+   * module for an extracted expression, which runs lazily, the declarator for
+   * the initializer of a binding. A module `var` is assigned there only when
+   * its declarator ends before it.
+   */
+  executionPoint: number;
   expressionValues: Omit<ExpressionValue, 'buildCodeFrameError'>[];
   filename: string;
   hoistedBindingNames: Map<string, string>;
