@@ -326,6 +326,46 @@ describe('oxc preeval transforms', () => {
       ).toContain('"undefined" !== "undefined"');
     });
 
+    it('keeps statements that read new.target and still removes import.meta statements', () => {
+      const code = removeDangerousCodeWithOxc(
+        [
+          'function Color(v) {',
+          '  this.v = new.target ? v : "blue";',
+          '}',
+          'const hot = import.meta.hot;',
+          'export const out = new Color("red").v;',
+        ].join('\n'),
+        filename
+      );
+
+      expect(code).toContain('this.v = new.target ? v : "blue";');
+      expect(code).not.toContain('import.meta');
+    });
+
+    it('evaluates constructors that depend on new.target', () => {
+      expect(
+        evaluateOut(
+          [
+            'function Color(v) {',
+            '  this.v = new.target ? v : "blue";',
+            '}',
+            'export const out = new Color("red").v;',
+          ].join('\n')
+        )
+      ).toBe('red');
+      expect(
+        evaluateOut(
+          [
+            'function Color(v) {',
+            '  if (!new.target) return new Color(v);',
+            '  this.v = v;',
+            '}',
+            'export const out = Color("red").v;',
+          ].join('\n')
+        )
+      ).toBe('red');
+    });
+
     it('replaces SSR typeof checks of a parenthesized global', () => {
       expect(
         removeDangerousCodeWithOxc(

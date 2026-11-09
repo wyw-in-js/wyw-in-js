@@ -429,6 +429,47 @@ async function runPartiallyUsedDestructuringCase() {
   }
 }
 
+// Statements that read new.target take part in evaluation, so values built
+// by constructors that depend on it reach the CSS.
+async function runNewTargetCase() {
+  const outDir = path.resolve(PKG_DIR, 'dist-new-target');
+
+  try {
+    await fs.rm(outDir, { recursive: true, force: true });
+    await build({
+      build: {
+        cssMinify: false,
+        lib: {
+          entry: path.resolve(PKG_DIR, 'src/new-target/index.js'),
+          fileName: 'index',
+          formats: ['es'],
+        },
+        outDir,
+      },
+      configFile: false,
+      logLevel: 'silent',
+      plugins: [wyw()],
+      root: PKG_DIR,
+    });
+
+    const cssFile = await findFileMatching(outDir, (filePath) =>
+      filePath.endsWith('.css')
+    );
+    const css = normalizeLineEndings(await fs.readFile(cssFile, 'utf-8'));
+    for (const declaration of [
+      /color:\s*red/,
+      /width:\s*10px/,
+      /--error:\s*ValidationError/,
+    ]) {
+      if (!declaration.test(css)) {
+        throw new Error(`Expected ${declaration} in the CSS, got:\n${css}`);
+      }
+    }
+  } finally {
+    await fs.rm(outDir, { recursive: true, force: true });
+  }
+}
+
 async function assertFileMatches(filePath, pattern) {
   const contents = normalizeLineEndings(await fs.readFile(filePath, 'utf-8'));
 
@@ -622,6 +663,9 @@ const main = async () => {
 
   console.log(colors.blue('Running case:'), 'partiallyUsedDestructuring');
   await runPartiallyUsedDestructuringCase();
+
+  console.log(colors.blue('Running case:'), 'newTarget');
+  await runNewTargetCase();
 
   console.log(colors.blue('Running case:'), 'loadedCode');
   await assertLoadedCode(PKG_DIR);

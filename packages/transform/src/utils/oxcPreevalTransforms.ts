@@ -1473,7 +1473,7 @@ export const collectDangerousCodeReplacementsWithOxc = (
         return;
       }
 
-      if (node.type === 'MetaProperty') {
+      if (isImportMeta(node)) {
         if (
           planningOptions?.preserveImportMetaEnv &&
           ancestors.some((ancestor) => isImportMetaEnv(ancestor))
