@@ -3,10 +3,7 @@ import { EntrypointEvictedError } from '../actions/EntrypointEvictedError';
 import type { IWorkflowAction, SyncScenarioForAction } from '../types';
 import { collectTransformDiagnostics } from '../../utils/TransformDiagnostics';
 import { toTransformResultMetadata } from '../../utils/TransformMetadata';
-import {
-  recordPipelineDisposableRoot,
-  recordPipelineLateNoMetadata,
-} from '../../debug/pipelineTelemetry';
+import { currentPipelineObserver } from '../../telemetry/observer';
 
 const isLoadedEntrypointWithoutArtifacts = (
   entrypoint: IWorkflowAction['entrypoint']
@@ -125,7 +122,10 @@ export function* workflow(
     if (isLoadedEntrypointWithoutArtifacts(entrypoint)) {
       // A root bundler pass for a plain dependency must not pin eval/cache state.
       // If another WyW file needs this module, it will be prepared on demand.
-      recordPipelineDisposableRoot(entrypoint.name, 'preeval');
+      currentPipelineObserver().recordDisposableRoot(
+        entrypoint.name,
+        'preeval'
+      );
       releasePublication(expectedBeforeMetadata);
     }
 
@@ -190,12 +190,19 @@ export function* workflow(
     const collectMetadata = collectStageResult.metadata;
     assertPublication(expectedAfterCollect);
     if (!collectMetadata) {
-      recordPipelineLateNoMetadata(entrypoint.name, entrypoint.only, 'collect');
+      currentPipelineObserver().recordLateNoMetadata(
+        entrypoint.name,
+        entrypoint.only,
+        'collect'
+      );
       const code = collectStageResult.code!;
       const sourceMap = collectStageResult.map;
       assertPublication(expectedAfterCollect);
       if (isLoadedEntrypointWithoutArtifacts(entrypoint)) {
-        recordPipelineDisposableRoot(entrypoint.name, 'collect');
+        currentPipelineObserver().recordDisposableRoot(
+          entrypoint.name,
+          'collect'
+        );
         releasePublication(expectedAfterCollect);
       }
 

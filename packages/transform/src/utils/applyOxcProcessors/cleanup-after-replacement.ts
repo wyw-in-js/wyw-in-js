@@ -16,11 +16,7 @@ import {
   collectUnusedTopLevelDeclarationRemovals,
 } from './cleanupRemovals';
 import { parseOxc } from './shared';
-import {
-  beginPipelineCleanup,
-  finishPipelineCleanup,
-  recordPipelineCleanupIteration,
-} from '../../debug/pipelineTelemetry';
+import { currentPipelineObserver } from '../../telemetry/observer';
 
 export const removeUnusedAfterReplacement = (
   code: string,
@@ -33,7 +29,7 @@ export const removeUnusedAfterReplacement = (
   let current = code;
   let program: Program | null = null;
   const cumulativeRemovableNames = new Set(initialRemovableNames);
-  const pipelineCleanup = beginPipelineCleanup(filename);
+  const pipelineCleanup = currentPipelineObserver().beginCleanup(filename);
 
   try {
     // Validate the next revision once and reuse that AST on the next iteration.
@@ -101,8 +97,7 @@ export const removeUnusedAfterReplacement = (
       ]);
 
       if (removals.length === 0) {
-        recordPipelineCleanupIteration(
-          pipelineCleanup,
+        pipelineCleanup.recordIteration(
           current,
           removals,
           false,
@@ -113,15 +108,14 @@ export const removeUnusedAfterReplacement = (
           expressionRemovals.length,
           emptyBlockRemovals.length
         );
-        finishPipelineCleanup(pipelineCleanup, 'converged');
+        pipelineCleanup.finish('converged');
         return current;
       }
 
       const next = applyOxcEdits(current, removals);
       try {
         program = parseOxc(next, filename);
-        recordPipelineCleanupIteration(
-          pipelineCleanup,
+        pipelineCleanup.recordIteration(
           current,
           removals,
           true,
@@ -134,8 +128,7 @@ export const removeUnusedAfterReplacement = (
         );
         current = next;
       } catch {
-        recordPipelineCleanupIteration(
-          pipelineCleanup,
+        pipelineCleanup.recordIteration(
           current,
           removals,
           false,
@@ -146,20 +139,20 @@ export const removeUnusedAfterReplacement = (
           expressionRemovals.length,
           emptyBlockRemovals.length
         );
-        finishPipelineCleanup(pipelineCleanup, 'rollback');
+        pipelineCleanup.finish('rollback');
         return current;
       }
 
       if (current === previous) {
-        finishPipelineCleanup(pipelineCleanup, 'stalled');
+        pipelineCleanup.finish('stalled');
         return current;
       }
     }
 
-    finishPipelineCleanup(pipelineCleanup, 'cap');
+    pipelineCleanup.finish('cap');
     return current;
   } catch (error) {
-    finishPipelineCleanup(pipelineCleanup, 'error');
+    pipelineCleanup.finish('error');
     throw error;
   }
 };

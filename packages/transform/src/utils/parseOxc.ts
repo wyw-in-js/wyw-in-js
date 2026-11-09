@@ -4,12 +4,10 @@ import type { Comment, Program } from 'oxc-parser';
 import { logger } from '@wyw-in-js/shared';
 
 import {
-  recordPipelineCachedParseMiss,
-  recordPipelineCachedParseHit,
-  recordPipelineRawTransferFallback,
-  recordPipelineUncachedParse,
-} from '../debug/pipelineTelemetry';
-import type { ParseKind } from '../debug/pipelineTelemetry.types';
+  currentPipelineObserver,
+  type ParseKind,
+  type PipelineParseMeasurement,
+} from '../telemetry/observer';
 import {
   getOxcParserLanguage,
   type OxcParserLanguage,
@@ -81,7 +79,7 @@ export const parseOxcSync = (
     // does not attempt the same oversized allocation again.
     useRawTransfer = false;
     if (telemetryKind) {
-      recordPipelineRawTransferFallback(
+      currentPipelineObserver().recordRawTransferFallback(
         telemetryFilename,
         code,
         options.sourceType ?? 'module',
@@ -117,7 +115,7 @@ type ParsedOxcPayload = {
 };
 
 type ParsedOxc = ParsedOxcPayload & {
-  pipelineMeasurement: { bytes: number; revision: string } | undefined;
+  pipelineMeasurement: PipelineParseMeasurement | undefined;
 };
 
 // 200 evicts under sustained pressure on large monorepos — the
@@ -289,7 +287,7 @@ export const parseOxcCached = (
     bucket.delete(code);
     bucket.set(code, cached);
     const knownMeasurement = cached.pipelineMeasurement;
-    const measurement = recordPipelineCachedParseHit(
+    const measurement = currentPipelineObserver().recordCachedParseHit(
       cached,
       filename,
       code,
@@ -311,7 +309,7 @@ export const parseOxcCached = (
     astType,
     'cached',
     (jsxFallback) =>
-      recordPipelineCachedParseMiss(
+      currentPipelineObserver().recordCachedParseMiss(
         filename,
         code,
         sourceType,
@@ -339,7 +337,7 @@ export const parseOxcCached = (
   }
 
   const cachedParse = setCachedParse(bucket, code, value);
-  const telemetryMeasurement = recordPipelineCachedParseMiss(
+  const telemetryMeasurement = currentPipelineObserver().recordCachedParseMiss(
     filename,
     code,
     sourceType,
@@ -377,7 +375,7 @@ export const parseOxcProgramFresh = (
     astType,
     'uncached',
     (jsxFallback) =>
-      recordPipelineUncachedParse(
+      currentPipelineObserver().recordUncachedParse(
         filename,
         code,
         sourceType,
@@ -388,7 +386,7 @@ export const parseOxcProgramFresh = (
       )
   );
   commentsByProgram.set(payload.program, payload.comments);
-  recordPipelineUncachedParse(
+  currentPipelineObserver().recordUncachedParse(
     filename,
     code,
     sourceType,

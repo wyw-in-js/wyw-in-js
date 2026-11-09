@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 
 import type { ParentEntrypoint } from '../types';
-import { recordPipelineEntrypoint } from '../debug/pipelineTelemetry';
+import { currentPipelineObserver } from '../telemetry/observer';
 import { stripQueryAndHash } from '../utils/parseRequest';
 
 import { isSuperSet, mergeOnly } from './Entrypoint.helpers';
@@ -135,7 +135,7 @@ export function createEntrypoint(
     );
     const [createdStatus, createdEntrypoint] = creation;
 
-    recordPipelineEntrypoint(
+    currentPipelineObserver().recordEntrypoint(
       parent === null,
       loadedCode !== undefined,
       createdStatus,

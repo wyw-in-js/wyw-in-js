@@ -24,11 +24,10 @@ import {
 import { rewriteOptimizedOxcBarrelImports } from './rewriteOxcBarrelImports';
 import { resolveStaticOxcPreevalValues } from './resolveStaticOxcValues';
 import {
-  beginPipelineShake,
-  finishPipelineShake,
-  recordPipelineLateNoMetadata,
-} from '../../debug/pipelineTelemetry';
-import type { EvalPreparationToken } from '../../debug/evalTelemetry.types';
+  currentPipelineObserver,
+  NOOP_EVAL_PREPARATION_OBSERVER,
+  type EvalPreparationObserver,
+} from '../../telemetry/observer';
 import { AbortError } from '../actions/AbortError';
 
 const EMPTY_FILE = '=== empty file ===';
@@ -85,7 +84,7 @@ export const emitCurrentStaticPlanDebug = (
 };
 
 type PrepareCodeOptions = {
-  evalTelemetry?: EvalPreparationToken;
+  evalPreparation?: EvalPreparationObserver;
   shortCircuitOnMissingMetadata?: boolean;
   stripForEvalRuntime?: boolean;
 };
@@ -204,6 +203,8 @@ const prepareCodeImpl = (
   const { eventEmitter } = services;
   const { pluginOptions } = services.options;
   const root = services.options.root ?? process.cwd();
+  const evalPreparation =
+    options.evalPreparation ?? NOOP_EVAL_PREPARATION_OBSERVER;
 
   const preevalStageResult = ensureOxcPreevalResult(services, item);
   preevalStageResult.finalizeEvaltimeReplacements?.(
@@ -222,13 +223,11 @@ const prepareCodeImpl = (
     options.shortCircuitOnMissingMetadata !== false
   ) {
     log('[evaluator:end] no metadata');
-    recordPipelineLateNoMetadata(filename, only, 'preeval');
-    const strippedCode = options.evalTelemetry
-      ? options.evalTelemetry.measureStage(
-          'strip',
-          () => stripTypesAndJsxWithOxc(preevalCode, filename).code
-        )
-      : stripTypesAndJsxWithOxc(preevalCode, filename).code;
+    currentPipelineObserver().recordLateNoMetadata(filename, only, 'preeval');
+    const strippedCode = evalPreparation.measureStage(
+      'strip',
+      () => stripTypesAndJsxWithOxc(preevalCode, filename).code
+    );
 
     return [
       trimOxcPreparedESM(strippedCode),
@@ -241,66 +240,30 @@ const prepareCodeImpl = (
   log('[evaluator:start] using %s', loadedAndParsed.evaluator.name);
   log.extend('source')('%s', preevalCode);
 
-  const shakeToken = beginPipelineShake(
+  const shaken = currentPipelineObserver().observeShake(
     preevalCode,
     only,
-    options.stripForEvalRuntime ? 'eval-runtime' : 'transform'
-  );
-  let shaken: ReturnType<typeof shakeOxcToESM>;
-  if (!shakeToken) {
-    shaken = options.evalTelemetry
-      ? options.evalTelemetry.measureStage('shake', () =>
-          eventEmitter.perf('transform:evaluator', () =>
-            shakeOxcToESM(preevalCode, filename, {
-              importOverrides: pluginOptions.importOverrides,
-              onlyExports: only,
-              root,
-            })
-          )
-        )
-      : eventEmitter.perf('transform:evaluator', () =>
+    options.stripForEvalRuntime ? 'eval-runtime' : 'transform',
+    () =>
+      evalPreparation.measureStage('shake', () =>
+        eventEmitter.perf('transform:evaluator', () =>
           shakeOxcToESM(preevalCode, filename, {
             importOverrides: pluginOptions.importOverrides,
             onlyExports: only,
             root,
           })
-        );
-  } else {
-    try {
-      shaken = options.evalTelemetry
-        ? options.evalTelemetry.measureStage('shake', () =>
-            eventEmitter.perf('transform:evaluator', () =>
-              shakeOxcToESM(preevalCode, filename, {
-                importOverrides: pluginOptions.importOverrides,
-                onlyExports: only,
-                root,
-              })
-            )
-          )
-        : eventEmitter.perf('transform:evaluator', () =>
-            shakeOxcToESM(preevalCode, filename, {
-              importOverrides: pluginOptions.importOverrides,
-              onlyExports: only,
-              root,
-            })
-          );
-      finishPipelineShake(shakeToken, shaken.code, false);
-    } catch (error) {
-      finishPipelineShake(shakeToken, null, true);
-      throw error;
-    }
-  }
+        )
+      )
+  );
 
   log('[evaluator:end]');
 
   let preparedCode = shaken.code;
   if (options.stripForEvalRuntime) {
-    preparedCode = options.evalTelemetry
-      ? options.evalTelemetry.measureStage(
-          'strip',
-          () => stripTypesAndJsxWithOxc(shaken.code, filename).code
-        )
-      : stripTypesAndJsxWithOxc(shaken.code, filename).code;
+    preparedCode = evalPreparation.measureStage(
+      'strip',
+      () => stripTypesAndJsxWithOxc(shaken.code, filename).code
+    );
   }
 
   return [
@@ -326,10 +289,10 @@ export const prepareCode = (
 export const prepareCodeForEvalRuntime = (
   services: Services,
   item: Entrypoint,
-  evalTelemetry?: EvalPreparationToken
+  evalPreparation?: EvalPreparationObserver
 ): ReturnType<PrepareCodeFn> =>
   prepareCodeImpl(services, item, {
-    evalTelemetry,
+    evalPreparation,
     shortCircuitOnMissingMetadata: true,
     stripForEvalRuntime: true,
   });
