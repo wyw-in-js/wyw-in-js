@@ -3,6 +3,7 @@ import { ValueType } from '@wyw-in-js/shared';
 import type { Expression, Program } from 'oxc-parser';
 import { applyOxcEdits } from '../oxc/fileEdits';
 import { createOxcLocationLookup } from '../oxc/sourceLocations';
+import { createCallableMutationHintsReader } from '../oxcShaker/callableMutations';
 import { collectEagerIdentifierMutationTargets } from './expressionReplacements';
 import { resolveBindingAt, getSourceLocation } from './scopeAnalysis';
 import { addHoistedCode, expressionSpanKey } from './snapshotReplay';
@@ -109,6 +110,7 @@ export const createExpressionExtractor = ({
     const insertionPoints = getInsertionPoints(program, expressions);
     const ctx: ExtractionContext = {
       bindingIndex: analysis.bindingIndex,
+      callableMutationHints: createCallableMutationHintsReader(program),
       code,
       currentInsertionPoint: insertionPoints[0] ?? 0,
       currentExpressionStart: expressions[0].start,

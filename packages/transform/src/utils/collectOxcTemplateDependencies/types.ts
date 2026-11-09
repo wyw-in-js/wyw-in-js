@@ -13,6 +13,7 @@ import type {
 import type { OxcEdit } from '../oxc/fileEdits';
 import type { OxcFunctionLike } from '../oxc/runtimeSemantics';
 import type { OxcLocationLookup } from '../oxc/sourceLocations';
+import type { CallableMutationHints } from '../oxcShaker/callableMutations';
 import type { RecursiveProofState } from './recursiveProof';
 
 export type OxcFunctionLikeNode = OxcFunctionLike;
@@ -172,6 +173,7 @@ export type ProgramAnalysis = {
 
 export type ExtractionContext = {
   bindingIndex: BindingIndex;
+  callableMutationHints: () => CallableMutationHints;
   code: string;
   currentInsertionPoint: number;
   currentExpressionStart: number;

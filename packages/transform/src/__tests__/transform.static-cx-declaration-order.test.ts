@@ -188,10 +188,10 @@ describe('static eval of css tags declared after a module-level cx()', () => {
       };
     `;
 
-    await expect(
-      runStatic(source(CX_WITHOUT_CSS, FIRST, SECOND), tokens)
-    ).rejects.toThrow(
-      'an earlier call may mutate a value used by this interpolation'
-    );
+    // The getter writes `themeVars`, so the tokens module itself no longer
+    // treats `themeVars` as a constant.
+    const result = runStatic(source(CX_WITHOUT_CSS, FIRST, SECOND), tokens);
+    await expect(result).rejects.toThrow('could not be resolved at build time');
+    await expect(result).rejects.toThrow('themeVars.borderSeparator');
   });
 });

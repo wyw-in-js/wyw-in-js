@@ -7,6 +7,11 @@ import type {
   VariableDeclaration,
 } from 'oxc-parser';
 
+import {
+  collectCallableMutationHints,
+  mutatingMethodNames,
+} from '../../../utils/oxcShaker/callableMutations';
+
 import { collectLocalConstExpressions } from './programAnalysis';
 import {
   collectImportBindings,
@@ -22,22 +27,6 @@ import type {
   StaticExpressionDependencies,
   StaticExpressionOptions,
 } from './types';
-
-export const mutatingMethodNames = new Set([
-  'add',
-  'clear',
-  'copyWithin',
-  'delete',
-  'fill',
-  'pop',
-  'push',
-  'reverse',
-  'set',
-  'shift',
-  'sort',
-  'splice',
-  'unshift',
-]);
 
 export const rootIdentifierName = (expr: Node): string | null => {
   const unwrapped = unwrapExpression(expr);
@@ -488,15 +477,28 @@ export const collectStaticExpressionDependencies = (
     closureNames.add(target.localName);
   }
   const mutationHints = collectTopLevelMutationHints(program, closureNames);
+  // Code inside functions and classes can only change a binding that is not
+  // a `const` local or that holds a mutable value; skip the scan otherwise.
+  const callableHints = [...referencedNames].some(
+    (name) =>
+      mutableReferencedNames.has(name) ||
+      (!locals.has(name) && !options.preResolvedLocals?.has(name))
+  )
+    ? collectCallableMutationHints(program)
+    : null;
   for (const name of referencedNames) {
-    if (mutationHints.mutatedNames.has(name)) {
+    if (
+      mutationHints.mutatedNames.has(name) ||
+      callableHints?.mutatedNames.has(name)
+    ) {
       return null;
     }
   }
 
   for (const name of mutableReferencedNames) {
     if (
-      mutationHints.callArgumentNames.has(name) &&
+      (mutationHints.callArgumentNames.has(name) ||
+        callableHints?.callArgumentNames.has(name)) &&
       !options.ignoredMutableCallArgumentNames?.has(name)
     ) {
       return null;

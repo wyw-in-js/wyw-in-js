@@ -556,6 +556,67 @@ describe('eval DOM', () => {
   );
 });
 
+describe('eval realm', () => {
+  // Literals, engine errors and global names must all come from one realm,
+  // with or without DOM emulation (#498).
+  const realmProbe = dedent`
+    import { css } from 'test-css-processor';
+
+    const engineError = (() => {
+      try {
+        return null.x;
+      } catch (e) {
+        return e;
+      }
+    })();
+
+    const realm = [
+      ({}).constructor === Object,
+      [] instanceof Array,
+      Object.getPrototypeOf([]) === Array.prototype,
+      engineError instanceof TypeError,
+    ].join(',');
+
+    const buffer =
+      typeof Buffer === 'function'
+        ? String(Buffer.from('a') instanceof Uint8Array)
+        : 'none';
+    const document_ = typeof document;
+
+    export const className = css\`
+      --realm: ${'${realm}'};
+      --buffer: ${'${buffer}'};
+      --document: ${'${document_}'};
+    \`;
+  `;
+
+  it.each([
+    // The eval runner installs the host Buffer and Uint8Array only on the
+    // DOM window.
+    { happyDOM: true, buffer: 'true', document: 'object' },
+    { happyDOM: false, buffer: 'none', document: 'undefined' },
+  ])(
+    'evaluates literals and global constructors in one realm with happyDOM: $happyDOM',
+    async ({ happyDOM, buffer, document }) => {
+      await withProject(
+        { 'entry.js': realmProbe },
+        async ({ transformEntry }) => {
+          const css = await transformEntry({
+            pluginOptions: withoutCodeRemover({ happyDOM }),
+          });
+
+          expect(css).toEqual({
+            realm: 'true,true,true,true',
+            buffer,
+            document,
+          });
+        }
+      );
+    },
+    EVAL_TEST_TIMEOUT
+  );
+});
+
 describe('evaluated dependencies', () => {
   it(
     'sees an outer binding that a called function reassigns',
