@@ -15,6 +15,7 @@ import {
   hasReferencedRootMutationBetween,
   hasReferencedRootMutationHazardBefore,
 } from './staticMutationChecks';
+import { toMutationBindingKey } from './mutationBindingIdentity';
 import * as timeline from './mutationTimeline';
 import * as recursiveProof from './recursiveProof';
 import { resolveBindingAt } from './scopeAnalysis';
@@ -458,9 +459,17 @@ export const evaluateStatic = (
           nextStack
         );
       } else {
+        // A module `var` that the read stands before but runs after is
+        // destructured like a `const` when its declaration is its one write.
+        const readsVarAfterDeclaration =
+          binding.declarationKind === 'var' &&
+          binding.isRoot &&
+          expression.start < declarator.end &&
+          isVarWrittenOnlyByDeclaration(binding, ctx, env);
         if (
-          binding.declarationKind !== 'const' ||
-          expression.start < declarator.end
+          !readsVarAfterDeclaration &&
+          (binding.declarationKind !== 'const' ||
+            expression.start < declarator.end)
         ) {
           return unknownOutcome(UnknownReason.UnsupportedBinding);
         }
@@ -880,6 +889,29 @@ export const evaluateStatic = (
 };
 
 /**
+ * Whether the declaration is the one write of a module `var`: the module has
+ * no mutation of it and, wherever it runs, no hazard on it that the evaluator
+ * cannot prove pure. A template that interpolates the `var` is no hazard: the
+ * calls and writes inside it are hazards of their own.
+ */
+const isVarWrittenOnlyByDeclaration = (
+  binding: Binding,
+  ctx: ExtractionContext,
+  env: EvalEnv
+): boolean =>
+  getBindingDirectTimeline(binding, ctx).byStart.length === 0 &&
+  timeline
+    .getMutationTimeline(
+      ctx.rootMutationHazardsByBinding,
+      toMutationBindingKey(binding)
+    )
+    .byStart.every(
+      (hazard) =>
+        hazard.type === 'TemplateLiteral' ||
+        isKnownPureStaticCall(hazard, ctx, env)
+    );
+
+/**
  * A module `var` read that stands before its declaration in the source but
  * runs after it, such as an interpolation, which runs at the end of the
  * module. The `var` holds the value it has there. It is static only when the
@@ -895,8 +927,7 @@ const evaluateVarAtExecutionPoint = (
 ): StaticResult => {
   if (
     !binding.declarator?.init ||
-    binding.declarator.id.type !== 'Identifier' ||
-    getBindingDirectTimeline(binding, ctx).byStart.length > 0
+    !isVarWrittenOnlyByDeclaration(binding, ctx, env)
   ) {
     return unknownOutcome(UnknownReason.UnknownAtExecutionPoint);
   }
