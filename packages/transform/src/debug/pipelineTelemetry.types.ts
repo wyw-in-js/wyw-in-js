@@ -1,8 +1,21 @@
-export type CacheName = 'barrelManifests' | 'entrypoints' | 'exports';
-export type CacheOperation = 'get' | 'has';
-export type EntrypointStatus = 'cached' | 'created' | 'loop';
-export type ParseKind = 'cached' | 'uncached';
-export type RootStatus = 'error' | 'ignored' | 'soft-error' | 'success';
+import type {
+  CacheName,
+  PipelineCacheSaltOutcome,
+  PipelineNoMetadataPhase,
+  ParseKind,
+  RootStatus,
+} from '../telemetry/observer';
+
+export type {
+  CacheName,
+  CacheOperation,
+  EntrypointStatus,
+  ParseKind,
+  PipelineCacheSaltOutcome,
+  PipelineCleanupOutcome,
+  PipelineNoMetadataPhase,
+  RootStatus,
+} from '../telemetry/observer';
 
 export type Counter = {
   hits: number;
@@ -63,21 +76,6 @@ export type CleanupRemovalKinds = {
   scopedDeclarations: number;
   topLevelDeclarations: number;
 };
-
-export type PipelineCacheSaltOutcome =
-  | 'clear'
-  | 'disable'
-  | 'migrate'
-  | 'unchanged';
-
-export type PipelineNoMetadataPhase = 'collect' | 'preeval';
-
-export type PipelineCleanupOutcome =
-  | 'cap'
-  | 'converged'
-  | 'error'
-  | 'rollback'
-  | 'stalled';
 
 export type PipelineShakeRecord = {
   error: boolean;
