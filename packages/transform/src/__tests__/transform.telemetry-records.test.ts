@@ -32,11 +32,17 @@ const delay = (intervalMs: number) =>
     setTimeout(done, intervalMs);
   });
 
-const readJsonl = (file: string): JSONRecord[] =>
-  readFileSync(file, 'utf8')
+// The reporter writes a file in several async writes, so one read can end
+// inside a line: parse only the lines that the read holds in full.
+const readCompleteJsonl = (file: string): JSONRecord[] => {
+  if (!existsSync(file)) return [];
+  const text = readFileSync(file, 'utf8');
+  return text
+    .slice(0, text.lastIndexOf('\n') + 1)
     .split('\n')
     .filter(Boolean)
     .map((line) => JSON.parse(line));
+};
 
 const waitForRecords = async (
   file: string,
@@ -44,10 +50,8 @@ const waitForRecords = async (
 ): Promise<JSONRecord[]> => {
   const startedAt = Date.now();
   const poll = async (): Promise<JSONRecord[]> => {
-    if (existsSync(file) && readFileSync(file, 'utf8').endsWith('\n')) {
-      const records = readJsonl(file);
-      if (records.some((record) => record.type === type)) return records;
-    }
+    const records = readCompleteJsonl(file);
+    if (records.some((record) => record.type === type)) return records;
     if (Date.now() - startedAt > 5_000) {
       throw new Error(`no ${type} record in ${file}`);
     }
