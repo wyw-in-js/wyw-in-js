@@ -1,5 +1,10 @@
-import { AsyncLocalStorage } from 'node:async_hooks';
-
+import {
+  currentPipelineObserver,
+  runWithPipelineObserver,
+  type PipelineCleanupObserver,
+  type PipelineObserver,
+  type PipelineRootObserver,
+} from '../telemetry/observer';
 import { retainContentHashMemo } from '../utils/contentHash';
 import type { EventEmitter } from '../utils/EventEmitter';
 import {
@@ -83,23 +88,10 @@ export {
   type PipelineTelemetrySummary,
 };
 
-const telemetryStorage = new AsyncLocalStorage<
-  PipelineAccumulator | undefined
->();
 const reporterByEmitter = new WeakMap<
   EventEmitter,
   PipelineTelemetryReporter
 >();
-let activeTelemetryRoots = 0;
-
-const getAccumulator = (): PipelineAccumulator | undefined => {
-  if (activeTelemetryRoots === 0) {
-    return undefined;
-  }
-
-  const accumulator = telemetryStorage.getStore();
-  return accumulator && !accumulator.closed ? accumulator : undefined;
-};
 
 type PipelineTelemetryReporterSink =
   | ((summary: PipelineTelemetrySummary) => void)
@@ -108,34 +100,18 @@ type PipelineTelemetrySink = (
   summary: PipelineTelemetrySummary | PipelineTelemetryCompactSummary
 ) => void;
 type PipelineTelemetryReporter = {
-  codeMeasurements: PipelineAccumulator['codeMeasurements'];
   emit: (accumulator: PipelineAccumulator) => void;
 };
-
-export const hasPipelineTelemetryReporter = (emitter: EventEmitter): boolean =>
-  reporterByEmitter.has(emitter);
-
-export const isPipelineTelemetryActive = (): boolean =>
-  getAccumulator() !== undefined;
 
 const registerPipelineTelemetryEmitter = (
   emitter: EventEmitter,
   emit: PipelineTelemetryReporter['emit']
 ): (() => void) => {
-  const codeMeasurementEntries: PipelineAccumulator['codeMeasurements']['entries'] =
-    new Map();
-  const reporter: PipelineTelemetryReporter = {
-    codeMeasurements: {
-      codeUnits: 0,
-      count: 0,
-      entries: codeMeasurementEntries,
-      evictionKeys: codeMeasurementEntries.keys(),
-    },
-    emit,
-  };
+  const reporter: PipelineTelemetryReporter = { emit };
   reporterByEmitter.set(emitter, reporter);
   // Revisions are keyed by the same SHA-256 digests the transform cache
-  // computes, so keep the shared digest memo alive while reporting.
+  // computes, so keep the shared digest memo alive while reporting: it is
+  // what spares hashing a revision again in every root that observes it.
   const releaseContentHashMemo = retainContentHashMemo();
   let registered = true;
 
@@ -146,19 +122,11 @@ const registerPipelineTelemetryEmitter = (
 
     registered = false;
     releaseContentHashMemo();
-    reporter.codeMeasurements.entries.clear();
-    reporter.codeMeasurements.evictionKeys =
-      reporter.codeMeasurements.entries.keys();
-    reporter.codeMeasurements.codeUnits = 0;
-    reporter.codeMeasurements.count = 0;
     if (reporterByEmitter.get(emitter) === reporter) {
       reporterByEmitter.delete(emitter);
     }
   };
 };
-
-export const runWithoutPipelineTelemetry = <T>(callback: () => T): T =>
-  telemetryStorage.run(undefined, callback);
 
 export function registerPipelineTelemetryReporter(
   emitter: EventEmitter,
@@ -196,169 +164,168 @@ export const registerPipelineTelemetryJSONlReporter = (
     )
   );
 
-export const runWithPipelineTelemetry = <T>(
-  emitter: EventEmitter,
-  createRoot: () => { filename: string },
-  callback: () => T
-): T => {
-  const reporter = reporterByEmitter.get(emitter);
-  if (!reporter) {
-    return callback();
-  }
+const beginDangerousCode = (
+  accumulator: PipelineAccumulator,
+  filename: string
+): PipelineDangerousCodeToken => ({
+  accumulator,
+  filename,
+  finished: false,
+  startedAt: performance.now(),
+});
 
-  let accumulator: PipelineAccumulator;
+const beginShake = (
+  accumulator: PipelineAccumulator,
+  inputCode: string,
+  only: readonly string[],
+  mode: string
+): PipelineShakeToken => {
+  let inputBytes: number;
+  let inputRevision: string;
+  let normalizedOnly: string[];
   try {
-    accumulator = createAccumulator(
-      createRoot().filename,
-      reporter.codeMeasurements
-    );
+    const measurement = measureCode(accumulator, inputCode);
+    inputBytes = measurement.bytes;
+    inputRevision = measurement.revision;
+    normalizedOnly = normalizeOnly(accumulator, only).only;
   } catch {
-    return callback();
+    return undefined;
   }
-
-  activeTelemetryRoots += 1;
-  const finish = () => {
-    activeTelemetryRoots -= 1;
-    try {
-      reporter.emit(accumulator);
-    } catch {
-      // Debug reporting must never change transform behavior.
-    } finally {
-      releaseAccumulator(accumulator);
-    }
-  };
-
-  try {
-    const result = telemetryStorage.run(accumulator, callback);
-    if (result instanceof Promise) {
-      result.then(finish, () => {
-        accumulator.root.status = 'error';
-        finish();
-      });
-      return result;
-    }
-
-    finish();
-    return result;
-  } catch (error) {
-    accumulator.root.status = 'error';
-    finish();
-    throw error;
-  }
-};
-
-export const markPipelineRootStatus = (status: RootStatus): void => {
-  const accumulator = getAccumulator();
-  if (accumulator) {
-    accumulator.root.status = status;
-  }
-};
-
-export const recordPipelineCacheRequest = (
-  cache: CacheName,
-  operation: CacheOperation,
-  hit: boolean
-): void => {
-  const accumulator = getAccumulator();
-  if (!accumulator) {
-    return;
-  }
-
-  const index = CACHE_OPERATION_INDEX[cache][operation];
-  let counter = accumulator.cache.byOperation[index];
-  if (!counter) {
-    counter = { hits: 0, misses: 0, requests: 0 };
-    accumulator.cache.byOperation[index] = counter;
-  }
-  counter.requests += 1;
-  if (hit) {
-    counter.hits += 1;
-  } else {
-    counter.misses += 1;
-  }
-};
-
-export const recordPipelineCacheSalt = (
-  previous: string | null,
-  current: string | null,
-  outcome: PipelineCacheSaltOutcome
-): void => {
-  const accumulator = getAccumulator();
-  if (!accumulator) {
-    return;
-  }
-
-  if (outcome !== 'unchanged') {
-    accumulator.cache.salt.changes.push({ current, outcome, previous });
-  }
-  if (outcome === 'unchanged') accumulator.cache.salt.unchanged += 1;
-};
-
-export const recordPipelineCacheClear = (
-  cache: CacheName,
-  reason: string,
-  removedEntries: number
-): void => {
-  const accumulator = getAccumulator();
-  if (!accumulator) {
-    return;
-  }
-
-  const key = `${cache}\0${reason}`;
-  let counter = accumulator.cache.clearReasons.get(key);
-  if (!counter) {
-    counter = { cache, entries: 0, reason, requests: 0 };
-    accumulator.cache.clearReasons.set(key, counter);
-  }
-  counter.entries += removedEntries;
-  counter.requests += 1;
-};
-
-export const recordPipelineEntrypoint = (
-  isRoot: boolean,
-  isInitial: boolean,
-  status: EntrypointStatus,
-  only: readonly string[]
-): void => {
-  const accumulator = getAccumulator();
-  if (!accumulator) {
-    return;
-  }
-
-  const { key: onlyKey, only: normalizedOnly } = normalizeOnly(
+  accumulator.shakes.attempts += 1;
+  return {
     accumulator,
-    only
-  );
-  let onlyCounter = accumulator.entrypoints.byOnly.get(onlyKey);
-  if (!onlyCounter) {
-    onlyCounter = { count: 0, only: normalizedOnly };
-    accumulator.entrypoints.byOnly.set(onlyKey, onlyCounter);
-  }
-  onlyCounter.count += 1;
-  if (isRoot) {
-    accumulator.entrypoints.roots += 1;
-    if (isInitial) accumulator.entrypoints.initialRoots += 1;
-  } else {
-    accumulator.entrypoints.children += 1;
-  }
-  if (status === 'created') accumulator.entrypoints.created += 1;
-  if (status === 'cached') accumulator.entrypoints.cached += 1;
-  if (status === 'loop') accumulator.entrypoints.loops += 1;
+    finished: false,
+    inputBytes,
+    inputRevision,
+    mode,
+    only: normalizedOnly,
+  };
 };
 
-export const recordPipelineDisposableRoot = (
-  filename: string,
-  phase: PipelineNoMetadataPhase
+const beginCleanup = (
+  accumulator: PipelineAccumulator,
+  filename: string
+): PipelineCleanupToken => {
+  accumulator.cleanup.calls += 1;
+  return { accumulator, filename, finished: false };
+};
+
+export const finishPipelineDangerousCode = (
+  token: PipelineDangerousCodeToken
 ): void => {
-  const accumulator = getAccumulator();
-  if (!accumulator || accumulator.root.filename !== filename) {
+  if (!token || token.finished || token.accumulator.closed) {
+    return;
+  }
+  const dangerousToken = token;
+  dangerousToken.finished = true;
+  let current = dangerousToken.accumulator.dangerousByFile.get(
+    dangerousToken.filename
+  );
+  if (!current) {
+    current = { calls: 0, durationMs: 0 };
+    dangerousToken.accumulator.dangerousByFile.set(
+      dangerousToken.filename,
+      current
+    );
+  }
+  current.calls += 1;
+  current.durationMs += performance.now() - dangerousToken.startedAt;
+};
+
+export const finishPipelineShake = (
+  token: PipelineShakeToken,
+  outputCode: string | null,
+  error: boolean
+): void => {
+  if (!token || token.finished || token.accumulator.closed) {
+    return;
+  }
+  const shakeToken = token;
+  shakeToken.finished = true;
+  let generatedBytes = 0;
+  let outputRevision: string | null = null;
+  try {
+    if (outputCode !== null) {
+      const measurement = measureCode(shakeToken.accumulator, outputCode);
+      generatedBytes = measurement.bytes;
+      outputRevision = measurement.revision;
+    }
+  } catch {
+    // Debug measurement failures must not affect transform output.
+  }
+  if (error) shakeToken.accumulator.shakes.errors += 1;
+  else shakeToken.accumulator.shakes.successes += 1;
+  shakeToken.accumulator.shakes.generatedBytes += generatedBytes;
+  shakeToken.accumulator.shakes.calls.push({
+    error,
+    generatedBytes,
+    inputBytes: shakeToken.inputBytes,
+    inputRevision: shakeToken.inputRevision,
+    mode: shakeToken.mode,
+    only: shakeToken.only,
+    outputRevision,
+  });
+};
+
+export const recordPipelineCleanupIteration = (
+  token: PipelineCleanupToken,
+  code: string,
+  mergedRanges: readonly { end: number; start: number }[],
+  committed: boolean,
+  scopedDeclarations: number,
+  topLevelDeclarations: number,
+  generatedHelpers: number,
+  imports: number,
+  expressions: number,
+  emptyBlocks: number
+): void => {
+  if (!token || token.finished || token.accumulator.closed) {
     return;
   }
 
-  accumulator.entrypoints.disposableRootsByPhase.set(
-    phase,
-    (accumulator.entrypoints.disposableRootsByPhase.get(phase) ?? 0) + 1
-  );
+  const { cleanup } = token.accumulator;
+  let bytes = 0;
+  try {
+    const ascii = measureBytes(token.accumulator, code) === code.length;
+    mergedRanges.forEach(({ end, start }) => {
+      bytes += ascii ? end - start : Buffer.byteLength(code.slice(start, end));
+    });
+  } catch {
+    return;
+  }
+  cleanup.attemptedIterations += 1;
+  cleanup.attemptedRanges += mergedRanges.length;
+  cleanup.attemptedBytes += bytes;
+  cleanup.candidateRemovals.scopedDeclarations += scopedDeclarations;
+  cleanup.candidateRemovals.topLevelDeclarations += topLevelDeclarations;
+  cleanup.candidateRemovals.generatedHelpers += generatedHelpers;
+  cleanup.candidateRemovals.imports += imports;
+  cleanup.candidateRemovals.expressions += expressions;
+  cleanup.candidateRemovals.emptyBlocks += emptyBlocks;
+  if (committed) {
+    cleanup.committedIterations += 1;
+    cleanup.committedRanges += mergedRanges.length;
+    cleanup.committedBytes += bytes;
+  } else if (mergedRanges.length > 0) {
+    cleanup.rollbackBytes += bytes;
+  }
+};
+
+export const finishPipelineCleanup = (
+  token: PipelineCleanupToken,
+  outcome: PipelineCleanupOutcome
+): void => {
+  if (!token || token.finished || token.accumulator.closed) {
+    return;
+  }
+  const cleanupToken = token;
+  cleanupToken.finished = true;
+  const { cleanup } = cleanupToken.accumulator;
+  if (outcome === 'converged') cleanup.converged += 1;
+  if (outcome === 'rollback') cleanup.rollbacks += 1;
+  if (outcome === 'cap') cleanup.capHits += 1;
+  if (outcome === 'stalled') cleanup.stalled += 1;
+  if (outcome === 'error') cleanup.errors += 1;
 };
 
 const PIPELINE_PARSER_LANGUAGE_INDEX = {
@@ -469,250 +436,479 @@ const getPipelineParseRevision = (
   return revision;
 };
 
-export const recordPipelineRawTransferFallback = (
-  filename: string,
-  code: string,
-  sourceType: string,
-  astType: string,
-  kind: ParseKind,
-  jsxFallbackAllowed: boolean
-): void => {
-  const accumulator = getAccumulator();
-  if (!accumulator) return;
+/**
+ * The recording adapter of the pipeline observer: one per observed root, it
+ * accumulates the root's records and hands them to its reporter when the
+ * root settles. Work that outlives the root is dropped once it is closed.
+ */
+class RecordingPipelineObserver implements PipelineRootObserver {
+  constructor(
+    readonly accumulator: PipelineAccumulator,
+    private readonly reporter: PipelineTelemetryReporter
+  ) {}
 
-  try {
-    const revision = getPipelineParseRevision(
-      accumulator,
-      createPipelineParserKey(
-        sourceType,
-        filename,
-        astType,
-        jsxFallbackAllowed
-      ),
-      kind,
-      measureCode(accumulator, code)
-    );
-    // The logical request is recorded by the caller after parsing completes,
-    // including if the JSON retry throws. Do not add a request or error here.
-    revision.rawTransferFallbackAttempts += 1;
-  } catch {
-    // Diagnostics must never change parsing or recovery behavior.
-  }
-};
-
-export const recordPipelineCachedParseHit = (
-  cacheEntry: object,
-  filename: string,
-  code: string,
-  sourceType: string,
-  astType: string,
-  jsxFallback: boolean,
-  knownMeasurement?: CompletedCodeMeasurement
-): CompletedCodeMeasurement | undefined => {
-  const accumulator = getAccumulator();
-  if (!accumulator) {
-    return undefined;
+  beginCleanup(filename: string): PipelineCleanupObserver {
+    const token = this.accumulator.closed
+      ? undefined
+      : beginCleanup(this.accumulator, filename);
+    return {
+      finish: (outcome) => finishPipelineCleanup(token, outcome),
+      recordIteration: (...iteration) =>
+        recordPipelineCleanupIteration(token, ...iteration),
+    };
   }
 
-  if (knownMeasurement) {
-    const knownRevision = accumulator.parse.cachedRevisions.get(cacheEntry);
-    if (knownRevision) {
-      updatePipelineCachedHitCounters(knownRevision, jsxFallback);
-      return knownMeasurement;
+  finishRoot(failed: boolean): void {
+    const { accumulator } = this;
+    if (failed) {
+      accumulator.root.status = 'error';
+    }
+    try {
+      this.reporter.emit(accumulator);
+    } catch {
+      // Debug reporting must never change transform behavior.
+    } finally {
+      releaseAccumulator(accumulator);
     }
   }
 
-  let measurement: CompletedCodeMeasurement;
-  try {
-    measurement = knownMeasurement
-      ? getCodeMeasurement(accumulator, code) ??
-        setMissingCodeMeasurement(accumulator, code, knownMeasurement)
-      : measureCode(accumulator, code, false);
-  } catch {
-    return undefined;
+  markRootStatus(status: RootStatus): void {
+    if (!this.accumulator.closed) {
+      this.accumulator.root.status = status;
+    }
   }
-  let revision = accumulator.parse.cachedRevisions.get(cacheEntry);
-  if (!revision) {
-    revision = getPipelineParseRevision(
-      accumulator,
-      createPipelineParserKey(
-        sourceType,
-        filename,
-        astType,
-        filename.endsWith('.js')
-      ),
-      'cached',
-      measurement
-    );
-    accumulator.parse.cachedRevisions.set(cacheEntry, revision);
+
+  observeDangerousCode<T>(filename: string, removeDangerousCode: () => T): T {
+    if (this.accumulator.closed) {
+      return removeDangerousCode();
+    }
+
+    const token = beginDangerousCode(this.accumulator, filename);
+    try {
+      return removeDangerousCode();
+    } finally {
+      finishPipelineDangerousCode(token);
+    }
   }
-  updatePipelineCachedHitCounters(revision, jsxFallback);
-  return measurement;
-};
 
-const recordPipelineParseMiss = (
-  filename: string,
-  code: string,
-  sourceType: string,
-  astType: string,
-  kind: ParseKind,
-  jsxFallback: boolean,
-  error: boolean,
-  jsxFallbackAllowed: boolean,
-  cacheEntry?: object
-): CompletedCodeMeasurement | undefined => {
-  const accumulator = getAccumulator();
-  if (!accumulator) return undefined;
+  observeShake<T extends { code: string }>(
+    inputCode: string,
+    only: readonly string[],
+    mode: string,
+    shake: () => T
+  ): T {
+    const token = this.accumulator.closed
+      ? undefined
+      : beginShake(this.accumulator, inputCode, only, mode);
+    if (!token) {
+      return shake();
+    }
 
-  try {
-    const measurement = measureCode(accumulator, code);
-    const revision = getPipelineParseRevision(
-      accumulator,
-      createPipelineParserKey(
-        sourceType,
-        filename,
-        astType,
-        jsxFallbackAllowed
-      ),
-      kind,
-      measurement
-    );
-    if (cacheEntry) {
+    try {
+      const shaken = shake();
+      finishPipelineShake(token, shaken.code, false);
+      return shaken;
+    } catch (error) {
+      finishPipelineShake(token, null, true);
+      throw error;
+    }
+  }
+
+  recordCacheClear(cache: CacheName, reason: string, removedEntries: number) {
+    const { accumulator } = this;
+    if (accumulator.closed) {
+      return;
+    }
+
+    const key = `${cache}\0${reason}`;
+    let counter = accumulator.cache.clearReasons.get(key);
+    if (!counter) {
+      counter = { cache, entries: 0, reason, requests: 0 };
+      accumulator.cache.clearReasons.set(key, counter);
+    }
+    counter.entries += removedEntries;
+    counter.requests += 1;
+  }
+
+  recordCacheRequest(
+    cache: CacheName,
+    operation: CacheOperation,
+    hit: boolean
+  ): void {
+    const { accumulator } = this;
+    if (accumulator.closed) {
+      return;
+    }
+
+    const index = CACHE_OPERATION_INDEX[cache][operation];
+    let counter = accumulator.cache.byOperation[index];
+    if (!counter) {
+      counter = { hits: 0, misses: 0, requests: 0 };
+      accumulator.cache.byOperation[index] = counter;
+    }
+    counter.requests += 1;
+    if (hit) {
+      counter.hits += 1;
+    } else {
+      counter.misses += 1;
+    }
+  }
+
+  recordCacheSalt(
+    previous: string | null,
+    current: string | null,
+    outcome: PipelineCacheSaltOutcome
+  ): void {
+    const { accumulator } = this;
+    if (accumulator.closed) {
+      return;
+    }
+
+    if (outcome !== 'unchanged') {
+      accumulator.cache.salt.changes.push({ current, outcome, previous });
+    }
+    if (outcome === 'unchanged') accumulator.cache.salt.unchanged += 1;
+  }
+
+  recordCachedParseHit(
+    cacheEntry: object,
+    filename: string,
+    code: string,
+    sourceType: string,
+    astType: string,
+    jsxFallback: boolean,
+    knownMeasurement?: CompletedCodeMeasurement
+  ): CompletedCodeMeasurement | undefined {
+    const { accumulator } = this;
+    if (accumulator.closed) {
+      return undefined;
+    }
+
+    if (knownMeasurement) {
+      const knownRevision = accumulator.parse.cachedRevisions.get(cacheEntry);
+      if (knownRevision) {
+        updatePipelineCachedHitCounters(knownRevision, jsxFallback);
+        return knownMeasurement;
+      }
+    }
+
+    let measurement: CompletedCodeMeasurement;
+    try {
+      measurement = knownMeasurement
+        ? getCodeMeasurement(accumulator, code) ??
+          setMissingCodeMeasurement(accumulator, code, knownMeasurement)
+        : measureCode(accumulator, code);
+    } catch {
+      return undefined;
+    }
+    let revision = accumulator.parse.cachedRevisions.get(cacheEntry);
+    if (!revision) {
+      revision = getPipelineParseRevision(
+        accumulator,
+        createPipelineParserKey(
+          sourceType,
+          filename,
+          astType,
+          filename.endsWith('.js')
+        ),
+        'cached',
+        measurement
+      );
       accumulator.parse.cachedRevisions.set(cacheEntry, revision);
     }
-    updatePipelineParseMissCounters(revision, kind, jsxFallback, error);
+    updatePipelineCachedHitCounters(revision, jsxFallback);
     return measurement;
+  }
+
+  recordCachedParseMiss(
+    filename: string,
+    code: string,
+    sourceType: string,
+    astType: string,
+    jsxFallback: boolean,
+    error: boolean,
+    cacheEntry?: object
+  ): CompletedCodeMeasurement | undefined {
+    return this.recordParseMiss(
+      filename,
+      code,
+      sourceType,
+      astType,
+      'cached',
+      jsxFallback,
+      error,
+      filename.endsWith('.js'),
+      cacheEntry
+    );
+  }
+
+  recordDisposableRoot(filename: string, phase: PipelineNoMetadataPhase) {
+    const { accumulator } = this;
+    if (accumulator.closed || accumulator.root.filename !== filename) {
+      return;
+    }
+
+    accumulator.entrypoints.disposableRootsByPhase.set(
+      phase,
+      (accumulator.entrypoints.disposableRootsByPhase.get(phase) ?? 0) + 1
+    );
+  }
+
+  recordEntrypoint(
+    isRoot: boolean,
+    isInitial: boolean,
+    status: EntrypointStatus,
+    only: readonly string[]
+  ): void {
+    const { accumulator } = this;
+    if (accumulator.closed) {
+      return;
+    }
+
+    const { key: onlyKey, only: normalizedOnly } = normalizeOnly(
+      accumulator,
+      only
+    );
+    let onlyCounter = accumulator.entrypoints.byOnly.get(onlyKey);
+    if (!onlyCounter) {
+      onlyCounter = { count: 0, only: normalizedOnly };
+      accumulator.entrypoints.byOnly.set(onlyKey, onlyCounter);
+    }
+    onlyCounter.count += 1;
+    if (isRoot) {
+      accumulator.entrypoints.roots += 1;
+      if (isInitial) accumulator.entrypoints.initialRoots += 1;
+    } else {
+      accumulator.entrypoints.children += 1;
+    }
+    if (status === 'created') accumulator.entrypoints.created += 1;
+    if (status === 'cached') accumulator.entrypoints.cached += 1;
+    if (status === 'loop') accumulator.entrypoints.loops += 1;
+  }
+
+  recordLateNoMetadata(
+    filename: string,
+    only: readonly string[],
+    phase: PipelineNoMetadataPhase
+  ): void {
+    const { accumulator } = this;
+    if (accumulator.closed) {
+      return;
+    }
+
+    accumulator.lateNoMetadata.push({
+      filename,
+      only: normalizeOnly(accumulator, only).only,
+      phase,
+    });
+  }
+
+  recordProcessors(
+    phase: string,
+    reusedPlan: boolean,
+    importCandidates: number,
+    lookupAttempts: number,
+    lookupHits: number,
+    definedProcessors: number,
+    usages: number
+  ): void {
+    const { accumulator } = this;
+    if (accumulator.closed) {
+      return;
+    }
+
+    let phaseCounter = accumulator.processors.byPhase.get(phase);
+    if (!phaseCounter) {
+      phaseCounter = EMPTY_PROCESSOR_COUNTER();
+      accumulator.processors.byPhase.set(phase, phaseCounter);
+    }
+    addProcessorCounter(
+      phaseCounter,
+      reusedPlan,
+      importCandidates,
+      lookupAttempts,
+      lookupHits,
+      definedProcessors,
+      usages
+    );
+  }
+
+  recordRawTransferFallback(
+    filename: string,
+    code: string,
+    sourceType: string,
+    astType: string,
+    kind: ParseKind,
+    jsxFallbackAllowed: boolean
+  ): void {
+    const { accumulator } = this;
+    if (accumulator.closed) return;
+
+    try {
+      const revision = getPipelineParseRevision(
+        accumulator,
+        createPipelineParserKey(
+          sourceType,
+          filename,
+          astType,
+          jsxFallbackAllowed
+        ),
+        kind,
+        measureCode(accumulator, code)
+      );
+      // The logical request is recorded by the caller after parsing completes,
+      // including if the JSON retry throws. Do not add a request or error here.
+      revision.rawTransferFallbackAttempts += 1;
+    } catch {
+      // Diagnostics must never change parsing or recovery behavior.
+    }
+  }
+
+  recordUncachedParse(
+    filename: string,
+    code: string,
+    sourceType: string,
+    astType: string,
+    error: boolean,
+    jsxFallback = false,
+    jsxFallbackAllowed = false
+  ): void {
+    this.recordParseMiss(
+      filename,
+      code,
+      sourceType,
+      astType,
+      'uncached',
+      jsxFallback,
+      error,
+      jsxFallbackAllowed
+    );
+  }
+
+  private recordParseMiss(
+    filename: string,
+    code: string,
+    sourceType: string,
+    astType: string,
+    kind: ParseKind,
+    jsxFallback: boolean,
+    error: boolean,
+    jsxFallbackAllowed: boolean,
+    cacheEntry?: object
+  ): CompletedCodeMeasurement | undefined {
+    const { accumulator } = this;
+    if (accumulator.closed) return undefined;
+
+    try {
+      const measurement = measureCode(accumulator, code);
+      const revision = getPipelineParseRevision(
+        accumulator,
+        createPipelineParserKey(
+          sourceType,
+          filename,
+          astType,
+          jsxFallbackAllowed
+        ),
+        kind,
+        measurement
+      );
+      if (cacheEntry) {
+        accumulator.parse.cachedRevisions.set(cacheEntry, revision);
+      }
+      updatePipelineParseMissCounters(revision, kind, jsxFallback, error);
+      return measurement;
+    } catch {
+      // Debug reporting must never change parser behavior or its errors.
+      return undefined;
+    }
+  }
+}
+
+/**
+ * Creates the recording observer of a transform root when a pipeline
+ * reporter is registered on `emitter`; without one, nothing is evaluated.
+ */
+export const createPipelineTelemetryObserver = (
+  emitter: EventEmitter,
+  createRoot: () => { filename: string }
+): PipelineRootObserver | undefined => {
+  const reporter = reporterByEmitter.get(emitter);
+  if (!reporter) {
+    return undefined;
+  }
+
+  try {
+    return new RecordingPipelineObserver(
+      createAccumulator(createRoot().filename),
+      reporter
+    );
   } catch {
-    // Debug reporting must never change parser behavior or its errors.
     return undefined;
   }
 };
 
-export const recordPipelineCachedParseMiss = (
-  filename: string,
-  code: string,
-  sourceType: string,
-  astType: string,
-  jsxFallback: boolean,
-  error: boolean,
-  cacheEntry?: object
-): CompletedCodeMeasurement | undefined =>
-  recordPipelineParseMiss(
-    filename,
-    code,
-    sourceType,
-    astType,
-    'cached',
-    jsxFallback,
-    error,
-    filename.endsWith('.js'),
-    cacheEntry
-  );
-
-export const recordPipelineUncachedParse = (
-  filename: string,
-  code: string,
-  sourceType: string,
-  astType: string,
-  error: boolean,
-  jsxFallback = false,
-  jsxFallbackAllowed = false
-): void => {
-  recordPipelineParseMiss(
-    filename,
-    code,
-    sourceType,
-    astType,
-    'uncached',
-    jsxFallback,
-    error,
-    jsxFallbackAllowed
-  );
+export const runWithPipelineTelemetry = <T>(
+  emitter: EventEmitter,
+  createRoot: () => { filename: string },
+  callback: () => T
+): T => {
+  const observer = createPipelineTelemetryObserver(emitter, createRoot);
+  return observer ? runWithPipelineObserver(observer, callback) : callback();
 };
 
-export const recordPipelineProcessors = (
-  phase: string,
-  reusedPlan: boolean,
-  importCandidates: number,
-  lookupAttempts: number,
-  lookupHits: number,
-  definedProcessors: number,
-  usages: number
-): void => {
-  const accumulator = getAccumulator();
-  if (!accumulator) {
-    return;
-  }
+export const runWithoutPipelineTelemetry = <T>(callback: () => T): T =>
+  runWithPipelineObserver(undefined, callback);
 
-  let phaseCounter = accumulator.processors.byPhase.get(phase);
-  if (!phaseCounter) {
-    phaseCounter = EMPTY_PROCESSOR_COUNTER();
-    accumulator.processors.byPhase.set(phase, phaseCounter);
-  }
-  addProcessorCounter(
-    phaseCounter,
-    reusedPlan,
-    importCandidates,
-    lookupAttempts,
-    lookupHits,
-    definedProcessors,
-    usages
-  );
+// The functions below report to the observer of the current root, the way the
+// pipeline does; they are the recording adapter's API for tests and tools.
+const pipeline = (): PipelineObserver => currentPipelineObserver();
+
+const getAccumulator = (): PipelineAccumulator | undefined => {
+  const observer = pipeline();
+  return observer instanceof RecordingPipelineObserver &&
+    !observer.accumulator.closed
+    ? observer.accumulator
+    : undefined;
 };
+
+export const hasPipelineTelemetryReporter = (emitter: EventEmitter): boolean =>
+  reporterByEmitter.has(emitter);
+
+export const markPipelineRootStatus: PipelineObserver['markRootStatus'] = (
+  ...args
+) => pipeline().markRootStatus(...args);
+export const recordPipelineCacheRequest: PipelineObserver['recordCacheRequest'] =
+  (...args) => pipeline().recordCacheRequest(...args);
+export const recordPipelineCacheSalt: PipelineObserver['recordCacheSalt'] = (
+  ...args
+) => pipeline().recordCacheSalt(...args);
+export const recordPipelineCacheClear: PipelineObserver['recordCacheClear'] = (
+  ...args
+) => pipeline().recordCacheClear(...args);
+export const recordPipelineEntrypoint: PipelineObserver['recordEntrypoint'] = (
+  ...args
+) => pipeline().recordEntrypoint(...args);
+export const recordPipelineDisposableRoot: PipelineObserver['recordDisposableRoot'] =
+  (...args) => pipeline().recordDisposableRoot(...args);
+export const recordPipelineRawTransferFallback: PipelineObserver['recordRawTransferFallback'] =
+  (...args) => pipeline().recordRawTransferFallback(...args);
+export const recordPipelineCachedParseHit: PipelineObserver['recordCachedParseHit'] =
+  (...args) => pipeline().recordCachedParseHit(...args);
+export const recordPipelineCachedParseMiss: PipelineObserver['recordCachedParseMiss'] =
+  (...args) => pipeline().recordCachedParseMiss(...args);
+export const recordPipelineUncachedParse: PipelineObserver['recordUncachedParse'] =
+  (...args) => pipeline().recordUncachedParse(...args);
+export const recordPipelineProcessors: PipelineObserver['recordProcessors'] = (
+  ...args
+) => pipeline().recordProcessors(...args);
+export const recordPipelineLateNoMetadata: PipelineObserver['recordLateNoMetadata'] =
+  (...args) => pipeline().recordLateNoMetadata(...args);
 
 export const beginPipelineDangerousCode = (
   filename: string
 ): PipelineDangerousCodeToken => {
   const accumulator = getAccumulator();
-  if (!accumulator) {
-    return undefined;
-  }
-
-  return {
-    accumulator,
-    filename,
-    finished: false,
-    startedAt: performance.now(),
-  };
-};
-
-export const finishPipelineDangerousCode = (
-  token: PipelineDangerousCodeToken
-): void => {
-  if (!token || token.finished || token.accumulator.closed) {
-    return;
-  }
-  const dangerousToken = token;
-  dangerousToken.finished = true;
-  let current = dangerousToken.accumulator.dangerousByFile.get(
-    dangerousToken.filename
-  );
-  if (!current) {
-    current = { calls: 0, durationMs: 0 };
-    dangerousToken.accumulator.dangerousByFile.set(
-      dangerousToken.filename,
-      current
-    );
-  }
-  current.calls += 1;
-  current.durationMs += performance.now() - dangerousToken.startedAt;
-};
-
-export const recordPipelineLateNoMetadata = (
-  filename: string,
-  only: readonly string[],
-  phase: PipelineNoMetadataPhase
-): void => {
-  const accumulator = getAccumulator();
-  if (!accumulator) {
-    return;
-  }
-
-  accumulator.lateNoMetadata.push({
-    filename,
-    only: normalizeOnly(accumulator, only).only,
-    phase,
-  });
+  return accumulator ? beginDangerousCode(accumulator, filename) : undefined;
 };
 
 export const beginPipelineShake = (
@@ -721,136 +917,14 @@ export const beginPipelineShake = (
   mode: string
 ): PipelineShakeToken => {
   const accumulator = getAccumulator();
-  if (!accumulator) {
-    return undefined;
-  }
-
-  let inputBytes: number;
-  let inputRevision: string;
-  let normalizedOnly: string[];
-  try {
-    const measurement = measureCode(accumulator, inputCode);
-    inputBytes = measurement.bytes;
-    inputRevision = measurement.revision;
-    normalizedOnly = normalizeOnly(accumulator, only).only;
-  } catch {
-    return undefined;
-  }
-  accumulator.shakes.attempts += 1;
-  return {
-    accumulator,
-    finished: false,
-    inputBytes,
-    inputRevision,
-    mode,
-    only: normalizedOnly,
-  };
-};
-
-export const finishPipelineShake = (
-  token: PipelineShakeToken,
-  outputCode: string | null,
-  error: boolean
-): void => {
-  if (!token || token.finished || token.accumulator.closed) {
-    return;
-  }
-  const shakeToken = token;
-  shakeToken.finished = true;
-  let generatedBytes = 0;
-  let outputRevision: string | null = null;
-  try {
-    if (outputCode !== null) {
-      const measurement = measureCode(shakeToken.accumulator, outputCode);
-      generatedBytes = measurement.bytes;
-      outputRevision = measurement.revision;
-    }
-  } catch {
-    // Debug measurement failures must not affect transform output.
-  }
-  if (error) shakeToken.accumulator.shakes.errors += 1;
-  else shakeToken.accumulator.shakes.successes += 1;
-  shakeToken.accumulator.shakes.generatedBytes += generatedBytes;
-  shakeToken.accumulator.shakes.calls.push({
-    error,
-    generatedBytes,
-    inputBytes: shakeToken.inputBytes,
-    inputRevision: shakeToken.inputRevision,
-    mode: shakeToken.mode,
-    only: shakeToken.only,
-    outputRevision,
-  });
+  return accumulator
+    ? beginShake(accumulator, inputCode, only, mode)
+    : undefined;
 };
 
 export const beginPipelineCleanup = (
   filename: string
 ): PipelineCleanupToken => {
   const accumulator = getAccumulator();
-  if (!accumulator) {
-    return undefined;
-  }
-
-  accumulator.cleanup.calls += 1;
-  return { accumulator, filename, finished: false };
-};
-
-export const recordPipelineCleanupIteration = (
-  token: PipelineCleanupToken,
-  code: string,
-  mergedRanges: readonly { end: number; start: number }[],
-  committed: boolean,
-  scopedDeclarations: number,
-  topLevelDeclarations: number,
-  generatedHelpers: number,
-  imports: number,
-  expressions: number,
-  emptyBlocks: number
-): void => {
-  if (!token || token.finished || token.accumulator.closed) {
-    return;
-  }
-
-  const { cleanup } = token.accumulator;
-  let bytes = 0;
-  try {
-    const ascii = measureBytes(token.accumulator, code) === code.length;
-    mergedRanges.forEach(({ end, start }) => {
-      bytes += ascii ? end - start : Buffer.byteLength(code.slice(start, end));
-    });
-  } catch {
-    return;
-  }
-  cleanup.attemptedIterations += 1;
-  cleanup.attemptedRanges += mergedRanges.length;
-  cleanup.attemptedBytes += bytes;
-  cleanup.candidateRemovals.scopedDeclarations += scopedDeclarations;
-  cleanup.candidateRemovals.topLevelDeclarations += topLevelDeclarations;
-  cleanup.candidateRemovals.generatedHelpers += generatedHelpers;
-  cleanup.candidateRemovals.imports += imports;
-  cleanup.candidateRemovals.expressions += expressions;
-  cleanup.candidateRemovals.emptyBlocks += emptyBlocks;
-  if (committed) {
-    cleanup.committedIterations += 1;
-    cleanup.committedRanges += mergedRanges.length;
-    cleanup.committedBytes += bytes;
-  } else if (mergedRanges.length > 0) {
-    cleanup.rollbackBytes += bytes;
-  }
-};
-
-export const finishPipelineCleanup = (
-  token: PipelineCleanupToken,
-  outcome: PipelineCleanupOutcome
-): void => {
-  if (!token || token.finished || token.accumulator.closed) {
-    return;
-  }
-  const cleanupToken = token;
-  cleanupToken.finished = true;
-  const { cleanup } = cleanupToken.accumulator;
-  if (outcome === 'converged') cleanup.converged += 1;
-  if (outcome === 'rollback') cleanup.rollbacks += 1;
-  if (outcome === 'cap') cleanup.capHits += 1;
-  if (outcome === 'stalled') cleanup.stalled += 1;
-  if (outcome === 'error') cleanup.errors += 1;
+  return accumulator ? beginCleanup(accumulator, filename) : undefined;
 };

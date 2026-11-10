@@ -37,13 +37,11 @@ import { EntrypointEvictedError } from './transform/actions/EntrypointEvictedErr
 import { CacheRecoveryConvergenceError } from './transform/actions/CacheRecoveryConvergenceError';
 import type { Result } from './types';
 import { isRootWithoutProcessors } from './utils/processorImportPrecheck';
+import { createPipelineTelemetryObserver } from './debug/pipelineTelemetry';
 import {
-  hasPipelineTelemetryReporter,
-  isPipelineTelemetryActive,
-  markPipelineRootStatus,
-  runWithoutPipelineTelemetry,
-  runWithPipelineTelemetry,
-} from './debug/pipelineTelemetry';
+  currentPipelineObserver,
+  runWithPipelineObserver,
+} from './telemetry/observer';
 
 type DeprecatedServices =
   | 'asyncResolve'
@@ -170,7 +168,7 @@ const executeTransformAttempt = async (
   if (entrypoint.ignored) {
     entrypoint.assertCurrentCacheEpoch();
     entrypoint.assertNotSuperseded();
-    markPipelineRootStatus('ignored');
+    currentPipelineObserver().markRootStatus('ignored');
     return {
       code: originalCode,
       sourceMap: options.inputSourceMap,
@@ -399,7 +397,7 @@ const executeTransform = async (
     if (
       isFeatureEnabled(pluginOptions.features, 'softErrors', options.filename)
     ) {
-      markPipelineRootStatus('soft-error');
+      currentPipelineObserver().markRootStatus('soft-error');
       // eslint-disable-next-line no-console
       console.error(`Error during transform of ${options.filename}:`, error);
 
@@ -453,30 +451,14 @@ export function transform(
     warnCustomHandlersDeprecated();
   }
 
+  // A transform without a reporter runs in a root of its own too, so that its
+  // work stays out of an enclosing observed root.
   const { eventEmitter } = partialServices;
-  if (!eventEmitter || !hasPipelineTelemetryReporter(eventEmitter)) {
-    if (isPipelineTelemetryActive()) {
-      return runWithoutPipelineTelemetry(() =>
-        executeTransform(
-          partialServices,
-          originalCode,
-          asyncResolve,
-          customHandlers
-        )
-      );
-    }
-
-    return executeTransform(
-      partialServices,
-      originalCode,
-      asyncResolve,
-      customHandlers
-    );
-  }
-
-  return runWithPipelineTelemetry(
-    eventEmitter,
-    () => ({ filename: partialServices.options.filename }),
+  return runWithPipelineObserver(
+    eventEmitter &&
+      createPipelineTelemetryObserver(eventEmitter, () => ({
+        filename: partialServices.options.filename,
+      })),
     () =>
       executeTransform(
         partialServices,

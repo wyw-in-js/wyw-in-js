@@ -3,7 +3,7 @@ import { Entrypoint } from '../transform/Entrypoint';
 import { isSuperSet } from '../transform/Entrypoint.helpers';
 import { collectOxcImportMap } from '../utils/oxcImportMap';
 import { prepareCodeForEvalRuntime } from '../transform/generators/transform';
-import type { EvalPreparationToken } from '../debug/evalTelemetry.types';
+import type { EvalPreparationObserver } from '../telemetry/observer';
 import { AbortError } from '../transform/actions/AbortError';
 
 export const PREPARED_MODULE_PUBLICATION = Symbol('preparedModulePublication');
@@ -22,7 +22,7 @@ export function prepareModuleOnDemand(
   services: Services,
   id: string,
   only: string[],
-  telemetry?: EvalPreparationToken,
+  telemetry?: EvalPreparationObserver,
   graphTraversalToken?: object,
   activeEntrypoint?: Entrypoint
 ): PreparedModuleWithPublication {

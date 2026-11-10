@@ -29,16 +29,6 @@ import {
   type PipelineTelemetryCompactSummary,
   type PipelineTelemetrySummary,
 } from '../debug/pipelineTelemetry';
-import {
-  getCodeMeasurement,
-  measureCode,
-  setCodeMeasurement,
-} from '../debug/pipelineTelemetry.measurements';
-import {
-  createAccumulator,
-  releaseAccumulator,
-} from '../debug/pipelineTelemetry.state';
-import type { CodeMeasurementCache } from '../debug/pipelineTelemetry.types';
 import { transform } from '../transform';
 import { removeUnusedAfterReplacement } from '../utils/applyOxcProcessors/cleanup-after-replacement';
 import { ContentHashMemo } from '../utils/contentHash';
@@ -228,83 +218,6 @@ describe('pipeline telemetry boundary', () => {
         revision: revisionOf(code),
       }),
     ]);
-  });
-
-  it('bounds and reuses shared code measurements across roots', () => {
-    const cache: CodeMeasurementCache = {
-      codeUnits: 0,
-      count: 0,
-      entries: new Map(),
-      evictionKeys: [][Symbol.iterator](),
-    };
-    cache.evictionKeys = cache.entries.keys();
-    const firstAccumulator = createAccumulator('/project/first.ts', cache);
-    let oldestCode = '';
-    let newestCode = '';
-    let newestMeasurement: { bytes: number; revision: string } | undefined;
-
-    for (let index = 0; index < 4_097; index += 1) {
-      const code = String.fromCharCode(
-        33 + Math.floor(index / 1_024),
-        97,
-        33 + (Math.floor(index / 32) % 32),
-        97,
-        33 + (index % 32)
-      );
-      const measurement = { bytes: 5, revision: `revision-${index}` };
-      setCodeMeasurement(firstAccumulator, code, measurement);
-      if (index === 0) oldestCode = code;
-      if (index === 4_096) {
-        newestCode = code;
-        newestMeasurement = measurement;
-      }
-    }
-    releaseAccumulator(firstAccumulator);
-
-    expect(cache).toMatchObject({
-      codeUnits: 4_096 * 5,
-      count: 4_096,
-    });
-    expect(cache.entries.size).toBe(4_096);
-
-    const secondAccumulator = createAccumulator('/project/second.ts', cache);
-    expect(getCodeMeasurement(secondAccumulator, oldestCode)).toBeUndefined();
-    expect(getCodeMeasurement(secondAccumulator, newestCode)).toBe(
-      newestMeasurement
-    );
-    const replacement = { bytes: 5, revision: 'replacement' };
-    setCodeMeasurement(secondAccumulator, newestCode, replacement);
-    expect(getCodeMeasurement(secondAccumulator, newestCode)).toBe(replacement);
-    expect(cache).toMatchObject({
-      codeUnits: 4_096 * 5,
-      count: 4_096,
-    });
-    releaseAccumulator(secondAccumulator);
-  });
-
-  it('upgrades a shared bytes-only measurement without changing retention', () => {
-    const entries: CodeMeasurementCache['entries'] = new Map();
-    const cache: CodeMeasurementCache = {
-      codeUnits: 0,
-      count: 0,
-      entries,
-      evictionKeys: entries.keys(),
-    };
-    const code = 'same';
-    const firstAccumulator = createAccumulator('/project/first.ts', cache);
-    setCodeMeasurement(firstAccumulator, code, { bytes: code.length });
-    releaseAccumulator(firstAccumulator);
-
-    const secondAccumulator = createAccumulator('/project/second.ts', cache);
-    expect(measureCode(secondAccumulator, code).revision).toBe(
-      revisionOf(code)
-    );
-    expect(cache).toMatchObject({
-      codeUnits: code.length,
-      count: 1,
-    });
-    expect(cache.entries.size).toBe(1);
-    releaseAccumulator(secondAccumulator);
   });
 
   it('does not evaluate root metadata when no internal reporter is registered', async () => {

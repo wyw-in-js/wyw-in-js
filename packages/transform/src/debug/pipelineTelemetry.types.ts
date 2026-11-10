@@ -1,8 +1,21 @@
-export type CacheName = 'barrelManifests' | 'entrypoints' | 'exports';
-export type CacheOperation = 'get' | 'has';
-export type EntrypointStatus = 'cached' | 'created' | 'loop';
-export type ParseKind = 'cached' | 'uncached';
-export type RootStatus = 'error' | 'ignored' | 'soft-error' | 'success';
+import type {
+  CacheName,
+  PipelineCacheSaltOutcome,
+  PipelineNoMetadataPhase,
+  ParseKind,
+  RootStatus,
+} from '../telemetry/observer';
+
+export type {
+  CacheName,
+  CacheOperation,
+  EntrypointStatus,
+  ParseKind,
+  PipelineCacheSaltOutcome,
+  PipelineCleanupOutcome,
+  PipelineNoMetadataPhase,
+  RootStatus,
+} from '../telemetry/observer';
 
 export type Counter = {
   hits: number;
@@ -48,13 +61,6 @@ export type CodeMeasurementBucket =
   | CodeMeasurementEntry
   | CodeMeasurementEntry[];
 
-export type CodeMeasurementCache = {
-  codeUnits: number;
-  count: number;
-  entries: Map<number, CodeMeasurementBucket>;
-  evictionKeys: IterableIterator<number>;
-};
-
 export type CleanupRemovalKinds = {
   emptyBlocks: number;
   expressions: number;
@@ -63,21 +69,6 @@ export type CleanupRemovalKinds = {
   scopedDeclarations: number;
   topLevelDeclarations: number;
 };
-
-export type PipelineCacheSaltOutcome =
-  | 'clear'
-  | 'disable'
-  | 'migrate'
-  | 'unchanged';
-
-export type PipelineNoMetadataPhase = 'collect' | 'preeval';
-
-export type PipelineCleanupOutcome =
-  | 'cap'
-  | 'converged'
-  | 'error'
-  | 'rollback'
-  | 'stalled';
 
 export type PipelineShakeRecord = {
   error: boolean;
@@ -121,7 +112,6 @@ export type PipelineAccumulator = {
     attemptedIterations: number;
     attemptedRanges: number;
   };
-  codeMeasurements: CodeMeasurementCache;
   closed: boolean;
   dangerousByFile: Map<string, { calls: number; durationMs: number }>;
   entrypoints: {
@@ -141,7 +131,6 @@ export type PipelineAccumulator = {
   }>;
   lastCode: string | undefined;
   lastMeasurement: CodeMeasurement | undefined;
-  lastSharedMissCode: string | undefined;
   localCodeMeasurements: Map<number, CodeMeasurementBucket>;
   onlyNormalizations: Map<readonly string[], { key: string; only: string[] }>;
   parse: {

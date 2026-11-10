@@ -1,3 +1,4 @@
+import { NOOP_EVAL_PREPARATION_OBSERVER } from '../telemetry/observer';
 import type { EventEmitter } from '../utils/EventEmitter';
 import { serializeEvalTelemetryJSONl } from './evalTelemetry.jsonl';
 import { EVAL_TELEMETRY_SCHEMA } from './evalTelemetry.schema';
@@ -77,12 +78,6 @@ type EvalRootAccumulator = Omit<EvalTelemetryRootRecord, 'loads' | 'root'> & {
 };
 
 const reporterByEmitter = new WeakMap<EventEmitter, EvalTelemetryReporter>();
-
-const INACTIVE_PREPARATION_TOKEN: EvalPreparationToken = {
-  fail: () => {},
-  finish: () => {},
-  measureStage: (_stage, callback) => callback(),
-};
 
 export const hasEvalTelemetryReporter = (emitter: EventEmitter): boolean =>
   reporterByEmitter.has(emitter);
@@ -576,7 +571,7 @@ export const beginEvalTelemetry = (
   return {
     beginPreparation: (id, only) =>
       accumulator.closed
-        ? INACTIVE_PREPARATION_TOKEN
+        ? NOOP_EVAL_PREPARATION_OBSERVER
         : createPreparationToken(accumulator, id, only),
     finish: (status, mirror) => finishRoot(accumulator, status, mirror),
     recordLoadCacheOutcome: (outcome) => {

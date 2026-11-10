@@ -61,10 +61,7 @@ import type {
   SameFileProcessorObject,
   StaticPlanFacts,
 } from './types';
-import {
-  isPipelineTelemetryActive,
-  recordPipelineProcessors,
-} from '../../debug/pipelineTelemetry';
+import { currentPipelineObserver } from '../../telemetry/observer';
 
 const EMPTY_STATIC_PLAN_FACTS: StaticPlanFacts = {
   importedNeeds: [],
@@ -139,14 +136,23 @@ export const applyOxcProcessors = (
   const eventEmitter = options.eventEmitter ?? EventEmitter.dummy;
   const perfPrefix = options.perfPrefix ?? 'transform:preeval:processTemplate';
   const perfLabel = (suffix: string): string => `${perfPrefix}:${suffix}`;
-  const pipelineTelemetryEnabled = isPipelineTelemetryActive();
-  const pipelineTelemetryPhase =
-    pipelineTelemetryEnabled && perfPrefix.includes(':collect')
-      ? 'collect'
-      : 'preeval';
   let pipelineImportCandidates = 0;
   let pipelineLookupAttempts = 0;
   let pipelineLookupHits = 0;
+  const reportProcessors = (
+    reusedPlan: boolean,
+    definedProcessorCount: number,
+    usages: number
+  ) =>
+    currentPipelineObserver().recordProcessors(
+      perfPrefix.includes(':collect') ? 'collect' : 'preeval',
+      reusedPlan,
+      pipelineImportCandidates,
+      pipelineLookupAttempts,
+      pipelineLookupHits,
+      definedProcessorCount,
+      usages
+    );
   const collectStaticExpressionValues = usesStaticEvaluation(options);
   const workingCode = code;
   const reusablePlan =
@@ -181,9 +187,7 @@ export const applyOxcProcessors = (
       const imports = eventEmitter.perf(perfLabel('imports:analysis'), () =>
         collectOxcProcessorImportsFromProgram(program, workingCode)
       );
-      if (pipelineTelemetryEnabled) {
-        pipelineImportCandidates = imports.length;
-      }
+      pipelineImportCandidates = imports.length;
 
       eventEmitter.perf(perfLabel('imports:lookup'), () => {
         imports.forEach((item) => {
@@ -191,9 +195,7 @@ export const applyOxcProcessors = (
           if (item.imported === 'side-effect' || !localName) {
             return;
           }
-          if (pipelineTelemetryEnabled) {
-            pipelineLookupAttempts += 1;
-          }
+          pipelineLookupAttempts += 1;
 
           const [processor, tagSource, manifest] = getProcessorForImport(
             {
@@ -205,9 +207,7 @@ export const applyOxcProcessors = (
           );
 
           if (processor) {
-            if (pipelineTelemetryEnabled) {
-              pipelineLookupHits += 1;
-            }
+            pipelineLookupHits += 1;
             definedProcessors.set(localName, [
               processor,
               tagSource,
@@ -235,17 +235,7 @@ export const applyOxcProcessors = (
   }
 
   if (!reusablePlan && definedProcessors.size === 0) {
-    if (pipelineTelemetryEnabled) {
-      recordPipelineProcessors(
-        pipelineTelemetryPhase,
-        false,
-        pipelineImportCandidates,
-        pipelineLookupAttempts,
-        pipelineLookupHits,
-        0,
-        0
-      );
-    }
+    reportProcessors(false, 0, 0);
     return {
       code: buildUnprocessedCode(),
       processorManagedExpressionSpans: [],
@@ -263,17 +253,11 @@ export const applyOxcProcessors = (
     eventEmitter.perf(perfLabel('usages'), () =>
       collectProcessorUsages(program, definedProcessors, processorDeclarations)
     );
-  if (pipelineTelemetryEnabled) {
-    recordPipelineProcessors(
-      pipelineTelemetryPhase,
-      Boolean(reusablePlan),
-      pipelineImportCandidates,
-      pipelineLookupAttempts,
-      pipelineLookupHits,
-      definedProcessors.size,
-      processorUsages.length
-    );
-  }
+  reportProcessors(
+    Boolean(reusablePlan),
+    definedProcessors.size,
+    processorUsages.length
+  );
   if (processorUsages.length === 0) {
     return {
       code: buildUnprocessedCode(),

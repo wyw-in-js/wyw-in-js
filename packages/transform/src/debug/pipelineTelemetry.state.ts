@@ -33,10 +33,7 @@ export const normalizeOnly = (
   return result;
 };
 
-export const createAccumulator = (
-  filename: string,
-  codeMeasurements: PipelineAccumulator['codeMeasurements']
-): PipelineAccumulator => ({
+export const createAccumulator = (filename: string): PipelineAccumulator => ({
   cache: {
     byOperation: new Array(6),
     clearReasons: new Map(),
@@ -61,7 +58,6 @@ export const createAccumulator = (
     attemptedIterations: 0,
     attemptedRanges: 0,
   },
-  codeMeasurements,
   closed: false,
   dangerousByFile: new Map(),
   entrypoints: {
@@ -77,7 +73,6 @@ export const createAccumulator = (
   lateNoMetadata: [],
   lastCode: undefined,
   lastMeasurement: undefined,
-  lastSharedMissCode: undefined,
   localCodeMeasurements: new Map(),
   onlyNormalizations: new Map(),
   parse: {
@@ -112,7 +107,6 @@ export const releaseAccumulator = (accumulator: PipelineAccumulator): void => {
   accumulator.lateNoMetadata.length = 0;
   accumulator.lastCode = undefined;
   accumulator.lastMeasurement = undefined;
-  accumulator.lastSharedMissCode = undefined;
   accumulator.localCodeMeasurements.clear();
   accumulator.onlyNormalizations.clear();
   accumulator.parse.revisionBuckets.clear();
