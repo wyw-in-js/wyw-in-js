@@ -10,7 +10,7 @@ import {
   transform,
   TransformCacheCollection,
 } from '@wyw-in-js/transform';
-import type { Result } from '@wyw-in-js/transform';
+import type { Result, WYWTransformDiagnostic } from '@wyw-in-js/transform';
 
 // Parcel exposes no transformer-dispose hook. Reuse one child runner while
 // source transforms overlap or arrive in a burst, then release it after idle.
@@ -32,6 +32,20 @@ const SourceMapValue =
 const SourceMap = SourceMapValue as unknown as SourceMapCtor;
 
 const PLUGIN_ORIGIN = '@wyw-in-js/parcel-transformer';
+
+// The text of a processor diagnostic, as the CLI prints it.
+const formatTransformDiagnostic = (diagnostic: WYWTransformDiagnostic) => {
+  const location = diagnostic.start
+    ? `${diagnostic.filename}:${diagnostic.start.line}:${
+        diagnostic.start.column + 1
+      }`
+    : diagnostic.filename;
+
+  return [
+    `[wyw-in-js] ${diagnostic.severity} [${diagnostic.category}] ${diagnostic.message}`,
+    `  at ${location} (${diagnostic.displayName})`,
+  ].join('\n');
+};
 
 type ResolveDependency = (
   what: string,
@@ -145,6 +159,16 @@ export default new Transformer({
         originalCode,
         resolveDependency
       );
+
+      // Every processor diagnostic is a warning, whatever its severity,
+      // as in the other integrations: a diagnostic must not fail a build
+      // that passed before.
+      for (const diagnostic of result.diagnostics ?? []) {
+        logger.warn({
+          message: formatTransformDiagnostic(diagnostic),
+          origin: PLUGIN_ORIGIN,
+        });
+      }
 
       const dependencyFilePaths = await resolveDependencyFilePaths(
         result,

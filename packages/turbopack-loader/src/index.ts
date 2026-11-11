@@ -14,6 +14,7 @@ import type {
   DependencyResolution,
   PluginOptions,
   Result,
+  WYWTransformDiagnostic,
 } from '@wyw-in-js/transform';
 import { transform, TransformCacheCollection } from '@wyw-in-js/transform';
 
@@ -21,6 +22,20 @@ import { makeCssModuleGlobalWithLineDeltas } from './css-modules';
 import { writeFileIfChanged } from './file-utils';
 import { insertImportStatement } from './insert-import';
 import { remapSourceMapLines } from './source-map';
+
+// The text of a processor diagnostic, as the CLI prints it.
+const formatTransformDiagnostic = (diagnostic: WYWTransformDiagnostic) => {
+  const location = diagnostic.start
+    ? `${diagnostic.filename}:${diagnostic.start.line}:${
+        diagnostic.start.column + 1
+      }`
+    : diagnostic.filename;
+
+  return [
+    `[wyw-in-js] ${diagnostic.severity} [${diagnostic.category}] ${diagnostic.message}`,
+    `  at ${location} (${diagnostic.displayName})`,
+  ].join('\n');
+};
 
 export type LoaderOptions = {
   cssOutputMode?: 'sidecar' | 'query';
@@ -221,6 +236,13 @@ const turbopackLoader: Loader = function turbopackLoader(
 
   transform(transformServices, content.toString(), asyncResolve)
     .then(async (result: Result) => {
+      // Every processor diagnostic is a warning, whatever its severity,
+      // as in the other integrations: a diagnostic must not fail a build
+      // that passed before.
+      for (const diagnostic of result.diagnostics ?? []) {
+        transformServices.emitWarning(formatTransformDiagnostic(diagnostic));
+      }
+
       const rawCssText = result.cssText ?? '';
 
       if (rawCssText.trim()) {

@@ -12,6 +12,7 @@ import type {
   ParallelTransformsOption,
   PluginOptions,
   Preprocessor,
+  WYWTransformDiagnostic,
 } from '@wyw-in-js/transform';
 import {
   createFileReporter,
@@ -20,6 +21,20 @@ import {
   transform,
   TransformCacheCollection,
 } from '@wyw-in-js/transform';
+
+// The text of a processor diagnostic, as the CLI prints it.
+const formatTransformDiagnostic = (diagnostic: WYWTransformDiagnostic) => {
+  const location = diagnostic.start
+    ? `${diagnostic.filename}:${diagnostic.start.line}:${
+        diagnostic.start.column + 1
+      }`
+    : diagnostic.filename;
+
+  return [
+    `[wyw-in-js] ${diagnostic.severity} [${diagnostic.category}] ${diagnostic.message}`,
+    `  at ${location} (${diagnostic.displayName})`,
+  ].join('\n');
+};
 
 export type BunPluginOptions = {
   debug?: IFileReporterOptions | false | null | undefined;
@@ -210,6 +225,14 @@ export default function wywInJS({
               filename: args.path,
             })
           : await transform(transformServices, code, asyncResolve);
+
+        // Every processor diagnostic is a warning, whatever its severity,
+        // as in the other integrations: a diagnostic must not fail a build
+        // that passed before.
+        for (const diagnostic of result.diagnostics ?? []) {
+          // eslint-disable-next-line no-console
+          console.warn(formatTransformDiagnostic(diagnostic));
+        }
 
         const { cssText } = result;
 
