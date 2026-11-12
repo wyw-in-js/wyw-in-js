@@ -86,6 +86,71 @@ const assertCurrentCacheEpoch = <TAction extends ActionQueueItem>(
   }
 };
 
+type EpochSignalWaiters = {
+  listener: () => void;
+  waiters: Set<() => void>;
+};
+
+// Steps that wait on an epoch signal share one abort listener per signal.
+// An EventTarget walks its whole listener list on every add and remove, so a
+// listener per step would make every step cost as much as the number of steps
+// in flight. The entry of a signal exists only while some step waits on it:
+// the last waiter to leave removes it, and so does the abort itself, before it
+// notifies the waiters. The keys are held weakly, so an entry never outlives
+// the epoch that owns its signal.
+const epochSignalWaiters = new WeakMap<AbortSignal, EpochSignalWaiters>();
+
+const createEpochSignalWaiters = (signal: AbortSignal): EpochSignalWaiters => {
+  const waiters = new Set<() => void>();
+  const listener = () => {
+    epochSignalWaiters.delete(signal);
+    const notified = [...waiters];
+    waiters.clear();
+    let failed = false;
+    let firstError: unknown;
+    notified.forEach((waiter) => {
+      try {
+        waiter();
+      } catch (error) {
+        if (!failed) {
+          failed = true;
+          firstError = error;
+        }
+      }
+    });
+    if (failed) {
+      throw firstError;
+    }
+  };
+
+  return { listener, waiters };
+};
+
+const addEpochSignalWaiter = (signal: AbortSignal, waiter: () => void) => {
+  // An aborted signal never dispatches again: the caller checks it instead.
+  if (signal.aborted) {
+    return;
+  }
+
+  let entry = epochSignalWaiters.get(signal);
+  if (!entry) {
+    entry = createEpochSignalWaiters(signal);
+    epochSignalWaiters.set(signal, entry);
+    signal.addEventListener('abort', entry.listener, { once: true });
+  }
+  entry.waiters.add(waiter);
+};
+
+const removeEpochSignalWaiter = (signal: AbortSignal, waiter: () => void) => {
+  const entry = epochSignalWaiters.get(signal);
+  if (!entry || !entry.waiters.delete(waiter) || entry.waiters.size > 0) {
+    return;
+  }
+
+  epochSignalWaiters.delete(signal);
+  signal.removeEventListener('abort', entry.listener);
+};
+
 const awaitActionStep = async <TAction extends ActionQueueItem, TResult>(
   action: BaseAction<TAction>,
   step: TResult | PromiseLike<TResult>
@@ -112,7 +177,7 @@ const awaitActionStep = async <TAction extends ActionQueueItem, TResult>(
   };
 
   signals.forEach((signal) => {
-    signal.addEventListener('abort', onRetired, { once: true });
+    addEpochSignalWaiter(signal, onRetired);
   });
   // Close the race between reading the signal and registering its listener.
   if (signals.some((signal) => signal.aborted)) {
@@ -123,7 +188,7 @@ const awaitActionStep = async <TAction extends ActionQueueItem, TResult>(
     return await Promise.race([Promise.resolve(step), retired]);
   } finally {
     signals.forEach((signal) => {
-      signal.removeEventListener('abort', onRetired);
+      removeEpochSignalWaiter(signal, onRetired);
     });
   }
 };
