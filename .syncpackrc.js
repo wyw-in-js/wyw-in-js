@@ -6,6 +6,5 @@ module.exports = {
       packages: ["**"],
       pinVersion: "workspace:*"
     }
-  ],
-  workspace: true
+  ]
 };
