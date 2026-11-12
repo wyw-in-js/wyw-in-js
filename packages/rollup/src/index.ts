@@ -16,13 +16,32 @@ import {
   stripQueryAndHash,
   syncResolve,
 } from '@wyw-in-js/shared';
-import type { PluginOptions, Preprocessor, Result } from '@wyw-in-js/transform';
+import type {
+  PluginOptions,
+  Preprocessor,
+  Result,
+  WYWTransformDiagnostic,
+} from '@wyw-in-js/transform';
 import {
   disposeEvalBroker,
   getFileIdx,
   transform,
   TransformCacheCollection,
 } from '@wyw-in-js/transform';
+
+// The text of a processor diagnostic, as the CLI prints it.
+const formatTransformDiagnostic = (diagnostic: WYWTransformDiagnostic) => {
+  const location = diagnostic.start
+    ? `${diagnostic.filename}:${diagnostic.start.line}:${
+        diagnostic.start.column + 1
+      }`
+    : diagnostic.filename;
+
+  return [
+    `[wyw-in-js] ${diagnostic.severity} [${diagnostic.category}] ${diagnostic.message}`,
+    `  at ${location} (${diagnostic.displayName})`,
+  ].join('\n');
+};
 
 type RollupCssFilenameContext = {
   cssText: string;
@@ -534,6 +553,13 @@ export default function wywInJS({
 
         const asyncResolve = createAsyncResolver(getBoundResolve(this));
         const result = await transform(transformServices, code, asyncResolve);
+
+        // Every processor diagnostic is a warning, whatever its severity,
+        // as in the other integrations: a diagnostic must not fail a build
+        // that passed before.
+        for (const diagnostic of result.diagnostics ?? []) {
+          this.warn(formatTransformDiagnostic(diagnostic));
+        }
 
         // Evaluated imports are gone from the transformed code, so Rollup
         // does not know about them. Without a watch file an edit of such a
