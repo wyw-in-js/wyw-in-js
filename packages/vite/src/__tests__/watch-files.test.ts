@@ -6,19 +6,14 @@ const loadWywInJS = () => import('../index?watch-files-test');
 
 jest.mock('vite', () => require('./viteMock').createViteMock());
 
-jest.mock('@wyw-in-js/transform', () => ({
-  __esModule: true,
-  createFileReporter: () => ({
-    emitter: { single: jest.fn() },
-    onDone: jest.fn(),
-  }),
-  disposeEvalBroker: jest.fn(),
-  getFileIdx: () => '1',
-  TransformCacheCollection: class TransformCacheCollection {
-    invalidateForFile = jest.fn();
-  },
-  transform: (...args: unknown[]) => transformMock(...args),
-}));
+jest.mock('@wyw-in-js/transform', () =>
+  require('./transformMock').createTransformMock({
+    TransformCacheCollection: class TransformCacheCollection {
+      invalidateForFile = jest.fn();
+    },
+    transform: (...args: unknown[]) => transformMock(...args),
+  })
+);
 
 const root = process.cwd();
 const entryId = path.join(root, 'src', 'entry.tsx');

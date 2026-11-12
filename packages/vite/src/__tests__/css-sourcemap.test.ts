@@ -13,17 +13,11 @@ const loadWywInJS = () => import('../index?css-sourcemap-test');
 
 jest.mock('vite', () => require('./viteMock').createViteMock());
 
-jest.mock('@wyw-in-js/transform', () => ({
-  __esModule: true,
-  createFileReporter: () => ({
-    emitter: { single: jest.fn() },
-    onDone: jest.fn(),
-  }),
-  getFileIdx: () => '1',
-  TransformCacheCollection: class TransformCacheCollection {},
-  transform: (...args: unknown[]) => transformMock(...args),
-  disposeEvalBroker: jest.fn(),
-}));
+jest.mock('@wyw-in-js/transform', () =>
+  require('./transformMock').createTransformMock({
+    transform: (...args: unknown[]) => transformMock(...args),
+  })
+);
 
 const rules: Rules = {
   '.first': {
