@@ -68,12 +68,12 @@ const collectTopLevelProcessorImports = (
     (node): node is ImportDeclaration => node.type === 'ImportDeclaration'
   );
   if (
-    (code.match(IMPORT_WORD)?.length ?? 0) !== declarations.length ||
     declarations.some((node) =>
       node.specifiers.some(
         (specifier) => specifier.type === 'ImportNamespaceSpecifier'
       )
-    )
+    ) ||
+    (code.match(IMPORT_WORD)?.length ?? 0) !== declarations.length
   ) {
     return null;
   }
