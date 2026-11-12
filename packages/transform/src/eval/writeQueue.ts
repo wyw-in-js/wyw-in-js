@@ -38,9 +38,13 @@ export const writeToStream = (
     let onDrain: () => void;
     let onError: (error: unknown) => void;
 
-    const cleanup = () => {
+    const removeSettleListeners = () => {
       stream.off('close', onClose);
       stream.off('drain', onDrain);
+    };
+
+    const cleanup = () => {
+      removeSettleListeners();
       stream.off('error', onError);
     };
 
@@ -51,7 +55,10 @@ export const writeToStream = (
 
       if (error) {
         settled = true;
-        cleanup();
+        // A Node writable passes a write error to the callback first and
+        // emits 'error' after it, so the `once` listener stays to take that
+        // event instead of leaving it unhandled.
+        removeSettleListeners();
         reject(normalizeWriteError(label, error));
         return;
       }
@@ -119,6 +126,9 @@ export const createWriteQueue = (
         failed = normalizeWriteError(label, error);
         throw failed;
       });
+      // Callers handle `task` and rarely await `onIdle()`, so a failed `tail`
+      // must not be reported as an unhandled rejection.
+      tail.catch(() => undefined);
 
       return task;
     },
