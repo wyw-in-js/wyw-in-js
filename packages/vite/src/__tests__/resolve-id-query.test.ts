@@ -2,16 +2,11 @@ const transformMock = jest.fn();
 
 const loadWywInJS = () => import('../index?resolve-id-query-test');
 
-jest.mock('@wyw-in-js/transform', () => ({
-  __esModule: true,
-  createFileReporter: () => ({
-    emitter: { single: jest.fn() },
-    onDone: jest.fn(),
-  }),
-  getFileIdx: () => '1',
-  TransformCacheCollection: class TransformCacheCollection {},
-  transform: (...args: unknown[]) => transformMock(...args),
-}));
+jest.mock('@wyw-in-js/transform', () =>
+  require('./transformMock').createTransformMock({
+    transform: (...args: unknown[]) => transformMock(...args),
+  })
+);
 
 const cssFilename = '/project/src/main.wyw-in-js.css';
 const cssId = '/src/main.wyw-in-js.css';

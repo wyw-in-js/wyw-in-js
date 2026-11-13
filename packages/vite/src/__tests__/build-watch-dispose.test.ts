@@ -4,17 +4,11 @@ const loadWywInJS = () => import('../index?build-watch-dispose-test');
 
 jest.mock('vite', () => require('./viteMock').createViteMock());
 
-jest.mock('@wyw-in-js/transform', () => ({
-  __esModule: true,
-  createFileReporter: () => ({
-    emitter: { single: jest.fn() },
-    onDone: jest.fn(),
-  }),
-  disposeEvalBroker: (...args: unknown[]) => disposeEvalBrokerMock(...args),
-  getFileIdx: () => '1',
-  TransformCacheCollection: class TransformCacheCollection {},
-  transform: jest.fn(),
-}));
+jest.mock('@wyw-in-js/transform', () =>
+  require('./transformMock').createTransformMock({
+    disposeEvalBroker: (...args: unknown[]) => disposeEvalBrokerMock(...args),
+  })
+);
 
 describe('vite build --watch eval runner', () => {
   it('is disposed after every build, not only the first one', async () => {

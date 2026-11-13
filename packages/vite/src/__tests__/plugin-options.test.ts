@@ -4,17 +4,11 @@ const loadWywInJS = () => import('../index?plugin-options-test');
 
 jest.mock('vite', () => require('./viteMock').createViteMock());
 
-jest.mock('@wyw-in-js/transform', () => ({
-  __esModule: true,
-  createFileReporter: () => ({
-    emitter: { single: jest.fn() },
-    onDone: jest.fn(),
-  }),
-  getFileIdx: () => '1',
-  TransformCacheCollection: class TransformCacheCollection {},
-  transform: (...args: unknown[]) => transformMock(...args),
-  disposeEvalBroker: jest.fn(),
-}));
+jest.mock('@wyw-in-js/transform', () =>
+  require('./transformMock').createTransformMock({
+    transform: (...args: unknown[]) => transformMock(...args),
+  })
+);
 
 describe('vite plugin options', () => {
   beforeEach(() => {
