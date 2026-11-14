@@ -8,7 +8,7 @@
   "dependencies": {
     "@wyw-in-js/shared": "workspace:*",
     "@wyw-in-js/transform": "workspace:*",
-    "glob": "^10.3.10",
+    "glob": "^14.0.4",
     "mkdirp": "^0.5.1",
     "normalize-path": "^3.0.0",
     "yargs": "^17.5.0"

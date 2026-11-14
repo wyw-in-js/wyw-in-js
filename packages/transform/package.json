@@ -9,7 +9,7 @@
     "@wyw-in-js/shared": "workspace:*",
     "cosmiconfig": "^8.0.0",
     "happy-dom": "^20.8.9",
-    "minimatch": "^9.0.7",
+    "minimatch": "^11.0.5",
     "oxc-parser": "^0.131.0",
     "oxc-resolver": "^11.19.1",
     "oxc-transform": "^0.131.0",
@@ -26,7 +26,7 @@
     "@wyw-in-js/ts-config": "workspace:*",
     "dedent": "^1.5.1",
     "esbuild": "^0.28.2",
-    "glob": "^10.3.10",
+    "glob": "^14.0.4",
     "strip-ansi": "^5.2.0",
     "typescript": "^5.2.2"
   },

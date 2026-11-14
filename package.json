@@ -43,7 +43,7 @@
     "eslint-plugin-import": "^2.28.1",
     "eslint-plugin-jsx-a11y": "^6.7.1",
     "eslint-plugin-prettier": "5.0.0",
-    "glob": "^10.3.10",
+    "glob": "^14.0.4",
     "idea-exclude": "^1.2.1",
     "oxc-transform": "^0.127.0",
     "package-json": "^8.1.1",
