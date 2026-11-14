@@ -1,5 +1,13 @@
 # @wyw-in-js/vite
 
+## 2.7.2
+
+### Patch Changes
+
+- Updated dependencies
+  - @wyw-in-js/shared@2.7.2
+  - @wyw-in-js/transform@2.7.2
+
 ## 2.7.1
 
 ### Patch Changes
