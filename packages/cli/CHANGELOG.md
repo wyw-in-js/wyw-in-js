@@ -1,5 +1,14 @@
 # @wyw-in-js/cli
 
+## 2.7.2
+
+### Patch Changes
+
+- 6ba80b8: Update `glob` to 14.0.4 in `@wyw-in-js/cli`, so that the CLI uses `minimatch` 11 with the fix for the denial-of-service advisory GHSA-g3hv-75wg-m249 instead of the vulnerable `minimatch` 9 that `glob` 10 required.
+- Updated dependencies
+  - @wyw-in-js/shared@2.7.2
+  - @wyw-in-js/transform@2.7.2
+
 ## 2.7.1
 
 ### Patch Changes

@@ -1,5 +1,12 @@
 # @wyw-in-js/processor-utils
 
+## 2.7.2
+
+### Patch Changes
+
+- Updated dependencies
+  - @wyw-in-js/shared@2.7.2
+
 ## 2.7.1
 
 ### Patch Changes

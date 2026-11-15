@@ -1,5 +1,12 @@
 # @wyw-in-js/shared
 
+## 2.7.2
+
+### Patch Changes
+
+- 6ba80b8: Update `minimatch` to 11.0.5 in `@wyw-in-js/shared` and `@wyw-in-js/transform`. The 9.x line has no fix for the denial-of-service advisory GHSA-g3hv-75wg-m249 (globparts amplification), which is fixed only in 11.0.1 and later. Feature flag globs and `importOverrides` keys match as before.
+- 5d8d90a: Share `findPackageJSON` lookups between the directories of a package. A bare specifier is now resolved once for every directory that resolves it the same way (up to the nearest directory with its own `node_modules`, `package.json`, `tsconfig.json` or `jsconfig.json`), instead of once for every importer directory, which makes processor lookups across a project cheaper.
+
 ## 2.7.1
 
 ### Patch Changes
