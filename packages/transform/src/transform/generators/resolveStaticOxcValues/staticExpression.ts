@@ -11,11 +11,11 @@ import type {
 
 import { createOxcStaticCallableValue } from '../../../utils/collectOxcTemplateDependencies';
 import { getOxcNodeChildren } from '../../../utils/oxc/ast';
+import { parseOxcFragmentProgram } from '../../../utils/oxc/parse';
 import {
   isTypeOnlyImport,
   isTypeOnlyImportSpecifier,
 } from '../../../utils/oxc/typeOnlyImport';
-import { parseProgram } from './environment';
 import type {
   AnyNode,
   CollectImportBindingsOptions,
@@ -276,7 +276,7 @@ export const parseStaticExpressionSource = (
   filename: string
 ): Expression | null => {
   try {
-    const program = parseProgram(
+    const program = parseOxcFragmentProgram(
       `const __wyw_static_value = ${source};`,
       filename
     );

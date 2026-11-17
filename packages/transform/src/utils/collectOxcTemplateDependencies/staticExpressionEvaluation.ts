@@ -1,3 +1,4 @@
+import { parseOxcFragmentProgram } from '../oxc/parse';
 import { createOxcLocationLookup } from '../oxc/sourceLocations';
 import { createCallableMutationHintsReader } from '../oxcShaker/callableMutations';
 import * as recursiveProof from './recursiveProof';
@@ -131,7 +132,7 @@ const evaluateOxcStaticSource = (
   staticBindings: StaticBindings | undefined
 ): StaticResult => {
   const code = `const __wyw_static_value = ${source};`;
-  const program = parseOxc(code, filename);
+  const program = parseOxcFragmentProgram(code, filename);
   const declaration = program.body[0];
   const init =
     declaration?.type === 'VariableDeclaration'

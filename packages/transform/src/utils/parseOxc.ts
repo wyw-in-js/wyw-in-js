@@ -12,11 +12,13 @@ import {
   getOxcParserLanguage,
   type OxcParserLanguage,
 } from './oxcParserLanguage';
+import { stripQueryAndHash } from './parseRequest';
 
 // The single parse entry of the transform package. Internal parses go through
-// parseOxcCached; parseOxcProgramFresh serves callers that own and may mutate
-// the AST. Both share the .js JSX fallback, raw-transfer recovery and parse
-// telemetry. Direct parser calls elsewhere are rejected by the package's lint
+// parseOxcCached, or parseOxcFragmentProgramCached for the static expression
+// texts that the value engine builds; parseOxcProgramFresh serves callers that
+// own and may mutate the AST. All share the .js JSX fallback, raw-transfer
+// recovery and parse telemetry. Direct parser calls elsewhere are rejected by the package's lint
 // config.
 
 type OxcSourceType = 'module' | 'unambiguous';
@@ -115,6 +117,9 @@ type ParsedOxcPayload = {
 };
 
 type ParsedOxc = ParsedOxcPayload & {
+  // The file, without query and hash, whose parse stored this entry; null for
+  // a static expression fragment. Reads under other names keep the owner.
+  readonly owner: string | null;
   pipelineMeasurement: PipelineParseMeasurement | undefined;
 };
 
@@ -132,11 +137,23 @@ let maxParseCacheEntries = MAX_PARSE_CACHE_ENTRIES;
 export const setParseCacheLimit = (limit: number): void => {
   maxParseCacheEntries = Math.max(1, Math.floor(limit));
 };
+// Every edit of a file adds a new code string. A dev server that keeps editing
+// one file would otherwise fill the whole count budget with its old versions.
+// A file keeps this many codes of its own; a warm build of a file needs fewer
+// than ten once static expression fragments are not counted.
+export const MAX_PARSE_CACHE_ENTRIES_PER_FILE = 16;
 // Bucketed by parser semantics with the code string itself as the inner key:
 // building a key containing the code allocated a whole-file string per lookup
 // purely to feed the map hash.
-const parseCache = new Map<string, Map<string, ParsedOxc>>();
+type ParseCacheBucket = Map<string, ParsedOxc>;
+const parseCache = new Map<string, ParseCacheBucket>();
 let parseCacheSize = 0;
+// Owner file -> its codes, least recently used first -> the buckets holding
+// each code. Only files own codes; fragments are bounded by the count limit.
+const parseCodesByFilename = new Map<
+  string,
+  Map<string, Set<ParseCacheBucket>>
+>();
 const commentsByProgram = new WeakMap<Program, readonly Comment[]>();
 
 const getAstType = (filename: string): OxcAstType =>
@@ -177,19 +194,95 @@ const getParseCacheBucket = (
   return bucket;
 };
 
+const forgetOwnedCode = (
+  bucket: ParseCacheBucket,
+  code: string,
+  owner: string | null
+): void => {
+  if (owner === null) return;
+  const codes = parseCodesByFilename.get(owner);
+  const buckets = codes?.get(code);
+  if (!codes || !buckets) return;
+  buckets.delete(bucket);
+  if (buckets.size > 0) return;
+  codes.delete(code);
+  if (codes.size === 0) {
+    parseCodesByFilename.delete(owner);
+  }
+};
+
+const touchOwnedCode = (entry: ParsedOxc, code: string): void => {
+  if (entry.owner === null) return;
+  const codes = parseCodesByFilename.get(entry.owner);
+  const buckets = codes?.get(code);
+  if (!codes || !buckets) return;
+  codes.delete(code);
+  codes.set(code, buckets);
+};
+
+const deleteCachedParse = (bucket: ParseCacheBucket, code: string): void => {
+  const entry = bucket.get(code);
+  if (!entry) return;
+  bucket.delete(code);
+  parseCacheSize -= 1;
+  forgetOwnedCode(bucket, code, entry.owner);
+};
+
+// Drops a code from the buckets that still hold it for this owner and returns
+// how many entries went away.
+const dropOwnedCode = (
+  owner: string,
+  code: string,
+  buckets: Set<ParseCacheBucket>
+): number => {
+  let dropped = 0;
+  buckets.forEach((bucket) => {
+    if (bucket.get(code)?.owner !== owner) return;
+    bucket.delete(code);
+    dropped += 1;
+  });
+  return dropped;
+};
+
+const recordOwnedCode = (
+  bucket: ParseCacheBucket,
+  code: string,
+  owner: string
+): void => {
+  let codes = parseCodesByFilename.get(owner);
+  if (!codes) {
+    codes = new Map();
+    parseCodesByFilename.set(owner, codes);
+  }
+  const buckets = codes.get(code) ?? new Set();
+  codes.delete(code);
+  codes.set(code, buckets.add(bucket));
+  for (const [oldestCode, oldestBuckets] of codes) {
+    if (codes.size <= MAX_PARSE_CACHE_ENTRIES_PER_FILE) break;
+    codes.delete(oldestCode);
+    parseCacheSize -= dropOwnedCode(owner, oldestCode, oldestBuckets);
+  }
+};
+
 const setCachedParse = (
-  bucket: Map<string, ParsedOxc>,
+  bucket: ParseCacheBucket,
   code: string,
   value: ParsedOxc
 ): ParsedOxc => {
-  if (!bucket.has(code)) {
+  const previous = bucket.get(code);
+  if (previous) {
+    forgetOwnedCode(bucket, code, previous.owner);
+  } else {
     parseCacheSize += 1;
   }
   bucket.set(code, value);
   commentsByProgram.set(value.program, value.comments);
+  if (value.owner !== null) {
+    recordOwnedCode(bucket, code, value.owner);
+  }
   while (parseCacheSize > maxParseCacheEntries) {
     // Evict the oldest entry of the largest bucket; the bucket set is small.
-    let largest: Map<string, ParsedOxc> | null = null;
+    let largest: ParseCacheBucket | null = null;
     for (const candidate of parseCache.values()) {
       if (!largest || candidate.size > largest.size) {
         largest = candidate;
@@ -197,8 +290,7 @@ const setCachedParse = (
     }
     const oldestCode = largest?.keys().next().value;
     if (!largest || oldestCode === undefined) break;
-    largest.delete(oldestCode);
-    parseCacheSize -= 1;
+    deleteCachedParse(largest, oldestCode);
   }
 
   return value;
@@ -270,13 +362,12 @@ const parseWithJsxFallback = (
   };
 };
 
-export const parseOxcCached = (
+const parseOxcCachedFor = (
+  owner: string | null,
   filename: string,
   code: string,
   sourceType: OxcSourceType,
-  // The AST shape defaults to the filename's language family. CommonJS emit
-  // requests the JS shape for every file and gets its own cache bucket.
-  astType: OxcAstType = getAstType(filename)
+  astType: OxcAstType
 ): ParsedOxc => {
   const bucket = getParseCacheBucket(filename, sourceType, astType);
   const cached = bucket.get(code);
@@ -286,6 +377,7 @@ export const parseOxcCached = (
     // content versions produced by the cleanup loops.
     bucket.delete(code);
     bucket.set(code, cached);
+    touchOwnedCode(cached, code);
     const knownMeasurement = cached.pipelineMeasurement;
     const measurement = currentPipelineObserver().recordCachedParseHit(
       cached,
@@ -320,6 +412,7 @@ export const parseOxcCached = (
   );
   const value: ParsedOxc = {
     ...payload,
+    owner,
     pipelineMeasurement: undefined,
   };
   if (payload.module.hasModuleSyntax) {
@@ -332,6 +425,7 @@ export const parseOxcCached = (
     // immutable parse payload is shared.
     setCachedParse(getParseCacheBucket(filename, other, astType), code, {
       ...payload,
+      owner,
       pipelineMeasurement: undefined,
     });
   }
@@ -351,6 +445,33 @@ export const parseOxcCached = (
   }
   return cachedParse;
 };
+
+export const parseOxcCached = (
+  filename: string,
+  code: string,
+  sourceType: OxcSourceType,
+  // The AST shape defaults to the filename's language family. CommonJS emit
+  // requests the JS shape for every file and gets its own cache bucket.
+  astType: OxcAstType = getAstType(filename)
+): ParsedOxc =>
+  parseOxcCachedFor(
+    stripQueryAndHash(filename),
+    filename,
+    code,
+    sourceType,
+    astType
+  );
+
+// Static expression texts that the value engine wraps in a declaration and
+// parses under the name of the file they come from. They share the cache with
+// whole files but do not count against that file's versions.
+export const parseOxcFragmentProgramCached = (
+  filename: string,
+  code: string,
+  sourceType: OxcSourceType
+): Program =>
+  parseOxcCachedFor(null, filename, code, sourceType, getAstType(filename))
+    .program;
 
 export const parseOxcProgramCached = (
   filename: string,
