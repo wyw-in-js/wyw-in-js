@@ -45,6 +45,9 @@ jobs:
       - name: Check published types
         run: bun run check:published-types
 
+      - name: Typecheck tests
+        run: bun run check:test-types
+
       - name: Lint (ESLint, Prettier for e2e)
         run: bun run lint
 

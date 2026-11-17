@@ -270,7 +270,7 @@
     },
     "packages/babel-preset": {
       "name": "@wyw-in-js/babel-preset",
-      "version": "2.7.1",
+      "version": "2.7.2",
       "dependencies": {
         "@babel/core": "^7.23.5",
         "@wyw-in-js/shared": "workspace:*",
@@ -285,7 +285,7 @@
     },
     "packages/bun": {
       "name": "@wyw-in-js/bun",
-      "version": "2.7.1",
+      "version": "2.7.2",
       "dependencies": {
         "@rollup/pluginutils": "^5.1.4",
         "@wyw-in-js/shared": "workspace:*",
@@ -300,7 +300,7 @@
     },
     "packages/cli": {
       "name": "@wyw-in-js/cli",
-      "version": "2.7.1",
+      "version": "2.7.2",
       "bin": {
         "wyw-in-js": "bin/wyw-in-js.js",
       },
@@ -322,7 +322,7 @@
     },
     "packages/esbuild": {
       "name": "@wyw-in-js/esbuild",
-      "version": "2.7.1",
+      "version": "2.7.2",
       "dependencies": {
         "@wyw-in-js/shared": "workspace:*",
         "@wyw-in-js/transform": "workspace:*",
@@ -340,7 +340,7 @@
     },
     "packages/nextjs": {
       "name": "@wyw-in-js/nextjs",
-      "version": "2.7.1",
+      "version": "2.7.2",
       "dependencies": {
         "@wyw-in-js/shared": "workspace:*",
         "@wyw-in-js/turbopack-loader": "workspace:*",
@@ -360,7 +360,7 @@
     },
     "packages/parcel-transformer": {
       "name": "@wyw-in-js/parcel-transformer",
-      "version": "2.7.1",
+      "version": "2.7.2",
       "dependencies": {
         "@parcel/plugin": "^2.16.3",
         "@parcel/source-map": "^2.1.1",
@@ -378,7 +378,7 @@
     },
     "packages/processor-utils": {
       "name": "@wyw-in-js/processor-utils",
-      "version": "2.7.1",
+      "version": "2.7.2",
       "dependencies": {
         "@wyw-in-js/shared": "workspace:*",
       },
@@ -391,7 +391,7 @@
     },
     "packages/rollup": {
       "name": "@wyw-in-js/rollup",
-      "version": "2.7.1",
+      "version": "2.7.2",
       "dependencies": {
         "@rollup/pluginutils": "^5.0.5",
         "@wyw-in-js/shared": "workspace:*",
@@ -410,7 +410,7 @@
     },
     "packages/shared": {
       "name": "@wyw-in-js/shared",
-      "version": "2.7.1",
+      "version": "2.7.2",
       "dependencies": {
         "debug": "^4.3.4",
         "find-up": "^5.0.0",
@@ -421,12 +421,13 @@
         "@types/node": "^22.0.0",
         "@wyw-in-js/eslint-config": "workspace:*",
         "@wyw-in-js/ts-config": "workspace:*",
+        "bun-types": "^1.3.5",
         "typescript": "^5.2.2",
       },
     },
     "packages/transform": {
       "name": "@wyw-in-js/transform",
-      "version": "2.7.1",
+      "version": "2.7.2",
       "dependencies": {
         "@jridgewell/remapping": "^2.3.5",
         "@jridgewell/trace-mapping": "^0.3.31",
@@ -458,7 +459,7 @@
     },
     "packages/turbopack-loader": {
       "name": "@wyw-in-js/turbopack-loader",
-      "version": "2.7.1",
+      "version": "2.7.2",
       "dependencies": {
         "@wyw-in-js/shared": "workspace:*",
         "@wyw-in-js/transform": "workspace:*",
@@ -473,7 +474,7 @@
     },
     "packages/vite": {
       "name": "@wyw-in-js/vite",
-      "version": "2.7.1",
+      "version": "2.7.2",
       "dependencies": {
         "@wyw-in-js/shared": "workspace:*",
         "@wyw-in-js/transform": "workspace:*",
@@ -491,7 +492,7 @@
     },
     "packages/webpack-loader": {
       "name": "@wyw-in-js/webpack-loader",
-      "version": "2.7.1",
+      "version": "2.7.2",
       "dependencies": {
         "@wyw-in-js/shared": "workspace:*",
         "@wyw-in-js/transform": "workspace:*",
