@@ -2,6 +2,8 @@ import { spawnSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
+const packageRoot = path.resolve(__dirname, '..', '..');
+
 const testFiles = fs
   .readdirSync(__dirname)
   .filter(
@@ -9,22 +11,55 @@ const testFiles = fs
   )
   .sort();
 
-// `bun test src` runs every test file of the package in one process, and the
-// order of the files differs between machines. A module mock registered by
-// one file stays in effect for the files after it, so each file has to pass
-// when it is the first one, in a fresh child process.
+/**
+ * `bun test src` runs every test file of this package in one process, and the
+ * order of the files differs between machines. A module mock registered by
+ * one file stays in effect for the files after it. Run the files in a child
+ * `bun test` together in both orders and each on its own, so that the outcome
+ * of a test cannot depend on which files ran before it.
+ */
+const expectTestFilesToPass = (files: string[]) => {
+  if (files.length === 0) {
+    throw new Error('No test files to run');
+  }
+
+  const result = spawnSync(
+    process.execPath,
+    ['test', ...files.map((file) => `./src/__tests__/${file}`)],
+    { cwd: packageRoot, encoding: 'utf8', timeout: 110_000 }
+  );
+  const output = `${result.stdout}${result.stderr}`;
+  const failed = output
+    .split('\n')
+    .filter((line) => line.includes('(fail)'))
+    .map((line) => line.replace(/ \[[\d.]+m?s\]$/, ''));
+
+  expect(result.error).toBeUndefined();
+  expect(failed).toEqual([]);
+  expect(output).toMatch(/\b[1-9]\d* pass\b/);
+  expect(output).toMatch(/\b0 fail\b/);
+  expect(output).toMatch(new RegExp(`\\bacross ${files.length} files?\\b`));
+  expect(result.status).toBe(0);
+};
+
 describe('bun test files', () => {
+  it('include more than one file besides this one', () => {
+    expect(testFiles.length).toBeGreaterThan(1);
+  });
+
+  it('pass when run together in sorted order', () => {
+    expectTestFilesToPass(testFiles);
+  }, 120_000);
+
+  it('pass when run together in reverse order', () => {
+    expectTestFilesToPass([...testFiles].reverse());
+  }, 120_000);
+
   it.each(testFiles)(
     '%s passes when run on its own',
     (file) => {
-      const result = spawnSync(process.execPath, ['test', `./${file}`], {
-        cwd: __dirname,
-        encoding: 'utf8',
-      });
-
-      expect(result.stderr).not.toContain('(fail)');
-      expect(result.status).toBe(0);
+      expectTestFilesToPass([file]);
     },
-    30_000
+    120_000
   );
 });

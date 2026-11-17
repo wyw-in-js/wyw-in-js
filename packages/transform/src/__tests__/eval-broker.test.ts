@@ -31,6 +31,7 @@ import {
 } from '../eval/broker';
 import { prepareModuleOnDemand } from '../eval/prepareModuleOnDemand';
 import { serializeValue } from '../eval/serialize';
+import { registerEvalTelemetryReporter } from '../debug/evalTelemetry';
 import { EventEmitter } from '../utils/EventEmitter';
 import {
   CacheKeySaltBusyError,
@@ -178,6 +179,37 @@ const createActionIdHandler = () => {
     actionId += 1;
     return id;
   };
+};
+
+/**
+ * Collects the runner lifecycle events (`runner-spawn-attempt`,
+ * `runner-activated`, `runner-stop-requested`, `runner-exit-observed`) that
+ * the broker reports through the telemetry of the given services while they
+ * are active. Each call gets its own emitter, so nothing stays subscribed after
+ * `unregister()`.
+ */
+const observeRunnerLifecycle = (
+  ...servicesList: ReturnType<typeof createServices>[]
+) => {
+  const emitter = new EventEmitter(
+    () => {},
+    createActionIdHandler(),
+    () => {}
+  );
+  const events: string[] = [];
+  const unregister = registerEvalTelemetryReporter(emitter, (record) => {
+    if (
+      record.type === 'eval-lifecycle' &&
+      record.event.startsWith('runner-')
+    ) {
+      events.push(record.event);
+    }
+  });
+  for (const services of servicesList) {
+    // eslint-disable-next-line no-param-reassign
+    services.eventEmitter = emitter;
+  }
+  return { events, unregister };
 };
 
 describe('EvalBroker', () => {
@@ -400,6 +432,7 @@ describe('EvalBroker', () => {
       services.evalBrokerScope = brokerScope;
       services.evalCacheKey = 'shared-resolver-semantics';
     }
+    const lifecycle = observeRunnerLifecycle(servicesA, servicesB);
     const broker = getEvalBroker(
       servicesB,
       asyncResolve,
@@ -429,7 +462,8 @@ describe('EvalBroker', () => {
       );
 
       await bStarted;
-      const runnerB = getPrivateBroker(broker).runner;
+      const runnerEventsBeforeReset = lifecycle.events.length;
+      expect(lifecycle.events).toContain('runner-activated');
       const resetError = new Error('cache A reset');
       const recovery = servicesA.cache.startSupersedeStormRecovery(
         resetError,
@@ -438,16 +472,12 @@ describe('EvalBroker', () => {
       );
       expect(recovery.started).toBe(true);
       recovery.complete();
-      const notRejected = Symbol('not-rejected');
-      const earlyAResult = await Promise.race([
-        rejectionA,
-        new Promise<symbol>((resolveTimeout) => {
-          setTimeout(() => resolveTimeout(notRejected), 50);
-        }),
-      ]);
 
-      expect(earlyAResult).toBe(recovery.abortError);
-      expect(getPrivateBroker(broker).runner).toBe(runnerB);
+      // B still holds its resolve gate here, so A has to be rejected without
+      // waiting for the active evaluation of B to finish.
+      expect(await rejectionA).toBe(recovery.abortError);
+      // The runner that serves B was neither stopped nor replaced.
+      expect(lifecycle.events.slice(runnerEventsBeforeReset)).toEqual([]);
 
       releaseB();
       expect((await evalB).values?.get('value')).toBe('from-b');
@@ -470,6 +500,7 @@ describe('EvalBroker', () => {
       await evalA?.catch(() => undefined);
       await evalB?.catch(() => undefined);
       disposeEvalBroker(brokerScope);
+      lifecycle.unregister();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -519,6 +550,7 @@ describe('EvalBroker', () => {
       services.evalBrokerScope = brokerScope;
       services.evalCacheKey = 'shared-resolver-semantics';
     }
+    const lifecycle = observeRunnerLifecycle(servicesA, servicesB);
     const broker = getEvalBroker(
       servicesA,
       asyncResolve,
@@ -556,15 +588,10 @@ describe('EvalBroker', () => {
       );
       expect(recovery.started).toBe(true);
       recovery.complete();
-      const notRejected = Symbol('not-rejected');
-      const earlyAResult = await Promise.race([
-        rejectionA,
-        new Promise<symbol>((resolveTimeout) => {
-          setTimeout(() => resolveTimeout(notRejected), 50);
-        }),
-      ]);
 
-      expect(earlyAResult).toBe(recovery.abortError);
+      // The loader of A still holds its gate here, so A has to be rejected
+      // without waiting for that load to finish.
+      expect(await rejectionA).toBe(recovery.abortError);
       expect((await evalB).values?.get('value')).toBe('from-b');
       await expect(evalA).rejects.toBe(recovery.abortError);
 
@@ -573,12 +600,30 @@ describe('EvalBroker', () => {
       await new Promise<void>((resolveImmediate) => {
         setImmediate(resolveImmediate);
       });
-      expect(getPrivateBroker(broker).runner).not.toBeNull();
+
+      // A scoped broker reports nothing while it is idle, so the next
+      // evaluation is what shows whether the late load of A took the runner
+      // down: a dead runner would be spawned again for it.
+      expect(lifecycle.events).toContain('runner-activated');
+      const runnerEventsAfterA = lifecycle.events.length;
+      const nextEntrypointB = Entrypoint.createRoot(
+        servicesB,
+        entryB,
+        ['__wywPreval'],
+        sourceB
+      );
+      expect(
+        (await broker.evaluate(nextEntrypointB, servicesB)).values?.get('value')
+      ).toBe('from-b');
+      expect(lifecycle.events.slice(runnerEventsAfterA)).not.toContain(
+        'runner-spawn-attempt'
+      );
     } finally {
       releaseA();
       await evalA?.catch(() => undefined);
       await evalB?.catch(() => undefined);
       disposeEvalBroker(brokerScope);
+      lifecycle.unregister();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -735,6 +780,10 @@ describe('EvalBroker', () => {
       await bStarted.promise;
 
       aGate.resolve();
+      // The broker does not report that it dropped the late LOAD result of
+      // the killed runner instead of sending it to the new one, so this window
+      // only gives a wrong delivery time to show up. B still holds its gate,
+      // so a slow machine cannot make it fail.
       const stillPending = Symbol('still-pending');
       const earlyResult = await Promise.race([
         bEval.then((result) => result.values?.get('value')),
@@ -836,16 +885,14 @@ describe('EvalBroker', () => {
 
       retry = broker.evaluate(createEntrypoint(), services);
       retry.catch(() => undefined);
-      const retryStarted = await Promise.race([
-        secondSlowStarted.promise.then(() => true),
-        new Promise<false>((resolveTimeout) => {
-          setTimeout(() => resolveTimeout(false), 500);
-        }),
-      ]);
-      expect(retryStarted).toBe(true);
+      await secondSlowStarted.promise;
       expect(slowCalls).toBe(2);
 
       firstSlowGate.resolve();
+      // The broker does not report that the late result of the first `slow`
+      // load was dropped instead of answering the LOAD of the retry, so this
+      // window only gives a wrong delivery time to show up. The retry still
+      // holds its own gate, so a slow machine cannot make it fail.
       const stillPending = Symbol('still-pending');
       const earlyResult = await Promise.race([
         retry.then((result) => result.values?.get('value')),
@@ -861,20 +908,6 @@ describe('EvalBroker', () => {
     } finally {
       firstSlowGate.resolve();
       secondSlowGate.resolve();
-
-      const runner = getPrivateBroker(broker).runner as {
-        exitCode: number | null;
-        kill: () => boolean;
-        once: (event: 'exit', listener: () => void) => void;
-        signalCode: string | null;
-      } | null;
-      if (runner && runner.exitCode === null && runner.signalCode === null) {
-        const runnerExited = new Promise<void>((resolveExit) => {
-          runner.once('exit', resolveExit);
-        });
-        runner.kill();
-        await runnerExited;
-      }
       await retry?.catch(() => undefined);
       broker.dispose();
       rmSync(root, { recursive: true, force: true });
@@ -978,6 +1011,9 @@ describe('EvalBroker', () => {
       // session. Its continuation must stay abandoned instead of populating
       // the new runner caches or satisfying the second import.
       firstGate.resolve();
+      // The broker does not report that it dropped that continuation, so this
+      // window only gives a wrong delivery time to show up. The second session
+      // still holds its gate, so a slow machine cannot make it fail.
       const stillPending = Symbol('still-pending');
       expect(
         await Promise.race([
@@ -1041,7 +1077,9 @@ describe('EvalBroker', () => {
 
     // Deliver runner stdout in coalesced chunks so the RESOLVE issued by the
     // fire-and-forget import is processed in the same synchronous batch as
-    // EVAL_RESULT. This is what a busy CI host produces naturally.
+    // EVAL_RESULT. This is what a busy CI host produces naturally. The timer
+    // only glues the chunks together and does not decide the outcome; the
+    // broker has no public seam on its runner transport to do this instead.
     const originalOnData = privateBroker.onData;
     let coalesced = '';
     let coalescedRunner: unknown;
@@ -1073,13 +1111,7 @@ describe('EvalBroker', () => {
       // and must still be served after EVAL_RESULT cleared the active
       // entrypoint. Dropping RESOLVE_RESULT would leave the runner awaiting
       // forever and this LOAD would never arrive.
-      const loaded = await Promise.race([
-        loadStartedPromise.then(() => true),
-        new Promise<false>((resolveTimeout) => {
-          setTimeout(() => resolveTimeout(false), 1000);
-        }),
-      ]);
-      expect(loaded).toBe(true);
+      await loadStartedPromise;
       expect(loads).toBe(1);
     } finally {
       if (flushTimer) clearTimeout(flushTimer);
@@ -1164,15 +1196,15 @@ describe('EvalBroker', () => {
       );
       secondEval = broker.evaluate(secondEntrypoint, services);
       secondEval.catch(() => undefined);
-      const secondLoadStarted = await Promise.race([
-        secondStarted.promise.then(() => true),
-        new Promise<false>((resolveTimeout) => {
-          setTimeout(() => resolveTimeout(false), 500);
-        }),
-      ]);
-      expect(secondLoadStarted).toBe(true);
+      // A stale load of the same id must not keep the second session from
+      // reaching its own load.
+      await secondStarted.promise;
 
       firstGate.resolve();
+      // The broker does not report that it dropped the stale load instead of
+      // answering the LOAD of the second session with it, so this window only
+      // gives a wrong delivery time to show up. The second session still holds
+      // its gate, so a slow machine cannot make it fail.
       const stillPending = Symbol('still-pending');
       expect(
         await Promise.race([
@@ -3110,6 +3142,8 @@ describe('EvalBroker', () => {
       concurrentSharedLoad ||= activeSharedLoads > 1;
       try {
         if (sharedLoadCalls === 2) {
+          // The broker has no public point to observe its handling of a LOAD,
+          // so the second load is held by a delay instead of a gate.
           await new Promise<void>((resolveDelay) => {
             setTimeout(resolveDelay, 25);
           });
