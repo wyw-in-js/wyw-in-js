@@ -18,6 +18,8 @@ import { transform } from '../transform';
 import type { PluginOptions } from '../types';
 import { EventEmitter } from '../utils/EventEmitter';
 
+import { withProject } from './__utils__/project';
+
 const processorFile = join(__dirname, '__fixtures__', 'test-css-processor.js');
 const styledProcessorFile = join(
   __dirname,
@@ -862,625 +864,586 @@ describe('transform static import value inlining', () => {
   });
 
   it('inlines a direct imported literal without keeping the runtime import', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'wyw-static-import-'));
-    const entryFile = join(root, 'entry.js');
-    const depFile = join(root, 'tokens.js');
     const cache = new TransformCacheCollection();
     const perf = createPerfEventRecorder();
 
-    writeFileSync(depFile, `export const color = 'red';`);
-    writeFileSync(
-      entryFile,
-      dedent`
-        import { css } from 'test-css-processor';
-        import { color } from './tokens.js';
+    await withProject(
+      {
+        'tokens.js': `export const color = 'red';`,
+        'entry.js': dedent`
+          import { css } from 'test-css-processor';
+          import { color } from './tokens.js';
 
-        export const className = css\`
-          color: ${'${color}'};
-        \`;
-      `
+          export const className = css\`
+            color: ${'${color}'};
+          \`;
+        `,
+      },
+      async (project) => {
+        const entryFile = project.path('entry.js');
+        const depFile = project.path('tokens.js');
+
+        const result = await runTransform(
+          project.root,
+          entryFile,
+          cache,
+          perf.eventEmitter
+        );
+
+        expect(result.cssText).toContain('color:red');
+        expect(result.code).not.toContain('./tokens.js');
+        expect(result.dependencies).toContain(depFile);
+        expect(perf.counts.get('transform:evaluator') ?? 0).toBe(0);
+        expect(perf.counts.get('transform:emitCommonJS') ?? 0).toBe(0);
+        expect(perf.counts.get('transform:evalFile') ?? 0).toBe(0);
+      }
     );
-
-    try {
-      const result = await runTransform(
-        root,
-        entryFile,
-        cache,
-        perf.eventEmitter
-      );
-
-      expect(result.cssText).toContain('color:red');
-      expect(result.code).not.toContain('./tokens.js');
-      expect(result.dependencies).toContain(depFile);
-      expect(perf.counts.get('transform:evaluator') ?? 0).toBe(0);
-      expect(perf.counts.get('transform:emitCommonJS') ?? 0).toBe(0);
-      expect(perf.counts.get('transform:evalFile') ?? 0).toBe(0);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
   });
 
   it('allows static strategy when imported values resolve without eval', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'wyw-static-import-'));
-    const entryFile = join(root, 'entry.js');
-    const depFile = join(root, 'tokens.js');
     const cache = new TransformCacheCollection();
     const perf = createPerfEventRecorder();
 
-    writeFileSync(depFile, `export const color = 'red';`);
-    writeFileSync(
-      entryFile,
-      dedent`
-        import { css } from 'test-css-processor';
-        import { color } from './tokens.js';
-
-        export const className = css\`
-          color: ${'${color}'};
-        \`;
-      `
-    );
-
-    try {
-      const result = await runTransform(
-        root,
-        entryFile,
-        cache,
-        perf.eventEmitter,
-        {
-          eval: { strategy: 'static' },
-        }
-      );
-
-      expect(result.cssText).toContain('color:red');
-      expect(result.code).not.toContain('./tokens.js');
-      expect(result.dependencies).toContain(depFile);
-      expect(perf.counts.get('transform:evalFile') ?? 0).toBe(0);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('resolves a namespace member after removing component-only hazards', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'wyw-static-import-'));
-    const entryFile = join(root, 'entry.js');
-    const observerFile = join(root, 'observer.js');
-    const depFile = join(root, 'tokens.js');
-    const cache = new TransformCacheCollection();
-
-    writeFileSync(
-      observerFile,
-      dedent`
-        export const observer = (component) => component;
-      `
-    );
-    writeFileSync(
-      depFile,
-      dedent`
-        export const runtime = 'runtime';
-        export const smallFontSize = { color: 'red' };
-      `
-    );
-    writeFileSync(
-      entryFile,
-      dedent`
-        import { css } from 'test-css-processor';
-        import { observer } from './observer.js';
-        import * as tokens from './tokens.js';
-        import { jsx as _jsx } from 'react/jsx-runtime';
-
-        const Component = observer(() =>
-          _jsx('div', { children: tokens.runtime })
-        );
-
-        export const className = css\`
-          ${'${tokens.smallFontSize}'};
-        \`;
-      `
-    );
-
-    try {
-      const result = await runTransform(root, entryFile, cache, undefined, {
-        eval: { strategy: 'static' },
-      });
-
-      expect(result.cssText).toContain('color:red');
-      expect(result.dependencies).toContain(depFile);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('inlines imported static values by default', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'wyw-static-import-'));
-    const entryFile = join(root, 'entry.js');
-    const depFile = join(root, 'tokens.js');
-    const cache = new TransformCacheCollection();
-    const perf = createPerfEventRecorder();
-
-    writeFileSync(depFile, `export const color = 'red';`);
-    writeFileSync(
-      entryFile,
-      dedent`
-        import { css } from 'test-css-processor';
-        import { color } from './tokens.js';
-
-        export const className = css\`
-          color: ${'${color}'};
-        \`;
-      `
-    );
-
-    try {
-      const result = await runTransformWithOptions(
-        root,
-        entryFile,
-        cache,
-        perf.eventEmitter
-      );
-
-      expect(result.cssText).toContain('color:red');
-      expect(result.code).not.toContain('./tokens.js');
-      expect(result.dependencies).toContain(depFile);
-      expect(perf.counts.get('transform:evalFile') ?? 0).toBe(0);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('inlines compiled TypeScript enum exports without eval', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'wyw-static-import-'));
-    const entryFile = join(root, 'entry.js');
-    const statusFile = join(root, 'status.js');
-    const levelFile = join(root, 'level.js');
-    const cache = new TransformCacheCollection();
-    const perf = createPerfEventRecorder();
-
-    writeFileSync(
-      statusFile,
-      dedent`
-        var PowerStatus;
-        (function (PowerStatus) {
-          PowerStatus["UNKNOWN"] = "unknown";
-          PowerStatus["POWERED_ON"] = "powered_on";
-        })(PowerStatus || (PowerStatus = {}));
-        export { PowerStatus as PowerStatus };
-        export default PowerStatus;
-      `
-    );
-    writeFileSync(
-      levelFile,
-      dedent`
-        var Level;
-        (function (Level) {
-          Level[Level["Low"] = 0] = "Low";
-          Level[Level["High"] = 2] = "High";
-        })(Level || (Level = {}));
-        export default Level;
-      `
-    );
-    writeFileSync(
-      entryFile,
-      dedent`
-        import { css } from 'test-css-processor';
-        import { PowerStatus } from './status.js';
-        import Level from './level.js';
-
-        export const className = css\`
-          content: "${'${PowerStatus.UNKNOWN}'}";
-          z-index: ${'${Level.High}'};
-        \`;
-      `
-    );
-
-    try {
-      const result = await runTransform(
-        root,
-        entryFile,
-        cache,
-        perf.eventEmitter
-      );
-
-      expect(result.cssText).toContain('content:"unknown"');
-      expect(result.cssText).toContain('z-index:2');
-      expect(result.dependencies).toContain(statusFile);
-      expect(result.dependencies).toContain(levelFile);
-      expect(perf.counts.get('transform:evalFile') ?? 0).toBe(0);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('keeps imported static values in eval when disabled explicitly', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'wyw-static-import-'));
-    const entryFile = join(root, 'entry.js');
-    const depFile = join(root, 'tokens.js');
-    const cache = new TransformCacheCollection();
-    const perf = createPerfEventRecorder();
-
-    writeFileSync(depFile, `export const color = 'red';`);
-    writeFileSync(
-      entryFile,
-      dedent`
-        import { css } from 'test-css-processor';
-        import { color } from './tokens.js';
-
-        export const className = css\`
-          color: ${'${color}'};
-        \`;
-      `
-    );
-
-    try {
-      const result = await runTransform(
-        root,
-        entryFile,
-        cache,
-        perf.eventEmitter,
-        {
-          eval: { strategy: 'execute' },
-        }
-      );
-
-      expect(result.cssText).toContain('color:red');
-      expect(result.code).not.toContain('./tokens.js');
-      expect(result.dependencies).toContain('./tokens.js');
-      expect(perf.counts.get('transform:evalFile') ?? 0).toBeGreaterThan(0);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  (['hybrid', 'static'] as const).forEach((strategy) => {
-    it(`resolves complete imported destructuring patterns with ${strategy} evaluation`, async () => {
-      const root = mkdtempSync(join(tmpdir(), 'wyw-static-import-'));
-      const entryFile = join(root, 'entry.js');
-      const depFile = join(root, 'tokens.js');
-      const cache = new TransformCacheCollection();
-      const perf = createPerfEventRecorder();
-
-      writeFileSync(
-        depFile,
-        dedent`
-          export const fallback = 7;
-          export const key = 'height';
-          const shared = { value: 1 };
-          export const theme = {
-            extra: 5,
-            first: shared,
-            second: shared,
-            size: { depth: 9, height: 171, width: 304 },
-            tuple: [4, 8, 16],
-          };
-        `
-      );
-      writeFileSync(
-        entryFile,
-        dedent`
+    await withProject(
+      {
+        'tokens.js': `export const color = 'red';`,
+        'entry.js': dedent`
           import { css } from 'test-css-processor';
-          import { fallback, key, theme } from './tokens.js';
-
-          const {
-            size: { width, [key]: height, ...sizeRest },
-            tuple: [, gap, ...tail],
-            missing = fallback,
-            first,
-            second,
-            ...rest
-          } = theme;
+          import { color } from './tokens.js';
 
           export const className = css\`
-            width: ${'${width}'}px;
-            height: ${'${height}'}px;
-            depth: ${'${sizeRest.depth}'}px;
-            gap: ${'${gap}'}px;
-            tail: ${'${tail[0]}'}px;
-            missing: ${'${missing}'}px;
-            extra: ${'${rest.extra}'}px;
-            same: ${'${String(first === second)}'};
+            color: ${'${color}'};
           \`;
-        `
-      );
+        `,
+      },
+      async (project) => {
+        const entryFile = project.path('entry.js');
+        const depFile = project.path('tokens.js');
 
-      try {
         const result = await runTransform(
-          root,
+          project.root,
           entryFile,
           cache,
           perf.eventEmitter,
           {
-            eval: { strategy },
+            eval: { strategy: 'static' },
           }
         );
 
-        expect(result.cssText).toContain('width:304px');
-        expect(result.cssText).toContain('height:171px');
-        expect(result.cssText).toContain('depth:9px');
-        expect(result.cssText).toContain('gap:8px');
-        expect(result.cssText).toContain('tail:16px');
-        expect(result.cssText).toContain('missing:7px');
-        expect(result.cssText).toContain('extra:5px');
-        expect(result.cssText).toContain('same:true');
-        expect(result.cssText).not.toContain('width:width:');
+        expect(result.cssText).toContain('color:red');
+        expect(result.code).not.toContain('./tokens.js');
         expect(result.dependencies).toContain(depFile);
         expect(perf.counts.get('transform:evalFile') ?? 0).toBe(0);
-      } finally {
-        rmSync(root, { recursive: true, force: true });
       }
+    );
+  });
+
+  it('resolves a namespace member after removing component-only hazards', async () => {
+    const cache = new TransformCacheCollection();
+
+    await withProject(
+      {
+        'observer.js': dedent`
+          export const observer = (component) => component;
+        `,
+        'tokens.js': dedent`
+          export const runtime = 'runtime';
+          export const smallFontSize = { color: 'red' };
+        `,
+        'entry.js': dedent`
+          import { css } from 'test-css-processor';
+          import { observer } from './observer.js';
+          import * as tokens from './tokens.js';
+          import { jsx as _jsx } from 'react/jsx-runtime';
+
+          const Component = observer(() =>
+            _jsx('div', { children: tokens.runtime })
+          );
+
+          export const className = css\`
+            ${'${tokens.smallFontSize}'};
+          \`;
+        `,
+      },
+      async (project) => {
+        const entryFile = project.path('entry.js');
+        const depFile = project.path('tokens.js');
+
+        const result = await runTransform(
+          project.root,
+          entryFile,
+          cache,
+          undefined,
+          {
+            eval: { strategy: 'static' },
+          }
+        );
+
+        expect(result.cssText).toContain('color:red');
+        expect(result.dependencies).toContain(depFile);
+      }
+    );
+  });
+
+  it('inlines imported static values by default', async () => {
+    const cache = new TransformCacheCollection();
+    const perf = createPerfEventRecorder();
+
+    await withProject(
+      {
+        'tokens.js': `export const color = 'red';`,
+        'entry.js': dedent`
+          import { css } from 'test-css-processor';
+          import { color } from './tokens.js';
+
+          export const className = css\`
+            color: ${'${color}'};
+          \`;
+        `,
+      },
+      async (project) => {
+        const entryFile = project.path('entry.js');
+        const depFile = project.path('tokens.js');
+
+        const result = await runTransformWithOptions(
+          project.root,
+          entryFile,
+          cache,
+          perf.eventEmitter
+        );
+
+        expect(result.cssText).toContain('color:red');
+        expect(result.code).not.toContain('./tokens.js');
+        expect(result.dependencies).toContain(depFile);
+        expect(perf.counts.get('transform:evalFile') ?? 0).toBe(0);
+      }
+    );
+  });
+
+  it('inlines compiled TypeScript enum exports without eval', async () => {
+    const cache = new TransformCacheCollection();
+    const perf = createPerfEventRecorder();
+
+    await withProject(
+      {
+        'status.js': dedent`
+          var PowerStatus;
+          (function (PowerStatus) {
+            PowerStatus["UNKNOWN"] = "unknown";
+            PowerStatus["POWERED_ON"] = "powered_on";
+          })(PowerStatus || (PowerStatus = {}));
+          export { PowerStatus as PowerStatus };
+          export default PowerStatus;
+        `,
+        'level.js': dedent`
+          var Level;
+          (function (Level) {
+            Level[Level["Low"] = 0] = "Low";
+            Level[Level["High"] = 2] = "High";
+          })(Level || (Level = {}));
+          export default Level;
+        `,
+        'entry.js': dedent`
+          import { css } from 'test-css-processor';
+          import { PowerStatus } from './status.js';
+          import Level from './level.js';
+
+          export const className = css\`
+            content: "${'${PowerStatus.UNKNOWN}'}";
+            z-index: ${'${Level.High}'};
+          \`;
+        `,
+      },
+      async (project) => {
+        const entryFile = project.path('entry.js');
+        const statusFile = project.path('status.js');
+        const levelFile = project.path('level.js');
+
+        const result = await runTransform(
+          project.root,
+          entryFile,
+          cache,
+          perf.eventEmitter
+        );
+
+        expect(result.cssText).toContain('content:"unknown"');
+        expect(result.cssText).toContain('z-index:2');
+        expect(result.dependencies).toContain(statusFile);
+        expect(result.dependencies).toContain(levelFile);
+        expect(perf.counts.get('transform:evalFile') ?? 0).toBe(0);
+      }
+    );
+  });
+
+  it('keeps imported static values in eval when disabled explicitly', async () => {
+    const cache = new TransformCacheCollection();
+    const perf = createPerfEventRecorder();
+
+    await withProject(
+      {
+        'tokens.js': `export const color = 'red';`,
+        'entry.js': dedent`
+          import { css } from 'test-css-processor';
+          import { color } from './tokens.js';
+
+          export const className = css\`
+            color: ${'${color}'};
+          \`;
+        `,
+      },
+      async (project) => {
+        const entryFile = project.path('entry.js');
+
+        const result = await runTransform(
+          project.root,
+          entryFile,
+          cache,
+          perf.eventEmitter,
+          {
+            eval: { strategy: 'execute' },
+          }
+        );
+
+        expect(result.cssText).toContain('color:red');
+        expect(result.code).not.toContain('./tokens.js');
+        expect(result.dependencies).toContain('./tokens.js');
+        expect(perf.counts.get('transform:evalFile') ?? 0).toBeGreaterThan(0);
+      }
+    );
+  });
+
+  (['hybrid', 'static'] as const).forEach((strategy) => {
+    it(`resolves complete imported destructuring patterns with ${strategy} evaluation`, async () => {
+      const cache = new TransformCacheCollection();
+      const perf = createPerfEventRecorder();
+
+      await withProject(
+        {
+          'tokens.js': dedent`
+            export const fallback = 7;
+            export const key = 'height';
+            const shared = { value: 1 };
+            export const theme = {
+              extra: 5,
+              first: shared,
+              second: shared,
+              size: { depth: 9, height: 171, width: 304 },
+              tuple: [4, 8, 16],
+            };
+          `,
+          'entry.js': dedent`
+            import { css } from 'test-css-processor';
+            import { fallback, key, theme } from './tokens.js';
+
+            const {
+              size: { width, [key]: height, ...sizeRest },
+              tuple: [, gap, ...tail],
+              missing = fallback,
+              first,
+              second,
+              ...rest
+            } = theme;
+
+            export const className = css\`
+              width: ${'${width}'}px;
+              height: ${'${height}'}px;
+              depth: ${'${sizeRest.depth}'}px;
+              gap: ${'${gap}'}px;
+              tail: ${'${tail[0]}'}px;
+              missing: ${'${missing}'}px;
+              extra: ${'${rest.extra}'}px;
+              same: ${'${String(first === second)}'};
+            \`;
+          `,
+        },
+        async (project) => {
+          const entryFile = project.path('entry.js');
+          const depFile = project.path('tokens.js');
+
+          const result = await runTransform(
+            project.root,
+            entryFile,
+            cache,
+            perf.eventEmitter,
+            {
+              eval: { strategy },
+            }
+          );
+
+          expect(result.cssText).toContain('width:304px');
+          expect(result.cssText).toContain('height:171px');
+          expect(result.cssText).toContain('depth:9px');
+          expect(result.cssText).toContain('gap:8px');
+          expect(result.cssText).toContain('tail:16px');
+          expect(result.cssText).toContain('missing:7px');
+          expect(result.cssText).toContain('extra:5px');
+          expect(result.cssText).toContain('same:true');
+          expect(result.cssText).not.toContain('width:width:');
+          expect(result.dependencies).toContain(depFile);
+          expect(perf.counts.get('transform:evalFile') ?? 0).toBe(0);
+        }
+      );
     });
   });
 
   (['hybrid', 'static'] as const).forEach((strategy) => {
     it(`does not misfold identity shared across exports with ${strategy} evaluation`, async () => {
-      const root = mkdtempSync(join(tmpdir(), 'wyw-static-import-'));
-      const entryFile = join(root, 'entry.js');
-      const depFile = join(root, 'tokens.js');
       const cache = new TransformCacheCollection();
       const perf = createPerfEventRecorder();
 
-      writeFileSync(
-        depFile,
-        dedent`
-          export const shared = { value: 1 };
-          export const source = { selected: shared };
-        `
-      );
-      writeFileSync(
-        entryFile,
-        dedent`
-          import { css } from 'test-css-processor';
-          import { shared, source } from './tokens.js';
+      await withProject(
+        {
+          'tokens.js': dedent`
+            export const shared = { value: 1 };
+            export const source = { selected: shared };
+          `,
+          'entry.js': dedent`
+            import { css } from 'test-css-processor';
+            import { shared, source } from './tokens.js';
 
-          const { selected } = source;
+            const { selected } = source;
 
-          export const className = css\`
-            same: ${'${String(selected === shared)}'};
-          \`;
-        `
-      );
+            export const className = css\`
+              same: ${'${String(selected === shared)}'};
+            \`;
+          `,
+        },
+        async (project) => {
+          const entryFile = project.path('entry.js');
 
-      try {
-        const transformPromise = runTransform(
-          root,
-          entryFile,
-          cache,
-          perf.eventEmitter,
-          {
-            eval: { strategy },
-          }
-        );
-
-        if (strategy === 'static') {
-          await expect(transformPromise).rejects.toThrow(
-            'eval.strategy: "static"'
+          const transformPromise = runTransform(
+            project.root,
+            entryFile,
+            cache,
+            perf.eventEmitter,
+            {
+              eval: { strategy },
+            }
           );
-        } else {
-          const result = await transformPromise;
-          expect(result.cssText).toContain('same:true');
-          expect(result.cssText).not.toContain('same:false');
-          expect(perf.counts.get('transform:evalFile') ?? 0).toBeGreaterThan(0);
+
+          if (strategy === 'static') {
+            await expect(transformPromise).rejects.toThrow(
+              'eval.strategy: "static"'
+            );
+          } else {
+            const result = await transformPromise;
+            expect(result.cssText).toContain('same:true');
+            expect(result.cssText).not.toContain('same:false');
+            expect(perf.counts.get('transform:evalFile') ?? 0).toBeGreaterThan(
+              0
+            );
+          }
         }
-      } finally {
-        rmSync(root, { recursive: true, force: true });
-      }
+      );
     });
   });
 
   (['hybrid', 'static'] as const).forEach((strategy) => {
     it(`does not use a stale destructured value after a cross-export alias mutation with ${strategy} evaluation`, async () => {
-      const root = mkdtempSync(join(tmpdir(), 'wyw-static-import-'));
-      const entryFile = join(root, 'entry.js');
-      const depFile = join(root, 'tokens.js');
       const cache = new TransformCacheCollection();
       const perf = createPerfEventRecorder();
 
-      writeFileSync(
-        depFile,
-        dedent`
-          export const source = { width: 304 };
-          export const alias = source;
-        `
-      );
-      writeFileSync(
-        entryFile,
-        dedent`
-          import { css } from 'test-css-processor';
-          import { alias, source } from './tokens.js';
+      await withProject(
+        {
+          'tokens.js': dedent`
+            export const source = { width: 304 };
+            export const alias = source;
+          `,
+          'entry.js': dedent`
+            import { css } from 'test-css-processor';
+            import { alias, source } from './tokens.js';
 
-          alias.width = 400;
-          const { width } = source;
+            alias.width = 400;
+            const { width } = source;
 
-          export const className = css\`
-            width: ${'${width}'}px;
-          \`;
-        `
-      );
+            export const className = css\`
+              width: ${'${width}'}px;
+            \`;
+          `,
+        },
+        async (project) => {
+          const entryFile = project.path('entry.js');
 
-      try {
-        const transformPromise = runTransform(
-          root,
-          entryFile,
-          cache,
-          perf.eventEmitter,
-          {
-            eval: { strategy },
-          }
-        );
-
-        if (strategy === 'static') {
-          await expect(transformPromise).rejects.toThrow(
-            'eval.strategy: "static"'
+          const transformPromise = runTransform(
+            project.root,
+            entryFile,
+            cache,
+            perf.eventEmitter,
+            {
+              eval: { strategy },
+            }
           );
-        } else {
-          const result = await transformPromise;
-          expect(result.cssText).toContain('width:400px');
-          expect(result.cssText).not.toContain('width:304px');
-          expect(perf.counts.get('transform:evalFile') ?? 0).toBeGreaterThan(0);
+
+          if (strategy === 'static') {
+            await expect(transformPromise).rejects.toThrow(
+              'eval.strategy: "static"'
+            );
+          } else {
+            const result = await transformPromise;
+            expect(result.cssText).toContain('width:400px');
+            expect(result.cssText).not.toContain('width:304px');
+            expect(perf.counts.get('transform:evalFile') ?? 0).toBeGreaterThan(
+              0
+            );
+          }
         }
-      } finally {
-        rmSync(root, { recursive: true, force: true });
-      }
+      );
     });
   });
 
   (['hybrid', 'static'] as const).forEach((strategy) => {
     it(`does not use a stale value after a destructuring-default alias mutation with ${strategy} evaluation`, async () => {
-      const root = mkdtempSync(join(tmpdir(), 'wyw-static-import-'));
-      const entryFile = join(root, 'entry.js');
-      const depFile = join(root, 'tokens.js');
       const cache = new TransformCacheCollection();
       const perf = createPerfEventRecorder();
 
-      writeFileSync(depFile, `export const source = { width: 304 };`);
-      writeFileSync(
-        entryFile,
-        dedent`
-          import { css } from 'test-css-processor';
-          import { source } from './tokens.js';
+      await withProject(
+        {
+          'tokens.js': `export const source = { width: 304 };`,
+          'entry.js': dedent`
+            import { css } from 'test-css-processor';
+            import { source } from './tokens.js';
 
-          const alias = source;
-          const { selected = alias } = {};
-          selected.width = 400;
-          const { width } = source;
+            const alias = source;
+            const { selected = alias } = {};
+            selected.width = 400;
+            const { width } = source;
 
-          export const className = css\`
-            width: ${'${width}'}px;
-          \`;
-        `
-      );
+            export const className = css\`
+              width: ${'${width}'}px;
+            \`;
+          `,
+        },
+        async (project) => {
+          const entryFile = project.path('entry.js');
 
-      try {
-        const transformPromise = runTransform(
-          root,
-          entryFile,
-          cache,
-          perf.eventEmitter,
-          {
-            eval: { strategy },
-          }
-        );
-
-        if (strategy === 'static') {
-          await expect(transformPromise).rejects.toThrow(
-            'eval.strategy: "static"'
+          const transformPromise = runTransform(
+            project.root,
+            entryFile,
+            cache,
+            perf.eventEmitter,
+            {
+              eval: { strategy },
+            }
           );
-        } else {
-          const result = await transformPromise;
-          expect(result.cssText).toContain('width:400px');
-          expect(result.cssText).not.toContain('width:304px');
-          expect(perf.counts.get('transform:evalFile') ?? 0).toBeGreaterThan(0);
+
+          if (strategy === 'static') {
+            await expect(transformPromise).rejects.toThrow(
+              'eval.strategy: "static"'
+            );
+          } else {
+            const result = await transformPromise;
+            expect(result.cssText).toContain('width:400px');
+            expect(result.cssText).not.toContain('width:304px');
+            expect(perf.counts.get('transform:evalFile') ?? 0).toBeGreaterThan(
+              0
+            );
+          }
         }
-      } finally {
-        rmSync(root, { recursive: true, force: true });
-      }
+      );
     });
   });
 
   (['hybrid', 'static'] as const).forEach((strategy) => {
     it(`does not use a stale direct import after mutation with ${strategy} evaluation`, async () => {
-      const root = mkdtempSync(join(tmpdir(), 'wyw-static-import-'));
-      const entryFile = join(root, 'entry.js');
-      const depFile = join(root, 'tokens.js');
       const cache = new TransformCacheCollection();
       const perf = createPerfEventRecorder();
 
-      writeFileSync(depFile, `export const source = { width: 304 };`);
-      writeFileSync(
-        entryFile,
-        dedent`
-          import { css } from 'test-css-processor';
-          import { source } from './tokens.js';
+      await withProject(
+        {
+          'tokens.js': `export const source = { width: 304 };`,
+          'entry.js': dedent`
+            import { css } from 'test-css-processor';
+            import { source } from './tokens.js';
 
-          source.width = 400;
+            source.width = 400;
 
-          export const className = css\`
-            width: ${'${source.width}'}px;
-          \`;
-        `
-      );
+            export const className = css\`
+              width: ${'${source.width}'}px;
+            \`;
+          `,
+        },
+        async (project) => {
+          const entryFile = project.path('entry.js');
 
-      try {
-        const transformPromise = runTransform(
-          root,
-          entryFile,
-          cache,
-          perf.eventEmitter,
-          {
-            eval: { strategy },
-          }
-        );
-
-        if (strategy === 'static') {
-          await expect(transformPromise).rejects.toThrow(
-            'eval.strategy: "static"'
+          const transformPromise = runTransform(
+            project.root,
+            entryFile,
+            cache,
+            perf.eventEmitter,
+            {
+              eval: { strategy },
+            }
           );
-        } else {
-          const result = await transformPromise;
-          expect(result.cssText).toContain('width:400px');
-          expect(result.cssText).not.toContain('width:304px');
-          expect(perf.counts.get('transform:evalFile') ?? 0).toBeGreaterThan(0);
+
+          if (strategy === 'static') {
+            await expect(transformPromise).rejects.toThrow(
+              'eval.strategy: "static"'
+            );
+          } else {
+            const result = await transformPromise;
+            expect(result.cssText).toContain('width:400px');
+            expect(result.cssText).not.toContain('width:304px');
+            expect(perf.counts.get('transform:evalFile') ?? 0).toBeGreaterThan(
+              0
+            );
+          }
         }
-      } finally {
-        rmSync(root, { recursive: true, force: true });
-      }
+      );
     });
   });
 
   (['hybrid', 'static'] as const).forEach((strategy) => {
     it(`does not ignore an opaque imported mutation call with ${strategy} evaluation`, async () => {
-      const root = mkdtempSync(join(tmpdir(), 'wyw-static-import-'));
-      const entryFile = join(root, 'entry.js');
-      const depFile = join(root, 'tokens.js');
       const cache = new TransformCacheCollection();
       const perf = createPerfEventRecorder();
 
-      writeFileSync(
-        depFile,
-        dedent`
-          export const source = { width: 304 };
-          export function mutate() {
-            source.width = 400;
-          }
-        `
-      );
-      writeFileSync(
-        entryFile,
-        dedent`
-          import { css } from 'test-css-processor';
-          import { mutate, source } from './tokens.js';
+      await withProject(
+        {
+          'tokens.js': dedent`
+            export const source = { width: 304 };
+            export function mutate() {
+              source.width = 400;
+            }
+          `,
+          'entry.js': dedent`
+            import { css } from 'test-css-processor';
+            import { mutate, source } from './tokens.js';
 
-          mutate();
-          const { width } = source;
+            mutate();
+            const { width } = source;
 
-          export const className = css\`
-            width: ${'${width}'}px;
-          \`;
-        `
-      );
+            export const className = css\`
+              width: ${'${width}'}px;
+            \`;
+          `,
+        },
+        async (project) => {
+          const entryFile = project.path('entry.js');
 
-      try {
-        const transformPromise = runTransform(
-          root,
-          entryFile,
-          cache,
-          perf.eventEmitter,
-          {
-            eval: { strategy },
-          }
-        );
-
-        if (strategy === 'static') {
-          await expect(transformPromise).rejects.toThrow(
-            'eval.strategy: "static"'
+          const transformPromise = runTransform(
+            project.root,
+            entryFile,
+            cache,
+            perf.eventEmitter,
+            {
+              eval: { strategy },
+            }
           );
-        } else {
-          const result = await transformPromise;
-          expect(result.cssText).toContain('width:400px');
-          expect(result.cssText).not.toContain('width:304px');
-          expect(perf.counts.get('transform:evalFile') ?? 0).toBeGreaterThan(0);
+
+          if (strategy === 'static') {
+            await expect(transformPromise).rejects.toThrow(
+              'eval.strategy: "static"'
+            );
+          } else {
+            const result = await transformPromise;
+            expect(result.cssText).toContain('width:400px');
+            expect(result.cssText).not.toContain('width:304px');
+            expect(perf.counts.get('transform:evalFile') ?? 0).toBeGreaterThan(
+              0
+            );
+          }
         }
-      } finally {
-        rmSync(root, { recursive: true, force: true });
-      }
+      );
     });
   });
 
@@ -1525,55 +1488,51 @@ describe('transform static import value inlining', () => {
   ).forEach(({ factory, name, setup }) => {
     (['hybrid', 'static'] as const).forEach((strategy) => {
       it(`does not detach destructuring from ${name} with ${strategy} evaluation`, async () => {
-        const root = mkdtempSync(join(tmpdir(), 'wyw-static-import-'));
-        const entryFile = join(root, 'entry.js');
-        const factoryFile = join(root, 'factory.js');
-        const tokensFile = join(root, 'tokens.js');
         const cache = new TransformCacheCollection();
         const perf = createPerfEventRecorder();
 
-        writeFileSync(tokensFile, `export const source = { width: 304 };`);
-        writeFileSync(factoryFile, factory);
-        writeFileSync(
-          entryFile,
-          dedent`
-            import { css } from 'test-css-processor';
-            import { source } from './tokens.js';
-            ${setup}
+        await withProject(
+          {
+            'tokens.js': `export const source = { width: 304 };`,
+            'factory.js': factory,
+            'entry.js': dedent`
+              import { css } from 'test-css-processor';
+              import { source } from './tokens.js';
+              ${setup}
 
-            const { width } = source;
-            export const className = css\`
-              width: ${'${width}'}px;
-            \`;
-          `
-        );
+              const { width } = source;
+              export const className = css\`
+                width: ${'${width}'}px;
+              \`;
+            `,
+          },
+          async (project) => {
+            const entryFile = project.path('entry.js');
 
-        try {
-          const transformPromise = runTransform(
-            root,
-            entryFile,
-            cache,
-            perf.eventEmitter,
-            {
-              eval: { strategy },
+            const transformPromise = runTransform(
+              project.root,
+              entryFile,
+              cache,
+              perf.eventEmitter,
+              {
+                eval: { strategy },
+              }
+            );
+
+            if (strategy === 'static') {
+              await expect(transformPromise).rejects.toThrow(
+                'eval.strategy: "static"'
+              );
+            } else {
+              const result = await transformPromise;
+              expect(result.cssText).toContain('width:400px');
+              expect(result.cssText).not.toContain('width:304px');
+              expect(
+                perf.counts.get('transform:evalFile') ?? 0
+              ).toBeGreaterThan(0);
             }
-          );
-
-          if (strategy === 'static') {
-            await expect(transformPromise).rejects.toThrow(
-              'eval.strategy: "static"'
-            );
-          } else {
-            const result = await transformPromise;
-            expect(result.cssText).toContain('width:400px');
-            expect(result.cssText).not.toContain('width:304px');
-            expect(perf.counts.get('transform:evalFile') ?? 0).toBeGreaterThan(
-              0
-            );
           }
-        } finally {
-          rmSync(root, { recursive: true, force: true });
-        }
+        );
       });
     });
   });
@@ -1620,31 +1579,81 @@ describe('transform static import value inlining', () => {
   ).forEach(({ name, setup }) => {
     (['hybrid', 'static'] as const).forEach((strategy) => {
       it(`preserves ${name} while extracting from a function with ${strategy} evaluation`, async () => {
-        const root = mkdtempSync(join(tmpdir(), 'wyw-static-import-'));
-        const entryFile = join(root, 'entry.js');
         const cache = new TransformCacheCollection();
         const perf = createPerfEventRecorder();
 
-        writeFileSync(
-          entryFile,
-          dedent`
-            import { css } from 'test-css-processor';
+        await withProject(
+          {
+            'entry.js': dedent`
+              import { css } from 'test-css-processor';
 
-            function makeClassName() {
-              ${setup}
-              const { width } = source;
-              return css\`
-                width: ${'${width}'}px;
-              \`;
+              function makeClassName() {
+                ${setup}
+                const { width } = source;
+                return css\`
+                  width: ${'${width}'}px;
+                \`;
+              }
+
+              export const className = makeClassName();
+            `,
+          },
+          async (project) => {
+            const entryFile = project.path('entry.js');
+
+            const transformPromise = runTransform(
+              project.root,
+              entryFile,
+              cache,
+              perf.eventEmitter,
+              {
+                eval: { strategy },
+              }
+            );
+
+            if (strategy === 'static') {
+              await expect(transformPromise).rejects.toThrow(
+                'eval.strategy: "static"'
+              );
+            } else {
+              const result = await transformPromise;
+              expect(result.cssText).toContain('width:400px');
+              expect(result.cssText).not.toContain('width:304px');
+              expect(
+                perf.counts.get('transform:evalFile') ?? 0
+              ).toBeGreaterThan(0);
             }
-
-            export const className = makeClassName();
-          `
+          }
         );
+      });
+    });
+  });
 
-        try {
+  (['hybrid', 'static'] as const).forEach((strategy) => {
+    it(`does not use a stale destructuring snapshot after Object.assign with ${strategy} evaluation`, async () => {
+      const cache = new TransformCacheCollection();
+      const perf = createPerfEventRecorder();
+
+      await withProject(
+        {
+          'tokens.js': `export const theme = { size: { width: 304 } };`,
+          'entry.js': dedent`
+            import { css } from 'test-css-processor';
+            import { theme } from './tokens.js';
+
+            Object.assign(theme.size, { width: 400 });
+            const { size: { width } } = theme;
+
+            export const className = css\`
+              width: ${'${width}'}px;
+            \`;
+          `,
+        },
+        async (project) => {
+          const entryFile = project.path('entry.js');
+
           const transformPromise = runTransform(
-            root,
+            project.root,
             entryFile,
             cache,
             perf.eventEmitter,
@@ -1665,731 +1674,615 @@ describe('transform static import value inlining', () => {
               0
             );
           }
-        } finally {
-          rmSync(root, { recursive: true, force: true });
         }
-      });
-    });
-  });
-
-  (['hybrid', 'static'] as const).forEach((strategy) => {
-    it(`does not use a stale destructuring snapshot after Object.assign with ${strategy} evaluation`, async () => {
-      const root = mkdtempSync(join(tmpdir(), 'wyw-static-import-'));
-      const entryFile = join(root, 'entry.js');
-      const depFile = join(root, 'tokens.js');
-      const cache = new TransformCacheCollection();
-      const perf = createPerfEventRecorder();
-
-      writeFileSync(depFile, `export const theme = { size: { width: 304 } };`);
-      writeFileSync(
-        entryFile,
-        dedent`
-          import { css } from 'test-css-processor';
-          import { theme } from './tokens.js';
-
-          Object.assign(theme.size, { width: 400 });
-          const { size: { width } } = theme;
-
-          export const className = css\`
-            width: ${'${width}'}px;
-          \`;
-        `
       );
-
-      try {
-        const transformPromise = runTransform(
-          root,
-          entryFile,
-          cache,
-          perf.eventEmitter,
-          {
-            eval: { strategy },
-          }
-        );
-
-        if (strategy === 'static') {
-          await expect(transformPromise).rejects.toThrow(
-            'eval.strategy: "static"'
-          );
-        } else {
-          const result = await transformPromise;
-          expect(result.cssText).toContain('width:400px');
-          expect(result.cssText).not.toContain('width:304px');
-          expect(perf.counts.get('transform:evalFile') ?? 0).toBeGreaterThan(0);
-        }
-      } finally {
-        rmSync(root, { recursive: true, force: true });
-      }
     });
   });
 
   it('keeps local static values in eval when disabled explicitly', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'wyw-static-import-'));
-    const entryFile = join(root, 'entry.js');
     const cache = new TransformCacheCollection();
     const perf = createPerfEventRecorder();
 
-    writeFileSync(
-      entryFile,
-      dedent`
-        import { css } from 'test-css-processor';
+    await withProject(
+      {
+        'entry.js': dedent`
+          import { css } from 'test-css-processor';
 
-        const color = 'red';
+          const color = 'red';
 
-        export const className = css\`
-          color: ${'${color}'};
-        \`;
-      `
+          export const className = css\`
+            color: ${'${color}'};
+          \`;
+        `,
+      },
+      async (project) => {
+        const entryFile = project.path('entry.js');
+
+        const result = await runTransform(
+          project.root,
+          entryFile,
+          cache,
+          perf.eventEmitter,
+          {
+            eval: { strategy: 'execute' },
+          }
+        );
+
+        expect(result.cssText).toContain('color:red');
+        expect(perf.counts.get('transform:evalFile') ?? 0).toBeGreaterThan(0);
+      }
     );
-
-    try {
-      const result = await runTransform(
-        root,
-        entryFile,
-        cache,
-        perf.eventEmitter,
-        {
-          eval: { strategy: 'execute' },
-        }
-      );
-
-      expect(result.cssText).toContain('color:red');
-      expect(perf.counts.get('transform:evalFile') ?? 0).toBeGreaterThan(0);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
   });
 
   it('resolves literals through explicit re-export chains', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'wyw-static-import-'));
-    const entryFile = join(root, 'entry.js');
-    const barrelFile = join(root, 'barrel.js');
-    const depFile = join(root, 'tokens.js');
     const cache = new TransformCacheCollection();
 
-    writeFileSync(depFile, `export const spacing = [4, 8];`);
-    writeFileSync(barrelFile, `export { spacing } from './tokens.js';`);
-    writeFileSync(
-      entryFile,
-      dedent`
-        import { css } from 'test-css-processor';
-        import { spacing } from './barrel.js';
+    await withProject(
+      {
+        'tokens.js': `export const spacing = [4, 8];`,
+        'barrel.js': `export { spacing } from './tokens.js';`,
+        'entry.js': dedent`
+          import { css } from 'test-css-processor';
+          import { spacing } from './barrel.js';
 
-        export const className = css\`
-          margin: ${'${spacing[1]}'}px;
-        \`;
-      `
+          export const className = css\`
+            margin: ${'${spacing[1]}'}px;
+          \`;
+        `,
+      },
+      async (project) => {
+        const entryFile = project.path('entry.js');
+        const barrelFile = project.path('barrel.js');
+        const depFile = project.path('tokens.js');
+
+        const result = await runTransform(project.root, entryFile, cache);
+
+        expect(result.cssText).toContain('margin:8px');
+        expect(result.code).not.toContain('./barrel.js');
+        expect(result.dependencies).toEqual(
+          expect.arrayContaining([barrelFile, depFile])
+        );
+      }
     );
-
-    try {
-      const result = await runTransform(root, entryFile, cache);
-
-      expect(result.cssText).toContain('margin:8px');
-      expect(result.code).not.toContain('./barrel.js');
-      expect(result.dependencies).toEqual(
-        expect.arrayContaining([barrelFile, depFile])
-      );
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
   });
 
   it('inlines imported fixed objects for CSS object interpolation', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'wyw-static-import-'));
-    const entryFile = join(root, 'entry.js');
-    const depFile = join(root, 'theme.js');
     const cache = new TransformCacheCollection();
 
-    writeFileSync(
-      depFile,
-      dedent`
-        export const rules = {
-          color: 'red',
-          display: 'block',
-        };
-      `
+    await withProject(
+      {
+        'theme.js': dedent`
+          export const rules = {
+            color: 'red',
+            display: 'block',
+          };
+        `,
+        'entry.js': dedent`
+          import { css } from 'test-css-processor';
+          import { rules } from './theme.js';
+
+          export const className = css\`
+            ${'${rules}'};
+          \`;
+        `,
+      },
+      async (project) => {
+        const entryFile = project.path('entry.js');
+
+        const result = await runTransform(project.root, entryFile, cache);
+
+        expect(result.cssText).toContain('color:red');
+        expect(result.cssText).toContain('display:block');
+        expect(result.code).not.toContain('./theme.js');
+      }
     );
-    writeFileSync(
-      entryFile,
-      dedent`
-        import { css } from 'test-css-processor';
-        import { rules } from './theme.js';
-
-        export const className = css\`
-          ${'${rules}'};
-        \`;
-      `
-    );
-
-    try {
-      const result = await runTransform(root, entryFile, cache);
-
-      expect(result.cssText).toContain('color:red');
-      expect(result.cssText).toContain('display:block');
-      expect(result.code).not.toContain('./theme.js');
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
   });
 
   it('inlines safe exports from modules with function declarations', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'wyw-static-import-'));
-    const entryFile = join(root, 'entry.js');
-    const depFile = join(root, 'theme.js');
     const cache = new TransformCacheCollection();
     const perf = createPerfEventRecorder();
 
-    writeFileSync(
-      depFile,
-      dedent`
-        export function formatColor(value) {
-          return String(value);
-        }
+    await withProject(
+      {
+        'theme.js': dedent`
+          export function formatColor(value) {
+            return String(value);
+          }
 
-        export const rules = {
-          color: 'red',
-          display: 'block',
-        };
-      `
+          export const rules = {
+            color: 'red',
+            display: 'block',
+          };
+        `,
+        'entry.js': dedent`
+          import { css } from 'test-css-processor';
+          import { rules } from './theme.js';
+
+          export const className = css\`
+            ${'${rules}'};
+          \`;
+        `,
+      },
+      async (project) => {
+        const entryFile = project.path('entry.js');
+
+        const result = await runTransform(
+          project.root,
+          entryFile,
+          cache,
+          perf.eventEmitter
+        );
+
+        expect(result.cssText).toContain('color:red');
+        expect(result.cssText).toContain('display:block');
+        expect(result.code).not.toContain('./theme.js');
+        expect(perf.counts.get('transform:evalFile') ?? 0).toBe(0);
+      }
     );
-    writeFileSync(
-      entryFile,
-      dedent`
-        import { css } from 'test-css-processor';
-        import { rules } from './theme.js';
-
-        export const className = css\`
-          ${'${rules}'};
-        \`;
-      `
-    );
-
-    try {
-      const result = await runTransform(
-        root,
-        entryFile,
-        cache,
-        perf.eventEmitter
-      );
-
-      expect(result.cssText).toContain('color:red');
-      expect(result.cssText).toContain('display:block');
-      expect(result.code).not.toContain('./theme.js');
-      expect(perf.counts.get('transform:evalFile') ?? 0).toBe(0);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
   });
 
   it('inlines imported zero-arg helper calls with static return values', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'wyw-static-import-'));
-    const entryFile = join(root, 'entry.js');
-    const helperFile = join(root, 'helper.js');
-    const tokensFile = join(root, 'tokens.js');
     const cache = new TransformCacheCollection();
     const perf = createPerfEventRecorder();
 
-    writeFileSync(
-      tokensFile,
-      dedent`
-        export const sizes = {
-          text: {
-            fontSize: '18px',
-          },
-        };
-        export const MOBILE = 'screen and (max-width: 768px)';
-      `
-    );
-    writeFileSync(
-      helperFile,
-      dedent`
-        import { MOBILE, sizes } from './tokens.js';
+    await withProject(
+      {
+        'tokens.js': dedent`
+          export const sizes = {
+            text: {
+              fontSize: '18px',
+            },
+          };
+          export const MOBILE = 'screen and (max-width: 768px)';
+        `,
+        'helper.js': dedent`
+          import { MOBILE, sizes } from './tokens.js';
 
-        export const getLabelStyle = () => {
-          return \`
-            display: flex;
-            font-size: ${'${sizes.text.fontSize}'};
+          export const getLabelStyle = () => {
+            return \`
+              display: flex;
+              font-size: ${'${sizes.text.fontSize}'};
 
-            @media ${'${MOBILE}'} {
-              display: block;
-            }
+              @media ${'${MOBILE}'} {
+                display: block;
+              }
+            \`;
+          };
+        `,
+        'entry.js': dedent`
+          import { css } from 'test-css-processor';
+          import { getLabelStyle } from './helper.js';
+
+          export const className = css\`
+            ${'${getLabelStyle()}'};
           \`;
-        };
-      `
+        `,
+      },
+      async (project) => {
+        const entryFile = project.path('entry.js');
+        const helperFile = project.path('helper.js');
+        const tokensFile = project.path('tokens.js');
+
+        const result = await runTransform(
+          project.root,
+          entryFile,
+          cache,
+          perf.eventEmitter
+        );
+
+        expect(result.cssText).toContain('display:flex');
+        expect(result.cssText).toContain('font-size:18px');
+        expect(result.cssText).toContain(
+          '@media screen and (max-width: 768px)'
+        );
+        expect(result.dependencies).toContain(helperFile);
+        expect(result.dependencies).toContain(tokensFile);
+        expect(result.code).not.toContain('./helper.js');
+        expect(perf.counts.get('transform:evalFile') ?? 0).toBe(0);
+      }
     );
-    writeFileSync(
-      entryFile,
-      dedent`
-        import { css } from 'test-css-processor';
-        import { getLabelStyle } from './helper.js';
-
-        export const className = css\`
-          ${'${getLabelStyle()}'};
-        \`;
-      `
-    );
-
-    try {
-      const result = await runTransform(
-        root,
-        entryFile,
-        cache,
-        perf.eventEmitter
-      );
-
-      expect(result.cssText).toContain('display:flex');
-      expect(result.cssText).toContain('font-size:18px');
-      expect(result.cssText).toContain('@media screen and (max-width: 768px)');
-      expect(result.dependencies).toContain(helperFile);
-      expect(result.dependencies).toContain(tokensFile);
-      expect(result.code).not.toContain('./helper.js');
-      expect(perf.counts.get('transform:evalFile') ?? 0).toBe(0);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
   });
 
   it('keeps imported zero-arg helpers in eval for bare function references', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'wyw-static-import-'));
-    const entryFile = join(root, 'entry.js');
-    const helperFile = join(root, 'helper.js');
     const cache = new TransformCacheCollection();
     const perf = createPerfEventRecorder();
 
-    writeFileSync(
-      helperFile,
-      dedent`
-        export const getColor = () => 'red';
-      `
-    );
-    writeFileSync(
-      entryFile,
-      dedent`
-        import { css } from 'test-css-processor';
-        import { getColor } from './helper.js';
+    await withProject(
+      {
+        'helper.js': dedent`
+          export const getColor = () => 'red';
+        `,
+        'entry.js': dedent`
+          import { css } from 'test-css-processor';
+          import { getColor } from './helper.js';
 
-        export const className = css\`
-          color: ${'${getColor}'};
-        \`;
-      `
-    );
+          export const className = css\`
+            color: ${'${getColor}'};
+          \`;
+        `,
+      },
+      async (project) => {
+        const entryFile = project.path('entry.js');
 
-    try {
-      await expect(
-        runTransform(root, entryFile, cache, perf.eventEmitter)
-      ).rejects.toThrow("css tag cannot handle 'getColor'");
-      expect(perf.counts.get('transform:evalFile') ?? 0).toBeGreaterThan(0);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
+        await expect(
+          runTransform(project.root, entryFile, cache, perf.eventEmitter)
+        ).rejects.toThrow("css tag cannot handle 'getColor'");
+        expect(perf.counts.get('transform:evalFile') ?? 0).toBeGreaterThan(0);
+      }
+    );
   });
 
   it('falls back to eval for unsafe dependency modules', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'wyw-static-import-'));
-    const entryFile = join(root, 'entry.js');
-    const depFile = join(root, 'unsafe.js');
     const cache = new TransformCacheCollection();
     const perf = createPerfEventRecorder();
 
-    writeFileSync(
-      depFile,
-      dedent`
-        const color = String('red');
-        export { color };
-      `
+    await withProject(
+      {
+        'unsafe.js': dedent`
+          const color = String('red');
+          export { color };
+        `,
+        'entry.js': dedent`
+          import { css } from 'test-css-processor';
+          import { color } from './unsafe.js';
+
+          export const className = css\`
+            color: ${'${color}'};
+          \`;
+        `,
+      },
+      async (project) => {
+        const entryFile = project.path('entry.js');
+
+        const result = await runTransform(
+          project.root,
+          entryFile,
+          cache,
+          perf.eventEmitter
+        );
+
+        expect(result.cssText).toContain('color:red');
+        expect(result.dependencies).toContain('./unsafe.js');
+        expect(perf.counts.get('transform:evalFile') ?? 0).toBeGreaterThan(0);
+      }
     );
-    writeFileSync(
-      entryFile,
-      dedent`
-        import { css } from 'test-css-processor';
-        import { color } from './unsafe.js';
-
-        export const className = css\`
-          color: ${'${color}'};
-        \`;
-      `
-    );
-
-    try {
-      const result = await runTransform(
-        root,
-        entryFile,
-        cache,
-        perf.eventEmitter
-      );
-
-      expect(result.cssText).toContain('color:red');
-      expect(result.dependencies).toContain('./unsafe.js');
-      expect(perf.counts.get('transform:evalFile') ?? 0).toBeGreaterThan(0);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
   });
 
   it('uses bundler-loaded dependency code before falling back to filesystem', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'wyw-bundler-loaded-'));
-    const entryFile = join(root, 'entry.js');
-    const depFile = join(root, 'unsafe.js');
     const cache = new TransformCacheCollection();
 
-    writeFileSync(
-      depFile,
-      dedent`
-        const color = (() => {
-          throw new Error('raw dependency from fs was evaluated');
-        })();
-        export { color };
-      `
-    );
-    writeFileSync(
-      entryFile,
-      dedent`
-        import { css } from 'test-css-processor';
-        import { color } from './unsafe.js';
+    await withProject(
+      {
+        'unsafe.js': dedent`
+          const color = (() => {
+            throw new Error('raw dependency from fs was evaluated');
+          })();
+          export { color };
+        `,
+        'entry.js': dedent`
+          import { css } from 'test-css-processor';
+          import { color } from './unsafe.js';
 
-        export const className = css\`
-          color: ${'${color}'};
-        \`;
-      `
-    );
+          export const className = css\`
+            color: ${'${color}'};
+          \`;
+        `,
+      },
+      async (project) => {
+        const entryFile = project.path('entry.js');
+        const depFile = project.path('unsafe.js');
 
-    try {
-      const result = await transform(
-        {
-          cache,
-          loadDependencyCode: async (resolved: string) => {
-            if (resolved === depFile) {
-              return "export const color = 'red';";
-            }
-
-            return undefined;
-          },
-          options: {
-            filename: entryFile,
-            root,
-            pluginOptions: {
-              configFile: false,
-              tagResolver: (source, tag) => {
-                if (source === 'test-css-processor' && tag === 'css') {
-                  return processorFile;
+        try {
+          const result = await transform(
+            {
+              cache,
+              loadDependencyCode: async (resolved: string) => {
+                if (resolved === depFile) {
+                  return "export const color = 'red';";
                 }
 
-                return null;
+                return undefined;
               },
-            },
-          },
-        } as Parameters<typeof transform>[0],
-        readFileSync(entryFile, 'utf8'),
-        createResolver(processorFile)
-      );
+              options: {
+                filename: entryFile,
+                root: project.root,
+                pluginOptions: {
+                  configFile: false,
+                  tagResolver: (source, tag) => {
+                    if (source === 'test-css-processor' && tag === 'css') {
+                      return processorFile;
+                    }
 
-      expect(result.cssText).toContain('color:red');
-    } finally {
-      disposeEvalBroker(cache);
-      rmSync(root, { recursive: true, force: true });
-    }
+                    return null;
+                  },
+                },
+              },
+            } as Parameters<typeof transform>[0],
+            readFileSync(entryFile, 'utf8'),
+            createResolver(processorFile)
+          );
+
+          expect(result.cssText).toContain('color:red');
+        } finally {
+          disposeEvalBroker(cache);
+        }
+      }
+    );
   });
 
   it('falls back to filesystem dependency code when bundler loading fails', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'wyw-bundler-loaded-'));
-    const entryFile = join(root, 'entry.js');
-    const depFile = join(root, 'unsafe.js');
     const cache = new TransformCacheCollection();
 
-    writeFileSync(
-      depFile,
-      dedent`
-        const color = String('red');
-        export { color };
-      `
-    );
-    writeFileSync(
-      entryFile,
-      dedent`
-        import { css } from 'test-css-processor';
-        import { color } from './unsafe.js';
+    await withProject(
+      {
+        'unsafe.js': dedent`
+          const color = String('red');
+          export { color };
+        `,
+        'entry.js': dedent`
+          import { css } from 'test-css-processor';
+          import { color } from './unsafe.js';
 
-        export const className = css\`
-          color: ${'${color}'};
-        \`;
-      `
-    );
+          export const className = css\`
+            color: ${'${color}'};
+          \`;
+        `,
+      },
+      async (project) => {
+        const entryFile = project.path('entry.js');
 
-    try {
-      const result = await transform(
-        {
-          cache,
-          loadDependencyCode: async () => {
-            throw new Error('bundler load failed');
-          },
-          options: {
-            filename: entryFile,
-            root,
-            pluginOptions: {
-              configFile: false,
-              tagResolver: (source, tag) => {
-                if (source === 'test-css-processor' && tag === 'css') {
-                  return processorFile;
-                }
-
-                return null;
+        try {
+          const result = await transform(
+            {
+              cache,
+              loadDependencyCode: async () => {
+                throw new Error('bundler load failed');
               },
-            },
-          },
-        } as Parameters<typeof transform>[0],
-        readFileSync(entryFile, 'utf8'),
-        createResolver(processorFile)
-      );
+              options: {
+                filename: entryFile,
+                root: project.root,
+                pluginOptions: {
+                  configFile: false,
+                  tagResolver: (source, tag) => {
+                    if (source === 'test-css-processor' && tag === 'css') {
+                      return processorFile;
+                    }
 
-      expect(result.cssText).toContain('color:red');
-    } finally {
-      disposeEvalBroker(cache);
-      rmSync(root, { recursive: true, force: true });
-    }
+                    return null;
+                  },
+                },
+              },
+            } as Parameters<typeof transform>[0],
+            readFileSync(entryFile, 'utf8'),
+            createResolver(processorFile)
+          );
+
+          expect(result.cssText).toContain('color:red');
+        } finally {
+          disposeEvalBroker(cache);
+        }
+      }
+    );
   });
 
   it('rejects unsafe dependency modules when eval.strategy is static', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'wyw-static-import-'));
-    const entryFile = join(root, 'entry.js');
-    const depFile = join(root, 'tokens.js');
     const cache = new TransformCacheCollection();
 
-    writeFileSync(
-      depFile,
-      dedent`
-        export const color = Date.now() > 0 ? 'red' : 'blue';
-      `
-    );
-    writeFileSync(
-      entryFile,
-      dedent`
-        import { css } from 'test-css-processor';
-        import { color } from './tokens.js';
+    await withProject(
+      {
+        'tokens.js': dedent`
+          export const color = Date.now() > 0 ? 'red' : 'blue';
+        `,
+        'entry.js': dedent`
+          import { css } from 'test-css-processor';
+          import { color } from './tokens.js';
 
-        export const className = css\`
-          color: ${'${color}'};
-        \`;
-      `
-    );
+          export const className = css\`
+            color: ${'${color}'};
+          \`;
+        `,
+      },
+      async (project) => {
+        const entryFile = project.path('entry.js');
 
-    try {
-      await expect(
-        runTransform(root, entryFile, cache, undefined, {
-          eval: { strategy: 'static' },
-        })
-      ).rejects.toThrow('eval.strategy: "static"');
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
+        await expect(
+          runTransform(project.root, entryFile, cache, undefined, {
+            eval: { strategy: 'static' },
+          })
+        ).rejects.toThrow('eval.strategy: "static"');
+      }
+    );
   });
 
   it('emits static resolve debug rejection reasons when eval.strategy enables static resolution', async () => {
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
 
-    const root = mkdtempSync(join(tmpdir(), 'wyw-static-import-'));
-    const entryFile = join(root, 'entry.js');
-    const depFile = join(root, 'unsafe.js');
     const cache = new TransformCacheCollection();
     const perf = createPerfEventRecorder();
 
-    writeFileSync(
-      depFile,
-      dedent`
-        const color = String('red');
-        export { color };
-      `
-    );
-    writeFileSync(
-      entryFile,
-      dedent`
-        import { css } from 'test-css-processor';
-        import { color } from './unsafe.js';
-
-        export const className = css\`
-          color: ${'${color}'};
-        \`;
-      `
-    );
-
     try {
-      await runTransform(root, entryFile, cache, perf.eventEmitter);
+      await withProject(
+        {
+          'unsafe.js': dedent`
+            const color = String('red');
+            export { color };
+          `,
+          'entry.js': dedent`
+            import { css } from 'test-css-processor';
+            import { color } from './unsafe.js';
 
-      expect(
-        perf.events.filter((event) => event.type === 'staticResolve')
-      ).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            exported: 'color',
-            filename: depFile,
-            phase: 'export',
-            reason: 'unsupported-expression',
-            status: 'rejected',
-          }),
-        ])
+            export const className = css\`
+              color: ${'${color}'};
+            \`;
+          `,
+        },
+        async (project) => {
+          const entryFile = project.path('entry.js');
+          const depFile = project.path('unsafe.js');
+
+          await runTransform(project.root, entryFile, cache, perf.eventEmitter);
+
+          expect(
+            perf.events.filter((event) => event.type === 'staticResolve')
+          ).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                exported: 'color',
+                filename: depFile,
+                phase: 'export',
+                reason: 'unsupported-expression',
+                status: 'rejected',
+              }),
+            ])
+          );
+          expect(warnSpy).not.toHaveBeenCalled();
+        }
       );
-      expect(warnSpy).not.toHaveBeenCalled();
     } finally {
       warnSpy.mockRestore();
-      rmSync(root, { recursive: true, force: true });
     }
   });
 
   it('keeps execute values on the evaluator while reporting provenance resolution', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'wyw-static-import-'));
-    const entryFile = join(root, 'entry.js');
-    const depFile = join(root, 'unsafe.js');
     const cache = new TransformCacheCollection();
     const perf = createPerfEventRecorder();
 
-    writeFileSync(
-      depFile,
-      dedent`
-        const color = String('red');
-        export { color };
-      `
+    await withProject(
+      {
+        'unsafe.js': dedent`
+          const color = String('red');
+          export { color };
+        `,
+        'entry.js': dedent`
+          import { css } from 'test-css-processor';
+          import { color } from './unsafe.js';
+
+          export const className = css\`
+            color: ${'${color}'};
+          \`;
+        `,
+      },
+      async (project) => {
+        const entryFile = project.path('entry.js');
+        const depFile = project.path('unsafe.js');
+
+        const result = await runTransformWithOptions(
+          project.root,
+          entryFile,
+          cache,
+          perf.eventEmitter,
+          {
+            eval: { strategy: 'execute' },
+          }
+        );
+
+        expect(result.cssText).toContain('color:red');
+        expect(perf.counts.get('transform:evalFile') ?? 0).toBeGreaterThan(0);
+        expect(
+          perf.events.filter((event) => event.type === 'staticResolve')
+        ).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              exported: 'color',
+              filename: depFile,
+              phase: 'export',
+              reason: 'unsupported-expression',
+              status: 'rejected',
+            }),
+          ])
+        );
+      }
     );
-    writeFileSync(
-      entryFile,
-      dedent`
-        import { css } from 'test-css-processor';
-        import { color } from './unsafe.js';
-
-        export const className = css\`
-          color: ${'${color}'};
-        \`;
-      `
-    );
-
-    try {
-      const result = await runTransformWithOptions(
-        root,
-        entryFile,
-        cache,
-        perf.eventEmitter,
-        {
-          eval: { strategy: 'execute' },
-        }
-      );
-
-      expect(result.cssText).toContain('color:red');
-      expect(perf.counts.get('transform:evalFile') ?? 0).toBeGreaterThan(0);
-      expect(
-        perf.events.filter((event) => event.type === 'staticResolve')
-      ).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            exported: 'color',
-            filename: depFile,
-            phase: 'export',
-            reason: 'unsupported-expression',
-            status: 'rejected',
-          }),
-        ])
-      );
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
   });
 
   it('inlines safe exports from modules with unrelated unsafe top-level values', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'wyw-static-import-'));
-    const entryFile = join(root, 'entry.js');
-    const depFile = join(root, 'unsafe.js');
     const cache = new TransformCacheCollection();
     const perf = createPerfEventRecorder();
 
-    writeFileSync(
-      depFile,
-      dedent`
-        const unused = String('side-effect boundary');
+    await withProject(
+      {
+        'unsafe.js': dedent`
+          const unused = String('side-effect boundary');
 
-        export function formatColor(value) {
-          return String(value);
-        }
+          export function formatColor(value) {
+            return String(value);
+          }
 
-        export const color = 'red';
+          export const color = 'red';
 
-        void unused;
-      `
+          void unused;
+        `,
+        'entry.js': dedent`
+          import { css } from 'test-css-processor';
+          import { color } from './unsafe.js';
+
+          export const className = css\`
+            color: ${'${color}'};
+          \`;
+        `,
+      },
+      async (project) => {
+        const entryFile = project.path('entry.js');
+        const depFile = project.path('unsafe.js');
+
+        const result = await runTransform(
+          project.root,
+          entryFile,
+          cache,
+          perf.eventEmitter
+        );
+
+        expect(result.cssText).toContain('color:red');
+        expect(result.dependencies).toContain(depFile);
+        expect(result.code).not.toContain('./unsafe.js');
+        expect(perf.counts.get('transform:evalFile') ?? 0).toBe(0);
+      }
     );
-    writeFileSync(
-      entryFile,
-      dedent`
-        import { css } from 'test-css-processor';
-        import { color } from './unsafe.js';
-
-        export const className = css\`
-          color: ${'${color}'};
-        \`;
-      `
-    );
-
-    try {
-      const result = await runTransform(
-        root,
-        entryFile,
-        cache,
-        perf.eventEmitter
-      );
-
-      expect(result.cssText).toContain('color:red');
-      expect(result.dependencies).toContain(depFile);
-      expect(result.code).not.toContain('./unsafe.js');
-      expect(perf.counts.get('transform:evalFile') ?? 0).toBe(0);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
   });
 
   it('falls back to eval when a fixed object is mutated by top-level code', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'wyw-static-import-'));
-    const entryFile = join(root, 'entry.js');
-    const depFile = join(root, 'unsafe.js');
     const cache = new TransformCacheCollection();
     const perf = createPerfEventRecorder();
 
-    writeFileSync(
-      depFile,
-      dedent`
-        const rules = {
-          color: 'red',
-        };
+    await withProject(
+      {
+        'unsafe.js': dedent`
+          const rules = {
+            color: 'red',
+          };
 
-        function mutate(value) {
-          value.color = 'blue';
-        }
+          function mutate(value) {
+            value.color = 'blue';
+          }
 
-        mutate(rules);
+          mutate(rules);
 
-        export { rules };
-      `
+          export { rules };
+        `,
+        'entry.js': dedent`
+          import { css } from 'test-css-processor';
+          import { rules } from './unsafe.js';
+
+          export const className = css\`
+            ${'${rules}'};
+          \`;
+        `,
+      },
+      async (project) => {
+        const entryFile = project.path('entry.js');
+
+        const result = await runTransform(
+          project.root,
+          entryFile,
+          cache,
+          perf.eventEmitter
+        );
+
+        expect(result.cssText).toContain('color:blue');
+        expect(result.dependencies).toContain('./unsafe.js');
+        expect(perf.counts.get('transform:evalFile') ?? 0).toBeGreaterThan(0);
+      }
     );
-    writeFileSync(
-      entryFile,
-      dedent`
-        import { css } from 'test-css-processor';
-        import { rules } from './unsafe.js';
-
-        export const className = css\`
-          ${'${rules}'};
-        \`;
-      `
-    );
-
-    try {
-      const result = await runTransform(
-        root,
-        entryFile,
-        cache,
-        perf.eventEmitter
-      );
-
-      expect(result.cssText).toContain('color:blue');
-      expect(result.dependencies).toContain('./unsafe.js');
-      expect(perf.counts.get('transform:evalFile') ?? 0).toBeGreaterThan(0);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
   });
 
   it('removes statically resolved imports from modules that still need eval', async () => {

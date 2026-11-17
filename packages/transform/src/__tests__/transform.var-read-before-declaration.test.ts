@@ -1,5 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
+import { readFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 
 import dedent from 'dedent';
@@ -7,20 +6,19 @@ import dedent from 'dedent';
 import { TransformCacheCollection } from '../cache';
 import { transform } from '../transform';
 
+import type { Project, ProjectFiles } from './__utils__/project';
+import { withProject } from './__utils__/project';
+
 const processorFile = join(__dirname, '__fixtures__', 'test-css-processor.js');
 
-const transformSource = async (code: string) => {
-  const root = mkdtempSync(join(tmpdir(), 'wyw-var-before-declaration-'));
-  const entryFile = join(root, 'entry.js');
-  writeFileSync(entryFile, code);
-
-  try {
-    return await transform(
+const transformSource = (code: string) =>
+  withProject({ 'entry.js': code }, (project) =>
+    transform(
       {
         cache: new TransformCacheCollection(),
         options: {
-          filename: entryFile,
-          root,
+          filename: project.path('entry.js'),
+          root: project.root,
           pluginOptions: {
             configFile: false,
             eval: { strategy: 'hybrid' },
@@ -34,11 +32,8 @@ const transformSource = async (code: string) => {
       code,
       async (what: string) =>
         what === 'test-css-processor' ? processorFile : null
-    );
-  } finally {
-    rmSync(root, { force: true, recursive: true });
-  }
-};
+    )
+  );
 
 describe('a var read before its declaration', () => {
   // Template interpolations are evaluated lazily at the end of the module, so
@@ -67,28 +62,6 @@ describe('a var read before its declaration', () => {
 
 type Strategy = 'execute' | 'hybrid' | 'static';
 
-type Project = {
-  entryFile: string;
-  root: string;
-};
-
-const createProject = (
-  entry: string,
-  files: Record<string, string> = {}
-): Project => {
-  const root = mkdtempSync(join(tmpdir(), 'wyw-var-before-declaration-'));
-  const entryFile = join(root, 'entry.js');
-  writeFileSync(entryFile, entry);
-  Object.entries(files).forEach(([name, content]) => {
-    writeFileSync(join(root, name), content);
-  });
-
-  return { entryFile, root };
-};
-
-const removeProject = ({ root }: Project) =>
-  rmSync(root, { force: true, recursive: true });
-
 const resolveIn = async (what: string, importer: string) => {
   if (what === 'test-css-processor') {
     return processorFile;
@@ -103,7 +76,7 @@ const resolveIn = async (what: string, importer: string) => {
 };
 
 const transformProject = (
-  { entryFile, root }: Project,
+  project: Project,
   strategy: Strategy,
   cache = new TransformCacheCollection()
 ) =>
@@ -111,8 +84,8 @@ const transformProject = (
     {
       cache,
       options: {
-        filename: entryFile,
-        root,
+        filename: project.path('entry.js'),
+        root: project.root,
         pluginOptions: {
           configFile: false,
           eval: { strategy },
@@ -123,7 +96,7 @@ const transformProject = (
         },
       },
     },
-    readFileSync(entryFile, 'utf8'),
+    readFileSync(project.path('entry.js'), 'utf8'),
     resolveIn
   );
 
@@ -156,25 +129,8 @@ const captureWarnings = (project: Project) => {
   };
 };
 
-const withProject = async <T>(
-  entry: string,
-  files: Record<string, string>,
-  run: (project: Project) => Promise<T>
-): Promise<T> => {
-  const project = createProject(entry, files);
-  try {
-    return await run(project);
-  } finally {
-    removeProject(project);
-  }
-};
-
-const colorIn = (
-  entry: string,
-  strategy: Strategy,
-  files: Record<string, string> = {}
-) =>
-  withProject(entry, files, async (project) =>
+const colorIn = (entry: string, strategy: Strategy, files: ProjectFiles = {}) =>
+  withProject({ 'entry.js': entry, ...files }, async (project) =>
     colorOf((await transformProject(project, strategy)).cssText)
   );
 
@@ -301,19 +257,19 @@ describe('the execution point of a var read before its declaration', () => {
   it.each(unknownAtTheEnd)(
     'leaves the value of the end of the module to eval in hybrid after %s',
     async (_description, entry, _source, evaluated) => {
-      const project = createProject(entry);
-      const warnings = captureWarnings(project);
-      try {
-        const executed = await transformProject(project, 'execute');
-        const hybrid = await transformProject(project, 'hybrid');
+      await withProject({ 'entry.js': entry }, async (project) => {
+        const warnings = captureWarnings(project);
+        try {
+          const executed = await transformProject(project, 'execute');
+          const hybrid = await transformProject(project, 'hybrid');
 
-        expect(colorOf(executed.cssText)).toBe(evaluated);
-        expect(colorOf(hybrid.cssText)).toBe(evaluated);
-        expect(warnings.messages).toEqual([]);
-      } finally {
-        warnings.restore();
-        removeProject(project);
-      }
+          expect(colorOf(executed.cssText)).toBe(evaluated);
+          expect(colorOf(hybrid.cssText)).toBe(evaluated);
+          expect(warnings.messages).toEqual([]);
+        } finally {
+          warnings.restore();
+        }
+      });
     },
     30_000
   );
@@ -321,25 +277,25 @@ describe('the execution point of a var read before its declaration', () => {
   it.each(unknownAtTheEnd)(
     'keeps the earlier value in static and warns once when the value of the end of the module is unknown after %s',
     async (_description, entry, source, _evaluated, earlier) => {
-      const project = createProject(entry);
-      const warnings = captureWarnings(project);
-      try {
-        const first = await transformProject(project, 'static');
+      await withProject({ 'entry.js': entry }, async (project) => {
+        const warnings = captureWarnings(project);
+        try {
+          const first = await transformProject(project, 'static');
 
-        expect(colorOf(first.cssText)).toBe(earlier);
-        expect(warnings.messages).toHaveLength(1);
-        expect(warnings.messages[0]).toContain('[wyw-in-js]');
-        expect(warnings.messages[0]).toContain('entry.js');
-        expect(warnings.messages[0]).toContain(source);
+          expect(colorOf(first.cssText)).toBe(earlier);
+          expect(warnings.messages).toHaveLength(1);
+          expect(warnings.messages[0]).toContain('[wyw-in-js]');
+          expect(warnings.messages[0]).toContain('entry.js');
+          expect(warnings.messages[0]).toContain(source);
 
-        const second = await transformProject(project, 'static');
+          const second = await transformProject(project, 'static');
 
-        expect(colorOf(second.cssText)).toBe(earlier);
-        expect(warnings.messages).toHaveLength(1);
-      } finally {
-        warnings.restore();
-        removeProject(project);
-      }
+          expect(colorOf(second.cssText)).toBe(earlier);
+          expect(warnings.messages).toHaveLength(1);
+        } finally {
+          warnings.restore();
+        }
+      });
     },
     30_000
   );

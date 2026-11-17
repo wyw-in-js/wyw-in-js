@@ -1,12 +1,4 @@
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-  writeFileSync,
-} from 'fs';
-import { tmpdir } from 'os';
+import { readFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 
 import dedent from 'dedent';
@@ -14,6 +6,9 @@ import dedent from 'dedent';
 import { TransformCacheCollection } from '../cache';
 import { disposeEvalBroker } from '../eval/broker';
 import { transform } from '../transform';
+
+import type { ProjectFiles } from './__utils__/project';
+import { withProject } from './__utils__/project';
 
 // A module-level binding that a function called at the top level changes is
 // not a static value: the default `hybrid` strategy has to evaluate it, and
@@ -34,65 +29,58 @@ const readCssVariables = (cssText: string | undefined) =>
     ])
   );
 
-const withProject = async (
-  files: Record<string, string>,
+const withEntry = (
+  files: ProjectFiles,
   run: (
     transformEntry: (strategy?: Strategy) => Promise<Record<string, string>>
   ) => Promise<void>
-) => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'wyw-called-mut-')));
-  const caches: TransformCacheCollection[] = [];
-  const file = (name: string) => join(root, name);
+) =>
+  withProject(files, async (project) => {
+    const caches: TransformCacheCollection[] = [];
 
-  Object.entries(files).forEach(([name, content]) => {
-    mkdirSync(dirname(file(name)), { recursive: true });
-    writeFileSync(file(name), content);
-  });
+    const resolver = async (what: string, importer: string) => {
+      if (what === 'test-css-processor') {
+        return processorFile;
+      }
 
-  const resolver = async (what: string, importer: string) => {
-    if (what === 'test-css-processor') {
-      return processorFile;
-    }
+      return what.startsWith('.')
+        ? `${resolve(dirname(importer), what)}.js`
+        : null;
+    };
 
-    return what.startsWith('.')
-      ? `${resolve(dirname(importer), what)}.js`
-      : null;
-  };
-
-  const transformEntry = async (strategy?: Strategy) => {
-    const cache = new TransformCacheCollection();
-    caches.push(cache);
-    const filename = file('entry.js');
-    const result = await transform(
-      {
-        cache,
-        options: {
-          filename,
-          root,
-          pluginOptions: {
-            configFile: false,
-            tagResolver: (source, tag) =>
-              source === 'test-css-processor' && tag === 'css'
-                ? processorFile
-                : null,
-            ...(strategy ? { eval: { strategy } } : {}),
+    const transformEntry = async (strategy?: Strategy) => {
+      const cache = new TransformCacheCollection();
+      caches.push(cache);
+      const filename = project.path('entry.js');
+      const result = await transform(
+        {
+          cache,
+          options: {
+            filename,
+            root: project.root,
+            pluginOptions: {
+              configFile: false,
+              tagResolver: (source, tag) =>
+                source === 'test-css-processor' && tag === 'css'
+                  ? processorFile
+                  : null,
+              ...(strategy ? { eval: { strategy } } : {}),
+            },
           },
         },
-      },
-      readFileSync(filename, 'utf8'),
-      resolver
-    );
+        readFileSync(filename, 'utf8'),
+        resolver
+      );
 
-    return readCssVariables(result.cssText);
-  };
+      return readCssVariables(result.cssText);
+    };
 
-  try {
-    await run(transformEntry);
-  } finally {
-    caches.forEach((cache) => disposeEvalBroker(cache));
-    rmSync(root, { recursive: true, force: true });
-  }
-};
+    try {
+      await run(transformEntry);
+    } finally {
+      caches.forEach((cache) => disposeEvalBroker(cache));
+    }
+  });
 
 const dependencyProject = {
   'values.js': dedent`
@@ -136,7 +124,7 @@ describe('values changed by functions called at the top level', () => {
   it(
     'evaluates an imported value that a called function changed under the default strategy',
     async () => {
-      await withProject(dependencyProject, async (transformEntry) => {
+      await withEntry(dependencyProject, async (transformEntry) => {
         expect(await transformEntry()).toEqual({ p: '5', z: '1', w: '7' });
       });
     },
@@ -146,7 +134,7 @@ describe('values changed by functions called at the top level', () => {
   it(
     'evaluates a same-file value that a called function changed under the default strategy',
     async () => {
-      await withProject(sameFileProject, async (transformEntry) => {
+      await withEntry(sameFileProject, async (transformEntry) => {
         expect(await transformEntry()).toEqual({ p: '5' });
       });
     },
@@ -156,7 +144,7 @@ describe('values changed by functions called at the top level', () => {
   it(
     'agrees with the execute strategy',
     async () => {
-      await withProject(dependencyProject, async (transformEntry) => {
+      await withEntry(dependencyProject, async (transformEntry) => {
         expect(await transformEntry('execute')).toEqual(
           await transformEntry('hybrid')
         );
@@ -171,7 +159,7 @@ describe('values changed by functions called at the top level', () => {
   ])(
     'fails the static strategy for %s value that a called function changed',
     async (_name, project) => {
-      await withProject(project, async (transformEntry) => {
+      await withEntry(project, async (transformEntry) => {
         await expect(transformEntry('static')).rejects.toThrow(
           'could not be resolved at build time'
         );
@@ -183,7 +171,7 @@ describe('values changed by functions called at the top level', () => {
   it(
     'still resolves a value that no function changes under the static strategy',
     async () => {
-      await withProject(
+      await withEntry(
         {
           'values.js': dedent`
             let size = 3;
@@ -226,7 +214,7 @@ describe('values changed by functions called at the top level', () => {
   it(
     'still resolves a value that only an uncalled exported setter writes under the static strategy',
     async () => {
-      await withProject(setterProject(''), async (transformEntry) => {
+      await withEntry(setterProject(''), async (transformEntry) => {
         expect(await transformEntry('static')).toEqual({ m: 'light' });
       });
     },
@@ -236,7 +224,7 @@ describe('values changed by functions called at the top level', () => {
   it(
     'evaluates a value after the importer calls the exported setter',
     async () => {
-      await withProject(
+      await withEntry(
         setterProject("setMode('dark');"),
         async (transformEntry) => {
           expect(await transformEntry()).toEqual({ m: 'dark' });
@@ -249,7 +237,7 @@ describe('values changed by functions called at the top level', () => {
   it(
     'still resolves an object that only an uncalled function passes to a call under the static strategy',
     async () => {
-      await withProject(
+      await withEntry(
         {
           'values.js': dedent`
             export const colors = { red: 'red' };
