@@ -6201,6 +6201,81 @@ describe('transform static import value inlining', () => {
     }
   });
 
+  it('recomputes static styled metadata after the file is invalidated', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wyw-static-import-'));
+    const firstEntryFile = join(root, 'entry-a.js');
+    const secondEntryFile = join(root, 'entry-b.js');
+    const baseFile = join(root, 'base.js');
+    const cache = new TransformCacheCollection();
+    const perf = createPerfEventRecorder();
+    const asyncResolve = createResolver(processorFile);
+
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'app' }));
+    writeFileSync(
+      baseFile,
+      dedent`
+        import { styled } from 'test-styled-processor';
+
+        export const Base = styled.div\`
+          color: red;
+        \`;
+      `
+    );
+    writeFileSync(
+      firstEntryFile,
+      dedent`
+        import { styled } from 'test-styled-processor';
+        import { Base } from './base.js';
+
+        export const Extended = styled(Base)\`
+          font-size: 12px;
+        \`;
+      `
+    );
+    writeFileSync(
+      secondEntryFile,
+      dedent`
+        import { styled } from 'test-styled-processor';
+        import { Base } from './base.js';
+
+        export const Extended = styled(Base)\`
+          font-size: 14px;
+        \`;
+      `
+    );
+
+    try {
+      await runTransform(
+        root,
+        firstEntryFile,
+        cache,
+        perf.eventEmitter,
+        {},
+        asyncResolve
+      );
+      const staticMetadataCount =
+        perf.counts.get('transform:preeval:staticMetadata') ?? 0;
+      expect(staticMetadataCount).toBeGreaterThan(0);
+
+      cache.invalidateForFile(baseFile);
+      const second = await runTransform(
+        root,
+        secondEntryFile,
+        cache,
+        perf.eventEmitter,
+        {},
+        asyncResolve
+      );
+
+      expect(second.cssText).toContain('font-size:14px');
+      expect(
+        perf.counts.get('transform:preeval:staticMetadata') ?? 0
+      ).toBeGreaterThan(staticMetadataCount);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('reuses static metadata preeval for multiple exports from one file', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wyw-static-import-'));
     const entryFile = join(root, 'entry.js');

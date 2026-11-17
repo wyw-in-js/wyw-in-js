@@ -4,6 +4,8 @@ import { createHash } from 'crypto';
 import { readFileSync, statSync } from 'fs';
 import { isAbsolute } from 'path';
 
+import { defineFileScopedStore } from '../../../cache/fileScopedStore';
+import type { FileScopedStore } from '../../../cache/fileScopedStore';
 import { oxcShaker } from '../../../shaker';
 import { runOxcPreevalStage } from '../../../utils/oxcPreevalStage';
 import { stripQueryAndHash } from '../../../utils/parseRequest';
@@ -18,25 +20,22 @@ import type {
 } from './types';
 import { STATIC_EXPORT_MAX_NULL_ATTEMPTS } from './types';
 
-export const staticFileAnalysisCaches = new WeakMap<
-  object,
-  Map<string, StaticFileAnalysis>
->();
+// The stores belong to the transform cache collection, which forgets a file's
+// entries in invalidateForFile. Within a file, an entry is keyed without the
+// content hash, so a new version replaces the previous one.
+const staticFileAnalysisStore =
+  defineFileScopedStore<StaticFileAnalysis>('staticFileAnalysis');
 
-export const staticFileHashCaches = new WeakMap<
-  object,
-  Map<string, StaticFileHashCacheEntry>
->();
+const staticFileHashStore =
+  defineFileScopedStore<StaticFileHashCacheEntry>('staticFileHash');
 
-export const staticExportResultCaches = new WeakMap<
-  object,
-  Map<string, StaticExportCacheEntry>
->();
+const staticExportResultStore =
+  defineFileScopedStore<StaticExportCacheEntry>('staticExportResult');
 
-export const staticMetadataPreevalCaches = new WeakMap<
-  object,
-  Map<string, StaticMetadataPreevalCacheEntry>
->();
+const staticMetadataPreevalStore =
+  defineFileScopedStore<StaticMetadataPreevalCacheEntry>(
+    'staticMetadataPreeval'
+  );
 
 export const hashStaticContent = (content: string | Buffer): string =>
   createHash('sha256').update(content).digest('hex');
@@ -70,43 +69,42 @@ export const staticCachePrefix = (action: ITransformAction): string =>
 
 export const staticFileAnalysisCache = (
   action: ITransformAction
-): Map<string, StaticFileAnalysis> =>
-  getWeakCacheMap(staticFileAnalysisCaches, action.services.cache);
+): FileScopedStore<StaticFileAnalysis> =>
+  action.services.cache.fileScopedStore(staticFileAnalysisStore);
 
 export const staticFileHashCache = (
   action: ITransformAction
-): Map<string, StaticFileHashCacheEntry> =>
-  getWeakCacheMap(staticFileHashCaches, action.services.cache);
+): FileScopedStore<StaticFileHashCacheEntry> =>
+  action.services.cache.fileScopedStore(staticFileHashStore);
 
 export const staticExportResultCache = (
   action: ITransformAction
-): Map<string, StaticExportCacheEntry> =>
-  getWeakCacheMap(staticExportResultCaches, action.services.cache);
+): FileScopedStore<StaticExportCacheEntry> =>
+  action.services.cache.fileScopedStore(staticExportResultStore);
 
 export const staticMetadataPreevalCache = (
   action: ITransformAction
-): Map<string, StaticMetadataPreevalCacheEntry> =>
-  getWeakCacheMap(staticMetadataPreevalCaches, action.services.cache);
+): FileScopedStore<StaticMetadataPreevalCacheEntry> =>
+  action.services.cache.fileScopedStore(staticMetadataPreevalStore);
 
-export const staticFileAnalysisCacheKey = (
+export const staticFileCacheKey = (
   action: ITransformAction,
-  filename: string,
-  codeHash: string
-): string => `${staticCachePrefix(action)}\0${filename}\0${codeHash}`;
+  filename: string
+): string => `${staticCachePrefix(action)}\0${stripQueryAndHash(filename)}`;
 
 export const staticExportCacheKey = (
   action: ITransformAction,
   filename: string,
-  exportedName: string,
-  codeHash: string
-): string =>
-  `${staticCachePrefix(action)}\0${filename}\0${exportedName}\0${codeHash}`;
+  exportedName: string
+): string => `${staticFileCacheKey(action, filename)}\0${exportedName}`;
 
-export const staticMetadataPreevalCacheKey = (
-  action: ITransformAction,
+// An entry computed for another version of the file, or for the same file
+// under another query, is a miss; writing the current one replaces it.
+const isEntryFor = (
+  entry: { codeHash: string; filename: string },
   filename: string,
   codeHash: string
-): string => `${staticCachePrefix(action)}\0${filename}\0${codeHash}`;
+): boolean => entry.codeHash === codeHash && entry.filename === filename;
 
 export const getStaticFileContentHash = (
   action: ITransformAction,
@@ -129,7 +127,7 @@ export const getStaticFileContentHash = (
   }
 
   const cache = staticFileHashCache(action);
-  const cached = cache.get(filename);
+  const cached = cache.get(filename, filename);
   if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
     return cached.hash;
   }
@@ -141,7 +139,7 @@ export const getStaticFileContentHash = (
     return null;
   }
 
-  cache.set(filename, {
+  cache.set(filename, filename, {
     hash,
     mtimeMs: stat.mtimeMs,
     size: stat.size,
@@ -190,14 +188,9 @@ export const getStaticExportCachedResult = (
   }
 
   const cache = staticExportResultCache(action);
-  const cacheKey = staticExportCacheKey(
-    action,
-    filename,
-    exportedName,
-    codeHash
-  );
-  const cached = cache.get(cacheKey);
-  if (!cached) {
+  const cacheKey = staticExportCacheKey(action, filename, exportedName);
+  const cached = cache.get(filename, cacheKey);
+  if (!cached || !isEntryFor(cached, filename, codeHash)) {
     return undefined;
   }
 
@@ -215,7 +208,7 @@ export const getStaticExportCachedResult = (
     return cached.result;
   }
 
-  cache.delete(cacheKey);
+  cache.delete(filename, cacheKey);
   return undefined;
 };
 
@@ -231,17 +224,21 @@ export const setStaticExportCachedResult = (
   }
 
   const cache = staticExportResultCache(action);
-  const cacheKey = staticExportCacheKey(
-    action,
-    filename,
-    exportedName,
-    codeHash
-  );
+  const cacheKey = staticExportCacheKey(action, filename, exportedName);
   if (!result) {
-    const existing = cache.get(cacheKey);
+    const existing = cache.get(filename, cacheKey);
     const attempts =
-      existing && existing.result === null ? existing.attempts + 1 : 1;
-    cache.set(cacheKey, { attempts, result: null });
+      existing &&
+      existing.result === null &&
+      isEntryFor(existing, filename, codeHash)
+        ? existing.attempts + 1
+        : 1;
+    cache.set(filename, cacheKey, {
+      attempts,
+      codeHash,
+      filename,
+      result: null,
+    });
     return;
   }
 
@@ -253,8 +250,10 @@ export const setStaticExportCachedResult = (
     return;
   }
 
-  cache.set(cacheKey, {
+  cache.set(filename, cacheKey, {
+    codeHash,
     dependencyHashes,
+    filename,
     result,
   });
 };
@@ -279,18 +278,19 @@ export const getStaticFileAnalysis = (
   const { code } = loadedAndParsed;
   const codeHash = hashStaticContent(code);
   const cache = staticFileAnalysisCache(action);
-  const cacheKey = staticFileAnalysisCacheKey(action, filename, codeHash);
-  const cached = cache.get(cacheKey);
-  if (cached) {
+  const cacheKey = staticFileCacheKey(action, filename);
+  const cached = cache.get(filename, cacheKey);
+  if (cached && isEntryFor(cached, filename, codeHash)) {
     return cached;
   }
 
   const analysis = {
     code,
     codeHash,
+    filename,
     program: parseProgram(code, filename),
   };
-  cache.set(cacheKey, analysis);
+  cache.set(filename, cacheKey, analysis);
   return analysis;
 };
 
@@ -301,9 +301,9 @@ export const getStaticMetadataPreevalResult = (
   codeHash: string
 ): ReturnType<typeof runOxcPreevalStage> | null => {
   const cache = staticMetadataPreevalCache(action);
-  const cacheKey = staticMetadataPreevalCacheKey(action, filename, codeHash);
-  const cached = cache.get(cacheKey);
-  if (cached) {
+  const cacheKey = staticFileCacheKey(action, filename);
+  const cached = cache.get(filename, cacheKey);
+  if (cached && isEntryFor(cached, filename, codeHash)) {
     return cached.result;
   }
 
@@ -324,10 +324,10 @@ export const getStaticMetadataPreevalResult = (
           }
         )
     );
-    cache.set(cacheKey, { result });
+    cache.set(filename, cacheKey, { codeHash, filename, result });
     return result;
   } catch {
-    cache.set(cacheKey, { result: null });
+    cache.set(filename, cacheKey, { codeHash, filename, result: null });
     return null;
   }
 };

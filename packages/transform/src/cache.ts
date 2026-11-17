@@ -8,6 +8,10 @@ import {
   type IBaseCachedEntrypoint,
   isEntrypointGraphIncomplete,
 } from './cache/cacheTypes';
+import {
+  FileScopedStore,
+  type FileScopedStoreToken,
+} from './cache/fileScopedStore';
 import type { BarrelManifestCacheEntry } from './transform/barrelManifest.types';
 import type { Entrypoint } from './transform/Entrypoint';
 import type { IEvaluatedEntrypoint } from './transform/EvaluatedEntrypoint';
@@ -45,6 +49,11 @@ export class TransformCacheCollection<
 
   public readonly exports: Map<string, string[]>;
 
+  private readonly fileScopedStores = new Map<
+    FileScopedStoreToken<unknown>,
+    FileScopedStore<unknown>
+  >();
+
   constructor(caches: Partial<ICaches<TEntrypoint>> = {}) {
     super(caches.epochOwner);
     this.barrelManifests = caches.barrelManifests || new Map();
@@ -53,6 +62,27 @@ export class TransformCacheCollection<
       this.publishedEntrypoints.add(key)
     );
     this.exports = caches.exports || new Map();
+  }
+
+  /**
+   * @internal The store of entries that other layers compute per file. It
+   * lives as long as this collection and forgets a file in invalidateForFile.
+   */
+  public fileScopedStore<TValue>(
+    token: FileScopedStoreToken<TValue>
+  ): FileScopedStore<TValue> {
+    let store = this.fileScopedStores.get(token);
+    if (!store) {
+      store = new FileScopedStore();
+      this.fileScopedStores.set(token, store);
+    }
+
+    return store as FileScopedStore<TValue>;
+  }
+
+  public invalidateForFile(filename: string): void {
+    super.invalidateForFile(filename);
+    this.fileScopedStores.forEach((store) => store.forgetFile(filename));
   }
 
   protected clearAllCachesForRecovery(): void {

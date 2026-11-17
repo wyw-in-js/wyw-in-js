@@ -41,9 +41,12 @@ export type StaticExportResult = {
   value: unknown;
 };
 
+// Static cache entries keep one version per file: an entry answers only the
+// content hash and the raw request name (query included) it was computed for.
 export type StaticFileAnalysis = {
   code: string;
   codeHash: string;
+  filename: string;
   program: Program;
 };
 
@@ -53,19 +56,20 @@ export type StaticFileHashCacheEntry = {
   size: number;
 };
 
-export type StaticMetadataPreevalCacheEntry =
-  | {
-      result: null;
-    }
-  | {
-      result: ReturnType<typeof runOxcPreevalStage>;
-    };
+export type StaticMetadataPreevalCacheEntry = {
+  codeHash: string;
+  filename: string;
+  result: ReturnType<typeof runOxcPreevalStage> | null;
+};
 
 // Null entries carry an attempt counter so we can retry a bounded number of
 // times before accepting the failure as stable. This avoids both:
 // (a) poisoning the cache forever from a transient resolver failure
 // (b) thundering-herd retries where every consumer re-walks a stable miss
-export type StaticExportCacheEntry =
+export type StaticExportCacheEntry = {
+  codeHash: string;
+  filename: string;
+} & (
   | {
       attempts: number;
       result: null;
@@ -73,7 +77,8 @@ export type StaticExportCacheEntry =
   | {
       dependencyHashes: Map<string, string>;
       result: StaticExportResult;
-    };
+    }
+);
 
 export const STATIC_EXPORT_MAX_NULL_ATTEMPTS = 2;
 export const GENERATED_HELPER_NAME_RE = /^_exp\d*$/;
