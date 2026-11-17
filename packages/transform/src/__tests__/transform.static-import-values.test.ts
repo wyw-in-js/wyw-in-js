@@ -12,6 +12,7 @@ import { dirname, join, resolve } from 'path';
 import dedent from 'dedent';
 
 import { TransformCacheCollection } from '../cache';
+import { defineFileScopedStore } from '../cache/fileScopedStore';
 import { disposeEvalBroker, EvalBroker } from '../eval/broker';
 import { transform } from '../transform';
 import type { PluginOptions } from '../types';
@@ -6245,7 +6246,7 @@ describe('transform static import value inlining', () => {
     );
 
     try {
-      await runTransform(
+      const first = await runTransform(
         root,
         firstEntryFile,
         cache,
@@ -6253,9 +6254,7 @@ describe('transform static import value inlining', () => {
         {},
         asyncResolve
       );
-      const staticMetadataCount =
-        perf.counts.get('transform:preeval:staticMetadata') ?? 0;
-      expect(staticMetadataCount).toBeGreaterThan(0);
+      expect(first.cssText).toContain('font-size:12px');
 
       cache.invalidateForFile(baseFile);
       const second = await runTransform(
@@ -6268,12 +6267,26 @@ describe('transform static import value inlining', () => {
       );
 
       expect(second.cssText).toContain('font-size:14px');
-      expect(
-        perf.counts.get('transform:preeval:staticMetadata') ?? 0
-      ).toBeGreaterThan(staticMetadataCount);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it('forgets the file-scoped entries of an invalidated file only', () => {
+    const cache = new TransformCacheCollection();
+    const token = defineFileScopedStore<string>('test-entries');
+    const store = cache.fileScopedStore(token);
+
+    store.set('/app/base.js', 'plain', 'base');
+    store.set('/app/base.js?raw', 'query', 'base with query');
+    store.set('/app/other.js', 'plain', 'other');
+
+    cache.invalidateForFile('/app/base.js');
+
+    expect(cache.fileScopedStore(token)).toBe(store);
+    expect(store.get('/app/base.js', 'plain')).toBeUndefined();
+    expect(store.get('/app/base.js?raw', 'query')).toBeUndefined();
+    expect(store.get('/app/other.js', 'plain')).toBe('other');
   });
 
   it('reuses static metadata preeval for multiple exports from one file', async () => {
