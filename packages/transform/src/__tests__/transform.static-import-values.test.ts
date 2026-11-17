@@ -12,6 +12,7 @@ import { dirname, join, resolve } from 'path';
 import dedent from 'dedent';
 
 import { TransformCacheCollection } from '../cache';
+import { defineFileScopedStore } from '../cache/fileScopedStore';
 import { disposeEvalBroker, EvalBroker } from '../eval/broker';
 import { transform } from '../transform';
 import type { PluginOptions } from '../types';
@@ -6199,6 +6200,93 @@ describe('transform static import value inlining', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it('recomputes static styled metadata after the file is invalidated', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wyw-static-import-'));
+    const firstEntryFile = join(root, 'entry-a.js');
+    const secondEntryFile = join(root, 'entry-b.js');
+    const baseFile = join(root, 'base.js');
+    const cache = new TransformCacheCollection();
+    const perf = createPerfEventRecorder();
+    const asyncResolve = createResolver(processorFile);
+
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'app' }));
+    writeFileSync(
+      baseFile,
+      dedent`
+        import { styled } from 'test-styled-processor';
+
+        export const Base = styled.div\`
+          color: red;
+        \`;
+      `
+    );
+    writeFileSync(
+      firstEntryFile,
+      dedent`
+        import { styled } from 'test-styled-processor';
+        import { Base } from './base.js';
+
+        export const Extended = styled(Base)\`
+          font-size: 12px;
+        \`;
+      `
+    );
+    writeFileSync(
+      secondEntryFile,
+      dedent`
+        import { styled } from 'test-styled-processor';
+        import { Base } from './base.js';
+
+        export const Extended = styled(Base)\`
+          font-size: 14px;
+        \`;
+      `
+    );
+
+    try {
+      const first = await runTransform(
+        root,
+        firstEntryFile,
+        cache,
+        perf.eventEmitter,
+        {},
+        asyncResolve
+      );
+      expect(first.cssText).toContain('font-size:12px');
+
+      cache.invalidateForFile(baseFile);
+      const second = await runTransform(
+        root,
+        secondEntryFile,
+        cache,
+        perf.eventEmitter,
+        {},
+        asyncResolve
+      );
+
+      expect(second.cssText).toContain('font-size:14px');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('forgets the file-scoped entries of an invalidated file only', () => {
+    const cache = new TransformCacheCollection();
+    const token = defineFileScopedStore<string>('test-entries');
+    const store = cache.fileScopedStore(token);
+
+    store.set('/app/base.js', 'plain', 'base');
+    store.set('/app/base.js?raw', 'query', 'base with query');
+    store.set('/app/other.js', 'plain', 'other');
+
+    cache.invalidateForFile('/app/base.js');
+
+    expect(cache.fileScopedStore(token)).toBe(store);
+    expect(store.get('/app/base.js', 'plain')).toBeUndefined();
+    expect(store.get('/app/base.js?raw', 'query')).toBeUndefined();
+    expect(store.get('/app/other.js', 'plain')).toBe('other');
   });
 
   it('reuses static metadata preeval for multiple exports from one file', async () => {

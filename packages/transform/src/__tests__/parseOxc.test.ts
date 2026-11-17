@@ -2,7 +2,9 @@
 import {
   isOxcRawTransferAstTypeCompatible,
   MAX_PARSE_CACHE_ENTRIES,
+  MAX_PARSE_CACHE_ENTRIES_PER_FILE,
   parseOxcCached,
+  parseOxcFragmentProgramCached,
   setParseCacheLimit,
 } from '../utils/parseOxc';
 
@@ -87,6 +89,102 @@ describe('parseOxcCached', () => {
 
     expect(unambiguousEntry).not.toBe(moduleEntry);
     expect(unambiguousEntry.program).toBe(moduleEntry.program);
+  });
+});
+
+describe('parse cache entries per file', () => {
+  const versionOf = (file: string, version: string) =>
+    `export const ${file}_${version} = 1;`;
+
+  it('keeps a bounded number of versions of one file', () => {
+    const parse = (version: number) =>
+      parseOxcCached(
+        '/project/versions.ts',
+        versionOf('versions', `v${version}`),
+        'module'
+      );
+
+    expect(MAX_PARSE_CACHE_ENTRIES_PER_FILE).toBe(16);
+    const first = parse(1);
+    const second = parse(2);
+    for (let version = 3; version <= 17; version += 1) {
+      parse(version);
+    }
+
+    expect(parse(2)).toBe(second);
+    expect(parse(1)).not.toBe(first);
+  });
+
+  it('does not count code that another file only read against that file', () => {
+    const shared = versionOf('readByOther', 'shared');
+    const stored = parseOxcCached('/project/stored-by.ts', shared, 'module');
+    expect(parseOxcCached('/project/read-by.ts', shared, 'module')).toBe(
+      stored
+    );
+
+    for (let version = 1; version <= 17; version += 1) {
+      parseOxcCached(
+        '/project/read-by.ts',
+        versionOf('readBy', `v${version}`),
+        'module'
+      );
+    }
+
+    expect(parseOxcCached('/project/read-by.ts', shared, 'module')).toBe(
+      stored
+    );
+  });
+
+  it('refreshes code in the index of the file that stored it when another file reads it', () => {
+    const owner = '/project/owner.ts';
+    const shared = versionOf('refreshedByRead', 'shared');
+    const stored = parseOxcCached(owner, shared, 'module');
+    for (let version = 1; version <= 15; version += 1) {
+      parseOxcCached(owner, versionOf('ownerBefore', `v${version}`), 'module');
+    }
+
+    expect(parseOxcCached('/project/reader.ts', shared, 'module')).toBe(stored);
+    for (let version = 1; version <= 15; version += 1) {
+      parseOxcCached(owner, versionOf('ownerAfter', `v${version}`), 'module');
+    }
+
+    expect(parseOxcCached(owner, shared, 'module')).toBe(stored);
+  });
+
+  it('does not count static expression fragments against the file', () => {
+    const filename = '/project/fragments.ts';
+    const fileCode = versionOf('fragmentsFile', 'only');
+    const stored = parseOxcCached(filename, fileCode, 'module');
+    const fragment = (index: number) =>
+      parseOxcFragmentProgramCached(
+        filename,
+        `const __wyw_static_value = "fragment-${index}";`,
+        'unambiguous'
+      );
+
+    const firstFragment = fragment(0);
+    for (let index = 1; index <= 20; index += 1) {
+      fragment(index);
+    }
+
+    expect(parseOxcCached(filename, fileCode, 'module')).toBe(stored);
+    expect(fragment(0)).toBe(firstFragment);
+  });
+
+  it('counts versions of a file under one name whatever its query', () => {
+    const parse = (version: number) =>
+      parseOxcCached(
+        `/project/query.ts?v=${version}`,
+        versionOf('query', `v${version}`),
+        'module'
+      );
+
+    const first = parse(1);
+    for (let version = 2; version <= 17; version += 1) {
+      parse(version);
+    }
+
+    expect(parse(1)).not.toBe(first);
   });
 });
 
