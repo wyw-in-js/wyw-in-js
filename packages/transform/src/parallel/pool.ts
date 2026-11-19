@@ -484,6 +484,9 @@ export class TransformWorkerPool {
         else console.warn(message.message);
         return;
       }
+      case 'engineOptionSources':
+        this.#engineHosts.get(message.scopeId)?.optionSources(message.sources);
+        return;
       case 'done': {
         const state = this.#finishJob(message.jobId);
         if (!state) return;

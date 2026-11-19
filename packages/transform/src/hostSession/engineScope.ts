@@ -164,6 +164,9 @@ export const createEngineScope = ({
     // A new object each time: normalization is memoized by identity.
     const pluginOptions = pinPluginOptions(scope);
     const source = getWywConfigSource(pluginOptions);
+    const optionSources = source === null ? [] : [source];
+    // Before the options load and the pipeline runs, either of which can fail.
+    host.optionSources(optionSources);
     // Here, not in `invalidate`: reading a config again can throw, and the
     // call that builds the generation reports it; the next call tries again.
     forgetChangedConfig(source);
@@ -181,7 +184,7 @@ export const createEngineScope = ({
 
     return {
       options,
-      optionSources: source === null ? [] : [source],
+      optionSources,
       pluginOptions,
       salt: getEvalCacheKey(
         options,

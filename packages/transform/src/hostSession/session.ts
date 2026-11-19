@@ -82,7 +82,12 @@ export const createHostSession: CreateHostSession = <TContext>(
   const running = new Set<Promise<unknown>>();
   // By the filename of the root as the bundler gave it, with its query.
   const roots = new Map<string, ReadonlySet<string>>();
-  let optionSources: ReadonlySet<string> = new Set();
+  // Every config file the options of the session were read from. It only
+  // grows: an engine reports the files of each generation it builds, and a
+  // result the files of the generation it ran on, which may be an older one.
+  const optionSources = new Set<string>();
+  const addOptionSources = (sources: readonly string[]) =>
+    sources.forEach((source) => optionSources.add(source));
   let lastCallId = 0;
   // Only the context of the last settled call is kept, until `close()`.
   let lastSettled: { context: TContext } | null = null;
@@ -105,6 +110,7 @@ export const createHostSession: CreateHostSession = <TContext>(
   const host: EngineHost = {
     load: async (callId, request) =>
       bundler.load ? bundler.load(request, contextOf(callId)) : undefined,
+    optionSources: addOptionSources,
     resolve: async (callId, request) =>
       bundler.resolve(request, contextOf(callId)),
     warn: (callId, message) => {
@@ -152,7 +158,7 @@ export const createHostSession: CreateHostSession = <TContext>(
         callId,
         file
       );
-      optionSources = new Set(sources);
+      addOptionSources(sources);
       const output = await projectResult({
         file,
         resolve: async (specifier) =>
