@@ -1,5 +1,10 @@
 import type { RawSourceMap } from 'source-map';
 
+import type {
+  EngineScope,
+  HostFile,
+  HostResolveRequest,
+} from '../hostSession/types';
 import type { PartialOptions } from '../transform/helpers/loadWywOptions';
 import type { Preprocessor, Result } from '../types';
 
@@ -28,6 +33,18 @@ export type TransformWorkerScopeConfig = {
   root: string;
 };
 
+/**
+ * What a worker needs to open the engine half of a host session: the scope
+ * without an event emitter, which only an in-process engine accepts.
+ */
+export type EngineScopeData = Omit<EngineScope, 'eventEmitter'>;
+
+/** What a worker reports about the options of an engine scope with a result. */
+export type EngineJobInfo = {
+  optionSources: string[];
+  salt: string;
+};
+
 /** Sent to every worker when it starts. */
 export type TransformWorkerData = {
   /** This worker's share of the parsed-AST cache budget. */
@@ -43,6 +60,25 @@ export type SerializedError = {
 
 export type MainToWorkerMessage =
   | { config: TransformWorkerScopeConfig; scopeId: number; type: 'scope' }
+  | {
+      key: string;
+      scope: EngineScopeData;
+      scopeId: number;
+      type: 'engineScope';
+    }
+  | {
+      callId: number;
+      file: HostFile;
+      jobId: number;
+      scopeId: number;
+      type: 'engineTransform';
+    }
+  | {
+      extent: 'files' | 'all';
+      files: string[];
+      scopeId: number;
+      type: 'engineInvalidate';
+    }
   | {
       code: string;
       filename: string;
@@ -74,8 +110,28 @@ export type WorkerToMainMessage =
       type: 'resolve';
       what: string;
     }
+  | {
+      callId: number;
+      request: HostResolveRequest;
+      requestId: number;
+      scopeId: number;
+      type: 'engineResolve';
+    }
   | { jobId: number; message: string; type: 'warning' }
-  | { error?: SerializedError; jobId: number; result?: Result; type: 'done' }
+  | {
+      callId: number | null;
+      message: string;
+      scopeId: number;
+      type: 'engineWarning';
+    }
+  | {
+      /** Set for a job of an engine scope. */
+      engine?: EngineJobInfo;
+      error?: SerializedError;
+      jobId: number;
+      result?: Result;
+      type: 'done';
+    }
   | { type: 'ready' };
 
 const isCloneablePrimitive = (
