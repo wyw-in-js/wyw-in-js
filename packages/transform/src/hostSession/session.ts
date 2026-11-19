@@ -11,7 +11,7 @@ import { stripQueryAndHash, toNativeResolverAlias } from '@wyw-in-js/shared';
 import { searchPlaces } from '../transform/helpers/loadWywOptions';
 
 import { createJsEngine } from './jsEngine';
-import { projectResult, toMatchFiles, toWatchFile } from './output';
+import { namesOf, projectResult, toMatchFiles } from './output';
 import type {
   CreateHostSession,
   EngineHost,
@@ -51,14 +51,6 @@ type PendingCall<TContext> = {
 const PACKAGE_JSON = 'package.json';
 
 const toPosix = (file: string) => file.split(path.sep).join('/');
-
-/**
- * The names a changed file may go by: as given, without its `?query`, and
- * without `?query` and `#hash`. A `#` can be part of a real directory name.
- */
-const namesOf = (file: string): string[] => [
-  ...new Set([file, toWatchFile(file), stripQueryAndHash(file)]),
-];
 
 const isConfigSearchPlace = (file: string): boolean => {
   const posix = toPosix(file);

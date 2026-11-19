@@ -31,6 +31,14 @@ const CSS_ID_EXTENSION = '.wyw-in-js.css';
 /** A resolved id as a file for the watcher: without its `?query`. */
 export const toWatchFile = (id: string): string => id.split('?', 1)[0];
 
+/**
+ * The names a changed file may go by: as given, without its `?query`, and
+ * without `?query` and `#hash`. A `#` can be part of a real directory name.
+ */
+export const namesOf = (file: string): string[] => [
+  ...new Set([file, toWatchFile(file), stripQueryAndHash(file)]),
+];
+
 /** The files a root depends on, for matching changed files. */
 export const toMatchFiles = (
   root: string,
