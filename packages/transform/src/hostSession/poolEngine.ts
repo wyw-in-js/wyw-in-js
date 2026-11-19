@@ -29,15 +29,33 @@ const describeOptions = (keys: readonly string[]): string =>
       } more options`
     : `${formatKeys(keys)} ${keys.length > 1 ? 'options' : 'option'}`;
 
+// Options of the transform itself, which a config file cannot hold.
+const TRANSFORM_OPTIONS: readonly string[] = [
+  'keepComments',
+  'prefixer',
+  'preprocessor',
+];
+
+const isTransformOption = (optionPath: string): boolean =>
+  TRANSFORM_OPTIONS.includes(optionPath.split(/[.[]/, 1)[0]);
+
 /** Why a session has to stay on the calling thread, or `null`. */
 const findFallbackReason = (scope: EngineScope): string | null => {
   const options = findNonTransferableOptions(scope.options);
-  if (options.length > 0) {
+  const fromPlugin = options.filter((option) => !isTransformOption(option));
+  const fromTransform = options.filter(isTransformOption);
+  if (fromPlugin.length > 0) {
     return `the ${describeOptions(
-      options
+      fromPlugin
     )} cannot be passed to a worker thread; define ${
-      options.length > 1 ? 'them' : 'it'
+      fromPlugin.length > 1 ? 'them' : 'it'
     } in a wyw-in-js config file instead`;
+  }
+
+  if (fromTransform.length > 0) {
+    return `the ${describeOptions(
+      fromTransform
+    )} cannot be passed to a worker thread`;
   }
 
   const facts = findNonTransferableOptions({
