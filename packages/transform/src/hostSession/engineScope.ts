@@ -184,7 +184,7 @@ export const createEngineScope = ({
     }
 
     if (next !== null && (next.salt === current.salt || inFlight === 0)) {
-      forgetLookups(current);
+      // Calls in flight keep the options and lookups they started with.
       current = next;
       next = null;
       cache.clear('all');
