@@ -1,4 +1,6 @@
+import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
+import { threadId } from 'node:worker_threads';
 import Module, { createRequire } from 'module';
 import path from 'path';
 
@@ -245,12 +247,60 @@ const normalizeLoadedConfig = (loadedConfig: unknown): Partial<StrictOptions> =>
     ? (loadedConfig as { default: unknown }).default
     : loadedConfig) as Partial<StrictOptions>;
 
+type ConfigRequire = ReturnType<typeof createRequire>;
+
+// Node evaluates an ES module once per URL: require() after its entry in the
+// require cache is deleted returns the first evaluation again. Bun evaluates
+// the file again.
+const isNodeEsModule = (
+  cached: { exports: unknown } | undefined
+): cached is { exports: unknown } =>
+  !isBun &&
+  cached !== undefined &&
+  Object.prototype.toString.call(cached.exports) === '[object Module]';
+
+// Evaluates an ES module config again under a new URL: a copy next to it, so
+// that its imports resolve as before and only the file name of import.meta
+// differs. The require cache entry of the config then holds that evaluation.
+const evaluateEsModuleAgain = (
+  configRequire: ConfigRequire,
+  cacheKey: string
+): void => {
+  const extension = path.extname(cacheKey);
+  const copy = path.join(
+    path.dirname(cacheKey),
+    `${path.basename(cacheKey, extension)}.reload-${
+      process.pid
+    }-${threadId}-${randomBytes(4).toString('hex')}${extension}`
+  );
+  const { cache: requireCache } = configRequire;
+  fs.copyFileSync(cacheKey, copy, fs.constants.COPYFILE_EXCL);
+  try {
+    configRequire(copy);
+    requireCache[cacheKey] = requireCache[copy];
+  } catch (error) {
+    if (error instanceof Error) {
+      error.message = error.message.split(copy).join(cacheKey);
+    }
+    throw synchronousLoadingError(cacheKey, error) ?? error;
+  } finally {
+    delete requireCache[copy];
+    fs.rmSync(copy, { force: true });
+  }
+};
+
 const loadMjsConfig = (configFile: string): Partial<StrictOptions> => {
   const resolvedConfigFile = resolveConfigFilePath(configFile);
   const configRequire = createRequire(resolvedConfigFile);
 
   try {
     const cacheKey = configRequire.resolve(resolvedConfigFile);
+    const cached = configRequire.cache[cacheKey];
+    if (isNodeEsModule(cached)) {
+      // What require() would return; forgetWywConfigFile replaces it.
+      return normalizeLoadedConfig(cached.exports);
+    }
+
     delete configRequire.cache[cacheKey];
   } catch {
     // Ignore cache cleanup failures and let the require call surface the real error.
@@ -410,14 +460,29 @@ export const getWywConfigSource = (
 /**
  * Drops what the loader remembers of loaded config files, so that the next
  * options read `configFile` from disk again. Discovery stays remembered.
+ * Under Node, a config already evaluated as an ES module is evaluated again
+ * here, and what its evaluation throws is thrown.
  */
 export const forgetWywConfigFile = (configFile: string): void => {
-  if (path.extname(configFile) === '.mjs') {
-    // Loaded without a cache of the loader: each load reads the file again.
+  if (path.extname(configFile) !== '.mjs') {
+    explorerSync.clearLoadCache();
+  }
+
+  if (!path.isAbsolute(configFile)) {
     return;
   }
 
-  explorerSync.clearLoadCache();
+  const configRequire = createRequire(configFile);
+  let cacheKey: string;
+  try {
+    cacheKey = configRequire.resolve(configFile);
+  } catch {
+    return;
+  }
+
+  if (isNodeEsModule(configRequire.cache[cacheKey])) {
+    evaluateEsModuleAgain(configRequire, cacheKey);
+  }
 };
 
 export function loadWywOptions(
