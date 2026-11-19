@@ -21,7 +21,8 @@ import { warnAboutLoadedOptions } from './onceWarnings';
 import type { PluginOptions } from '../../types';
 import { DEFAULT_EVAL_STRATEGY } from '../../utils/evalStrategy';
 
-const searchPlaces = [
+/** Where the config file is looked for, relative to each directory. */
+export const searchPlaces = [
   `.wyw-in-jsrc`,
   `.wyw-in-jsrc.json`,
   `.wyw-in-jsrc.yaml`,
@@ -368,7 +369,7 @@ const findConfigFile = (cwd: string): string | null => {
 // Remember the outcome per working directory; loading stays uncached.
 const discoveredConfigFiles = new Map<string, string | null>();
 
-const searchConfig = (): Partial<StrictOptions> => {
+const discoverConfigFile = (): string | null => {
   const cwd = process.cwd();
   let configFile = discoveredConfigFiles.get(cwd);
   if (
@@ -379,7 +380,44 @@ const searchConfig = (): Partial<StrictOptions> => {
     discoveredConfigFiles.set(cwd, configFile);
   }
 
+  return configFile;
+};
+
+const searchConfig = (): Partial<StrictOptions> => {
+  const configFile = discoverConfigFile();
   return configFile ? loadConfigFromFile(configFile) : {};
+};
+
+/**
+ * The config file that `loadWywOptions(overrides)` reads, as an absolute
+ * path, or `null` when it reads none.
+ */
+export const getWywConfigSource = (
+  overrides: PartialOptions = defaultOverrides
+): string | null => {
+  const { configFile } = overrides;
+  if (configFile === false) {
+    return null;
+  }
+
+  if (configFile !== undefined) {
+    return resolveConfigFilePath(configFile);
+  }
+
+  return discoverConfigFile();
+};
+
+/**
+ * Drops what the loader remembers of loaded config files, so that the next
+ * options read `configFile` from disk again. Discovery stays remembered.
+ */
+export const forgetWywConfigFile = (configFile: string): void => {
+  if (path.extname(configFile) === '.mjs') {
+    // Loaded without a cache of the loader: each load reads the file again.
+    return;
+  }
+
+  explorerSync.clearLoadCache();
 };
 
 export function loadWywOptions(
