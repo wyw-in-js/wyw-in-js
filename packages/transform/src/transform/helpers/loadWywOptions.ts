@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { threadId } from 'node:worker_threads';
 import Module, { createRequire } from 'module';
 import path from 'path';
+import { pathToFileURL } from 'url';
 
 import { cosmiconfigSync } from 'cosmiconfig';
 
@@ -249,9 +250,43 @@ const normalizeLoadedConfig = (loadedConfig: unknown): Partial<StrictOptions> =>
 
 type ConfigRequire = ReturnType<typeof createRequire>;
 
+const usesImportMeta = (content: string): boolean =>
+  /\bimport\.meta\b/.test(content);
+
+// A runtime that strips types loads a TypeScript config with require() when
+// the config holds import.meta, which compiled CommonJS output cannot hold,
+// and every TypeScript config when there is no compiler API.
+const loadsTypeScriptThroughRequire = (content: string): boolean =>
+  runtimeStripsTypes &&
+  (getTypeScriptCompiler() === null || usesImportMeta(content));
+
+// Whether the loader reads the config with require() as an ES module, which
+// Node evaluates once per URL.
+const loadsAsNodeEsModule = (filepath: string): boolean => {
+  if (isBun) {
+    return false;
+  }
+
+  switch (path.extname(filepath)) {
+    case '.mjs':
+      return true;
+    case '.mts':
+      return runtimeStripsTypes;
+    case '.ts':
+      try {
+        return loadsTypeScriptThroughRequire(fs.readFileSync(filepath, 'utf8'));
+      } catch {
+        return false;
+      }
+    default:
+      return false;
+  }
+};
+
 // Node evaluates an ES module once per URL: require() after its entry in the
-// require cache is deleted returns the first evaluation again. Bun evaluates
-// the file again.
+// require cache is deleted returns the first evaluation again, and after a
+// failed evaluation it throws an internal assertion. Bun evaluates the file
+// again.
 const isNodeEsModule = (
   cached: { exports: unknown } | undefined
 ): cached is { exports: unknown } =>
@@ -259,9 +294,38 @@ const isNodeEsModule = (
   cached !== undefined &&
   Object.prototype.toString.call(cached.exports) === '[object Module]';
 
+// A module that reads import.meta sees the values of the original file: the
+// assignments go on its first line, after a hashbang, so lines keep their
+// numbers. A module without import.meta cannot tell the copy apart, and stays
+// as it is, so that a CommonJS module never turns into an ES module.
+const withImportMetaOf = (original: string, content: string): string => {
+  if (!usesImportMeta(content)) {
+    return content;
+  }
+
+  const assignments =
+    `import.meta.url = ${JSON.stringify(pathToFileURL(original).href)}; ` +
+    `import.meta.filename = ${JSON.stringify(original)}; ` +
+    `import.meta.dirname = ${JSON.stringify(path.dirname(original))}; `;
+  if (!content.startsWith('#!')) {
+    return `${assignments}${content}`;
+  }
+
+  const lineEnd = content.indexOf('\n');
+  return lineEnd === -1
+    ? content
+    : `${content.slice(0, lineEnd + 1)}${assignments}${content.slice(
+        lineEnd + 1
+      )}`;
+};
+
+const replaceAll = (text: string, from: string, to: string): string =>
+  text.split(from).join(to);
+
 // Evaluates an ES module config again under a new URL: a copy next to it, so
-// that its imports resolve as before and only the file name of import.meta
-// differs. The require cache entry of the config then holds that evaluation.
+// that its imports resolve as before, with the import.meta of the original.
+// The require cache entry of the config then holds that evaluation; when it
+// throws, the entry stays as it was.
 const evaluateEsModuleAgain = (
   configRequire: ConfigRequire,
   cacheKey: string
@@ -274,13 +338,30 @@ const evaluateEsModuleAgain = (
     }-${threadId}-${randomBytes(4).toString('hex')}${extension}`
   );
   const { cache: requireCache } = configRequire;
-  fs.copyFileSync(cacheKey, copy, fs.constants.COPYFILE_EXCL);
+  fs.writeFileSync(
+    copy,
+    withImportMetaOf(cacheKey, fs.readFileSync(cacheKey, 'utf8')),
+    { flag: 'wx' }
+  );
   try {
     configRequire(copy);
     requireCache[cacheKey] = requireCache[copy];
   } catch (error) {
     if (error instanceof Error) {
-      error.message = error.message.split(copy).join(cacheKey);
+      const copyUrl = pathToFileURL(copy).href;
+      const originalUrl = pathToFileURL(cacheKey).href;
+      error.message = replaceAll(
+        replaceAll(error.message, copyUrl, originalUrl),
+        copy,
+        cacheKey
+      );
+      if (error.stack) {
+        error.stack = replaceAll(
+          replaceAll(error.stack, copyUrl, originalUrl),
+          copy,
+          cacheKey
+        );
+      }
     }
     throw synchronousLoadingError(cacheKey, error) ?? error;
   } finally {
@@ -313,18 +394,10 @@ const loadMjsConfig = (configFile: string): Partial<StrictOptions> => {
   }
 };
 
-const usesImportMeta = (content: string): boolean =>
-  /\bimport\.meta\b/.test(content);
-
 // The compiled config behaves as with cosmiconfig's .ts loader, on Node.js and
-// Bun alike. Its CommonJS output cannot hold import.meta, so a runtime that
-// strips types loads such a config with require(), and every .ts config when
-// there is no compiler API.
+// Bun alike; loadsTypeScriptThroughRequire names the configs it cannot load.
 const loadTypeScriptConfig = (filepath: string, content: string): unknown => {
-  if (
-    runtimeStripsTypes &&
-    (getTypeScriptCompiler() === null || usesImportMeta(content))
-  ) {
+  if (loadsTypeScriptThroughRequire(content)) {
     return loadMjsConfig(filepath);
   }
 
@@ -459,9 +532,10 @@ export const getWywConfigSource = (
 
 /**
  * Drops what the loader remembers of loaded config files, so that the next
- * options read `configFile` from disk again. Discovery stays remembered.
- * Under Node, a config already evaluated as an ES module is evaluated again
- * here, and what its evaluation throws is thrown.
+ * options read `configFile`, a path on disk, again. Discovery stays
+ * remembered. Under Node, a config that the loader reads as an ES module is
+ * evaluated again here, also after its last evaluation failed, and what its
+ * evaluation throws is thrown.
  */
 export const forgetWywConfigFile = (configFile: string): void => {
   if (path.extname(configFile) !== '.mjs') {
@@ -480,7 +554,11 @@ export const forgetWywConfigFile = (configFile: string): void => {
     return;
   }
 
-  if (isNodeEsModule(configRequire.cache[cacheKey])) {
+  const cached = configRequire.cache[cacheKey];
+  if (
+    isNodeEsModule(cached) ||
+    (cached === undefined && loadsAsNodeEsModule(cacheKey))
+  ) {
     evaluateEsModuleAgain(configRequire, cacheKey);
   }
 };
