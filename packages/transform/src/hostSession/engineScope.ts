@@ -143,8 +143,14 @@ export const createEngineScope = ({
   let next: Generation | null = null;
   let reload = false;
   let inFlight = 0;
+  // Global inputs invalidated since the last generation was built.
+  const changedGlobals = new Set<string>();
 
   const buildGeneration = (): Generation => {
+    // Here, not in `invalidate`: reading a config again can throw, and the
+    // call that builds the generation reports it.
+    changedGlobals.forEach((file) => forgetWywConfigFile(file));
+    changedGlobals.clear();
     // A new object each time: normalization is memoized by identity.
     const pluginOptions = pinPluginOptions(scope);
     const options = loadWywOptions(pluginOptions);
@@ -265,13 +271,14 @@ export const createEngineScope = ({
       forgetLookups(next);
       current = null;
       next = null;
+      changedGlobals.clear();
       cache.clear('all');
     },
     disposeOwnRunner,
     invalidate(files, extent) {
       files.forEach((file) => cache.invalidateForFile(file));
       if (extent === 'all') {
-        files.forEach((file) => forgetWywConfigFile(file));
+        files.forEach((file) => changedGlobals.add(file));
         reload = true;
         next = null;
       }
