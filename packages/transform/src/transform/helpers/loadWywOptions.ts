@@ -260,14 +260,16 @@ const loadsTypeScriptThroughRequire = (content: string): boolean =>
   runtimeStripsTypes &&
   (getTypeScriptCompiler() === null || usesImportMeta(content));
 
-// Whether the loader reads the config with require() as an ES module, which
-// Node evaluates once per URL.
-const loadsAsNodeEsModule = (filepath: string): boolean => {
+// Whether the loader may read the config with require() as an ES module,
+// which Node evaluates once per URL. For a .js config the package type and
+// the syntax decide, so only its evaluation tells.
+const mayLoadAsNodeEsModule = (filepath: string): boolean => {
   if (isBun) {
     return false;
   }
 
   switch (path.extname(filepath)) {
+    case '.js':
     case '.mjs':
       return true;
     case '.mts':
@@ -322,11 +324,13 @@ const withImportMetaOf = (original: string, content: string): string => {
 const replaceAll = (text: string, from: string, to: string): string =>
   text.split(from).join(to);
 
-// Evaluates an ES module config again under a new URL: a copy next to it, so
-// that its imports resolve as before, with the import.meta of the original.
-// The require cache entry of the config then holds that evaluation; when it
-// throws, the entry stays as it was.
-const evaluateEsModuleAgain = (
+// Evaluates a config again under a new URL: a copy next to it, so that its
+// imports resolve as before and Node gives it the module format of the
+// original, with the import.meta of the original. When the copy is an ES
+// module, the require cache entry of the config then holds that evaluation; a
+// CommonJS config is evaluated from its own file at the next load. When the
+// evaluation throws, the entry stays as it was.
+const evaluateConfigAgain = (
   configRequire: ConfigRequire,
   cacheKey: string
 ): void => {
@@ -345,7 +349,10 @@ const evaluateEsModuleAgain = (
   );
   try {
     configRequire(copy);
-    requireCache[cacheKey] = requireCache[copy];
+    const evaluated = requireCache[copy];
+    if (isNodeEsModule(evaluated)) {
+      requireCache[cacheKey] = evaluated;
+    }
   } catch (error) {
     if (error instanceof Error) {
       const copyUrl = pathToFileURL(copy).href;
@@ -370,7 +377,7 @@ const evaluateEsModuleAgain = (
   }
 };
 
-const loadMjsConfig = (configFile: string): Partial<StrictOptions> => {
+const loadConfigWithRequire = (configFile: string): Partial<StrictOptions> => {
   const resolvedConfigFile = resolveConfigFilePath(configFile);
   const configRequire = createRequire(resolvedConfigFile);
 
@@ -398,7 +405,7 @@ const loadMjsConfig = (configFile: string): Partial<StrictOptions> => {
 // Bun alike; loadsTypeScriptThroughRequire names the configs it cannot load.
 const loadTypeScriptConfig = (filepath: string, content: string): unknown => {
   if (loadsTypeScriptThroughRequire(content)) {
-    return loadMjsConfig(filepath);
+    return loadConfigWithRequire(filepath);
   }
 
   try {
@@ -418,7 +425,7 @@ const loadTypeScriptConfig = (filepath: string, content: string): unknown => {
     }
 
     try {
-      return loadMjsConfig(filepath);
+      return loadConfigWithRequire(filepath);
     } catch (bunError) {
       if (
         bunError instanceof Error &&
@@ -444,12 +451,16 @@ const loadStrippedTypeScriptConfig = (filepath: string): unknown => {
     );
   }
 
-  return loadMjsConfig(filepath);
+  return loadConfigWithRequire(filepath);
 };
 
-// TypeScript configs go through the explorer for its per-path cache.
+// TypeScript and .js configs go through the explorer for its per-path cache.
+// A .js config loads like an .mjs one: cosmiconfig deletes its require cache
+// entry before require(), which under Node returns the first evaluation of an
+// ES module and fails after a failed one.
 const explorerSync = cosmiconfigSync('wyw-in-js', {
   loaders: {
+    '.js': (filepath) => loadConfigWithRequire(filepath),
     '.ts': loadTypeScriptConfig,
     '.mts': loadStrippedTypeScriptConfig,
     '.cts': loadStrippedTypeScriptConfig,
@@ -462,7 +473,7 @@ const explorerSync = cosmiconfigSync('wyw-in-js', {
 const loadConfigFromFile = (configFile: string): Partial<StrictOptions> => {
   const resolvedConfigFile = resolveConfigFilePath(configFile);
   if (path.extname(resolvedConfigFile) === '.mjs') {
-    return loadMjsConfig(resolvedConfigFile);
+    return loadConfigWithRequire(resolvedConfigFile);
   }
 
   return (explorerSync.load(resolvedConfigFile)?.config ??
@@ -535,7 +546,9 @@ export const getWywConfigSource = (
  * options read `configFile`, a path on disk, again. Discovery stays
  * remembered. Under Node, a config that the loader reads as an ES module is
  * evaluated again here, also after its last evaluation failed, and what its
- * evaluation throws is thrown.
+ * evaluation throws is thrown. After a failed evaluation the module format is
+ * not known, so a config that may be an ES module is evaluated, and one that
+ * turns out to be CommonJS is evaluated again at the next load.
  */
 export const forgetWywConfigFile = (configFile: string): void => {
   if (path.extname(configFile) !== '.mjs') {
@@ -557,9 +570,9 @@ export const forgetWywConfigFile = (configFile: string): void => {
   const cached = configRequire.cache[cacheKey];
   if (
     isNodeEsModule(cached) ||
-    (cached === undefined && loadsAsNodeEsModule(cacheKey))
+    (cached === undefined && mayLoadAsNodeEsModule(cacheKey))
   ) {
-    evaluateEsModuleAgain(configRequire, cacheKey);
+    evaluateConfigAgain(configRequire, cacheKey);
   }
 };
 
