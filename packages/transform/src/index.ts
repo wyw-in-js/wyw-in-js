@@ -50,6 +50,33 @@ export type {
 } from './parallel';
 export { disposeEvalBroker } from './eval/broker';
 export {
+  createHostSession,
+  HostSessionClosedError,
+} from './hostSession/session';
+export { createHostEngine } from './hostSession/poolEngine';
+export type {
+  CreateHostEngine,
+  CreateHostSession,
+  EngineHost,
+  EngineResult,
+  EngineScope,
+  EngineSession,
+  HostBundler,
+  HostCss,
+  HostEngine,
+  HostEngineOptions,
+  HostFile,
+  HostLoad,
+  HostLoadRequest,
+  HostOptions,
+  HostOutput,
+  HostResolve,
+  HostResolveRequest,
+  HostSession,
+  HostSessionInput,
+  HostWarning,
+} from './hostSession/types';
+export {
   /**
    * @deprecated `UnprocessedEntrypointError` is thrown only by the legacy
    * `Module` evaluator; `transform()` never throws it. Will be removed in 3.0

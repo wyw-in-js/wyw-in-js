@@ -49,12 +49,20 @@ export type Services = {
     importer: string,
     stack: string[]
   ) => Promise<string | null>;
-  /** Stable semantic identity for the bundler resolver. */
+  /**
+   * Stable semantic identity for the bundler resolver.
+   *
+   * @deprecated A host session (`createHostSession`) gives its calls a stable
+   * key of its own. Will be removed in 3.0.
+   */
   asyncResolveKey?: string;
   /**
    * Optional lifetime scope for the eval runner process. This is deliberately
    * separate from `cache`: callers may safely reuse the process while keeping
    * transform caches and resolver semantics isolated.
+   *
+   * @deprecated Host sessions (`createHostSession`) of one engine with the
+   * same `runner` name share one eval runner. Will be removed in 3.0.
    */
   evalBrokerScope?: object;
   /** Hash of the resolver/eval semantics configured for this transform. */
