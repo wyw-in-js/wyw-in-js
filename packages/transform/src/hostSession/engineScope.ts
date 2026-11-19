@@ -17,6 +17,7 @@ import {
 } from '../transform/helpers/loadWywOptions';
 import type { PartialOptions } from '../transform/helpers/loadWywOptions';
 
+import { namesOf } from './output';
 import {
   attachRegistryShare,
   readRegistryShare,
@@ -146,16 +147,37 @@ export const createEngineScope = ({
   // Global inputs invalidated since the last generation was built.
   const changedGlobals = new Set<string>();
 
-  const buildGeneration = (): Generation => {
-    // Here, not in `invalidate`: reading a config again can throw, and the
-    // call that builds the generation reports it.
-    changedGlobals.forEach((file) => forgetWywConfigFile(file));
+  // Forgets the config file of the options when a changed global input is
+  // that file, under any of its names, so that the loader reads it again.
+  const forgetChangedConfig = (source: string | null) => {
+    if (
+      source !== null &&
+      [...changedGlobals].some((file) => namesOf(file).includes(source))
+    ) {
+      forgetWywConfigFile(source);
+    }
+
     changedGlobals.clear();
+  };
+
+  const buildGeneration = (): Generation => {
     // A new object each time: normalization is memoized by identity.
     const pluginOptions = pinPluginOptions(scope);
-    const options = loadWywOptions(pluginOptions);
-    attachRegistryShare(options);
     const source = getWywConfigSource(pluginOptions);
+    // Here, not in `invalidate`: reading a config again can throw, and the
+    // call that builds the generation reports it; the next call tries again.
+    forgetChangedConfig(source);
+    let options: StrictOptions;
+    try {
+      options = loadWywOptions(pluginOptions);
+    } catch (error) {
+      // Node keeps a failed evaluation of an ES module config, so the next
+      // generation reads that config as a changed one.
+      if (source !== null) changedGlobals.add(source);
+      throw error;
+    }
+
+    attachRegistryShare(options);
 
     return {
       options,
