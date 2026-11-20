@@ -1,6 +1,6 @@
 {
   "name": "@wyw-in-js/parcel-transformer",
-  "version": "2.7.2",
+  "version": "2.8.0",
   "type": "module",
   "dependencies": {
     "@parcel/plugin": "^2.16.3",
