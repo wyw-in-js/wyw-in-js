@@ -449,10 +449,6 @@ const mayLoadAsEsModule = (configFile: string): boolean => {
   }
 };
 
-// Each import of a config gets a URL of its own for the life of the process,
-// as the ES module registry of the runtime keys evaluations by URL.
-let configImports = 0;
-
 const replaceAll = (text: string, from: string, to: string): string =>
   text.split(from).join(to);
 
@@ -483,10 +479,11 @@ const namingConfigFile = (
   return error;
 };
 
-// Evaluates the config again under a new URL; a CommonJS config comes as the
-// default export of its namespace.
+// Evaluates the config again under the URL of `loadId`; a CommonJS config
+// comes as the default export of its namespace.
 const importConfigAgain = async (
-  configFile: string
+  configFile: string,
+  loadId: string
 ): Promise<Partial<StrictOptions>> => {
   const configRequire = createRequire(configFile);
   try {
@@ -496,9 +493,8 @@ const importConfigAgain = async (
     // Let the import surface the real error.
   }
 
-  configImports += 1;
   const fileUrl = pathToFileURL(configFile).href;
-  const importUrl = `${fileUrl}?wyw-generation=${configImports}`;
+  const importUrl = `${fileUrl}?wyw-generation=${encodeURIComponent(loadId)}`;
   // The import() stays out of the text of this module: tools that parse the
   // module warn about an import of a computed URL, as webpack does in every
   // Next.js build that tracks the dependencies of its config.
@@ -664,18 +660,26 @@ export function loadWywOptions(
  * Loads the options as `loadWywOptions(overrides)` does, but reads
  * `configFile`, the path on disk that it reads, from disk again, whatever the
  * loaders remember of it. A config that may be an ES module is evaluated
- * again under a new URL, also after its last evaluation failed; any other
- * config is read again by the loader. The options are remembered for
- * `overrides` as `loadWywOptions` remembers them.
+ * again under a URL made from `loadId`, also after its last evaluation
+ * failed; any other config is read again by the loader. The options are
+ * remembered for `overrides` as `loadWywOptions` remembers them.
+ *
+ * The ES module registry of the runtime keeps one evaluation per URL for the
+ * life of the process, so `loadId` must be unique in the process for each
+ * load: a repeated one gives the evaluation of the earlier load.
  */
 export async function reloadWywOptions(
   overrides: PartialOptions,
-  configFile: string
+  configFile: string,
+  loadId: string
 ): Promise<StrictOptions> {
   if (!mayLoadAsEsModule(configFile)) {
     forgetWywConfigFile(configFile);
     return buildWywOptions(overrides, loadConfigFromFile(configFile));
   }
 
-  return buildWywOptions(overrides, await importConfigAgain(configFile));
+  return buildWywOptions(
+    overrides,
+    await importConfigAgain(configFile, loadId)
+  );
 }

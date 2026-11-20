@@ -29,9 +29,9 @@ const cssProcessor = join(
 
 const TIMEOUT = 120_000;
 
-// Edits the config, then a package.json, then opens another session, and
-// prints the class name of each output.
-const SCENARIO = `
+// Writes the project and the first config; defines \`open(engine)\`,
+// \`transformFile(session)\` and \`write(name, content)\`.
+const SETUP = `
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
@@ -69,10 +69,9 @@ const config = (slug) =>
 const configFile = join(root, 'wyw-in-js.config.mjs');
 write('wyw-in-js.config.mjs', config('first'));
 
-const engine = createHostEngine(
-  workers === '0' ? {} : { workers: Number(workers) }
-);
-const open = () =>
+const createEngine = () =>
+  createHostEngine(workers === '0' ? {} : { workers: Number(workers) });
+const open = (engine) =>
   createHostSession({
     bundler: {
       resolve: async ({ importer, specifier }) => {
@@ -90,19 +89,45 @@ const open = () =>
   });
 const file = { code, filename: join(root, 'slug.js') };
 const nameOf = (output) => /\\.([\\w-]+)\\s*\\{/.exec(output.css?.text ?? '')?.[1];
+const transformFile = async (session) => nameOf(await session.transform(file));
+`;
 
-const session = open();
-const names = [nameOf(await session.transform(file))];
+// Edits the config, then a package.json, then opens another session, and
+// prints the class name of each output.
+const ONE_ENGINE = `${SETUP}
+const engine = createEngine();
+const session = open(engine);
+const names = [await transformFile(session)];
 write('wyw-in-js.config.mjs', config('second'));
 session.invalidate([configFile]);
-names.push(nameOf(await session.transform(file)));
+names.push(await transformFile(session));
 write('package.json', '{ "name": "edited" }\\n');
 session.invalidate([join(root, 'package.json')]);
-names.push(nameOf(await session.transform(file)));
-const later = open();
-names.push(nameOf(await later.transform(file)));
+names.push(await transformFile(session));
+const later = open(engine);
+names.push(await transformFile(later));
 await Promise.all([session.close(), later.close()]);
 await engine.release();
+console.log(JSON.stringify(names));
+`;
+
+// Two engines in one process read the same config, each session after its
+// own invalidate, and print the class name of each output.
+const TWO_ENGINES = `${SETUP}
+const engines = [createEngine(), createEngine()];
+const [first, second] = engines.map(open);
+const names = [await transformFile(first)];
+write('wyw-in-js.config.mjs', config('second'));
+first.invalidate([configFile]);
+names.push(await transformFile(first));
+names.push(await transformFile(second));
+write('wyw-in-js.config.mjs', config('third'));
+second.invalidate([configFile]);
+names.push(await transformFile(second));
+first.invalidate([configFile]);
+names.push(await transformFile(first));
+await Promise.all([first.close(), second.close()]);
+await Promise.all(engines.map((engine) => engine.release()));
 console.log(JSON.stringify(names));
 `;
 
@@ -126,7 +151,8 @@ describe('an edited ES module config under Node', () => {
     writeFileSync(join(buildRoot, 'package.json'), '{ "type": "module" }\n');
 
     scratch = realpathSync(mkdtempSync(join(tmpdir(), 'wyw-host-session-')));
-    writeFileSync(join(scratch, 'scenario.mjs'), SCENARIO);
+    writeFileSync(join(scratch, 'one-engine.mjs'), ONE_ENGINE);
+    writeFileSync(join(scratch, 'two-engines.mjs'), TWO_ENGINES);
   });
 
   afterAll(() => {
@@ -134,35 +160,56 @@ describe('an edited ES module config under Node', () => {
     rmSync(scratch, { force: true, recursive: true });
   });
 
-  it.each([
+  // Runs a scenario in its own project and returns the names it printed.
+  const runScenario = (script: string, workers: string): unknown => {
+    const project = join(scratch, `${script}-${workers}`);
+    mkdirSync(project);
+    const run = spawnSync(
+      nodeBinary,
+      [
+        join(scratch, `${script}.mjs`),
+        join(buildRoot, 'esm', 'index.js'),
+        project,
+        cssProcessor,
+        workers,
+      ],
+      { encoding: 'utf8', timeout: TIMEOUT }
+    );
+    if (run.status !== 0) {
+      throw new Error(`scenario failed\n${run.stdout}\n${run.stderr}`);
+    }
+
+    const lines = run.stdout.trim().split('\n');
+    return JSON.parse(lines[lines.length - 1]);
+  };
+
+  const ENGINES = [
     { name: 'the JS engine', workers: '0' },
     { name: 'the worker pool', workers: '2' },
-  ])(
+  ];
+
+  it.each(ENGINES)(
     'stays edited on $name for later generations and sessions',
     ({ workers }) => {
-      const project = join(scratch, `project-${workers}`);
-      mkdirSync(project);
-      const run = spawnSync(
-        nodeBinary,
-        [
-          join(scratch, 'scenario.mjs'),
-          join(buildRoot, 'esm', 'index.js'),
-          project,
-          cssProcessor,
-          workers,
-        ],
-        { encoding: 'utf8', timeout: TIMEOUT }
-      );
-      if (run.status !== 0) {
-        throw new Error(`scenario failed\n${run.stdout}\n${run.stderr}`);
-      }
-
-      const lines = run.stdout.trim().split('\n');
-      expect(JSON.parse(lines[lines.length - 1])).toEqual([
+      expect(runScenario('one-engine', workers)).toEqual([
         'first-slugged',
         'second-slugged',
         'second-slugged',
         'second-slugged',
+      ]);
+    },
+    TIMEOUT
+  );
+
+  it.each(ENGINES)(
+    'gives each of two engines on $name the edited config',
+    ({ workers }) => {
+      expect(runScenario('two-engines', workers)).toEqual([
+        'first-slugged',
+        'second-slugged',
+        'second-slugged',
+        'third-slugged',
+        'third-slugged',
       ]);
     },
     TIMEOUT

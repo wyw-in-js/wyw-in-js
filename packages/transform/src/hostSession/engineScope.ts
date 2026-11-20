@@ -3,6 +3,8 @@
  * the bundler, the evaluation cache key, the transform cache and the registry
  * share. The in-process engine and the worker of the pool run the same code.
  */
+import { randomUUID } from 'node:crypto';
+
 import { isFeatureEnabled, mergeOxcResolverAlias } from '@wyw-in-js/shared';
 import type { OxcOptions, StrictOptions } from '@wyw-in-js/shared';
 
@@ -147,6 +149,11 @@ export const createEngineScope = ({
   const resolveKey = `${key}:resolve`;
   const loadKey = scope.load ? `${key}:load` : undefined;
   const cache = new TransformCacheCollection();
+  // Names each read of the config file in the process. Keys of sessions are
+  // unique only within one engine, and the runtime gives an earlier
+  // evaluation of an ES module config for a URL it has seen.
+  const loadLabel = randomUUID();
+  let loads = 0;
   let current: Generation | null = null;
   let next: Generation | null = null;
   let inFlight = 0;
@@ -164,10 +171,15 @@ export const createEngineScope = ({
     // runtime keep the first evaluation of an ES module config for the life
     // of the process, so a load through them can give a config older than
     // the one an earlier generation, or another session, read.
+    loads += 1;
     const options =
       source === null
         ? loadWywOptions(pluginOptions)
-        : await reloadWywOptions(pluginOptions, source);
+        : await reloadWywOptions(
+            pluginOptions,
+            source,
+            `${loadLabel}-${loads}`
+          );
 
     // In place: the loader keeps this object for `pluginOptions`, and
     // `transform()` reads the options of each call from there. The facts go
