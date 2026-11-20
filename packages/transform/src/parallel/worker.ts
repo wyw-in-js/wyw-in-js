@@ -119,8 +119,6 @@ const createEngineWorkerScope = (
   // A scope with a load capability stays on the calling thread.
   const host: EngineHost = {
     load: async () => undefined,
-    optionSources: (sources) =>
-      post({ scopeId, sources: [...sources], type: 'engineOptionSources' }),
     resolve: (callId, request) =>
       requestResolve((requestId) => ({
         callId,

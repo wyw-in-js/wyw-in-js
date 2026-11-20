@@ -124,7 +124,6 @@ export type WorkerToMainMessage =
       scopeId: number;
       type: 'engineWarning';
     }
-  | { scopeId: number; sources: string[]; type: 'engineOptionSources' }
   | {
       /** Set for a job of an engine scope. */
       engine?: EngineJobInfo;

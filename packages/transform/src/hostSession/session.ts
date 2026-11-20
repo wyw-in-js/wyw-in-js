@@ -8,7 +8,10 @@ import path from 'path';
 
 import { stripQueryAndHash, toNativeResolverAlias } from '@wyw-in-js/shared';
 
-import { searchPlaces } from '../transform/helpers/loadWywOptions';
+import {
+  getWywConfigSource,
+  searchPlaces,
+} from '../transform/helpers/loadWywOptions';
 
 import { createJsEngine } from './jsEngine';
 import { namesOf, projectResult, toMatchFiles } from './output';
@@ -83,11 +86,9 @@ export const createHostSession: CreateHostSession = <TContext>(
   // By the filename of the root as the bundler gave it, with its query.
   const roots = new Map<string, ReadonlySet<string>>();
   // Every config file the options of the session were read from. It only
-  // grows: an engine reports the files of each generation it builds, and a
-  // result the files of the generation it ran on, which may be an older one.
+  // grows: a result reports the files of the generation it ran on, which may
+  // be an older one.
   const optionSources = new Set<string>();
-  const addOptionSources = (sources: readonly string[]) =>
-    sources.forEach((source) => optionSources.add(source));
   let lastCallId = 0;
   // Only the context of the last settled call is kept, until `close()`.
   let lastSettled: { context: TContext } | null = null;
@@ -110,7 +111,6 @@ export const createHostSession: CreateHostSession = <TContext>(
   const host: EngineHost = {
     load: async (callId, request) =>
       bundler.load ? bundler.load(request, contextOf(callId)) : undefined,
-    optionSources: addOptionSources,
     resolve: async (callId, request) =>
       bundler.resolve(request, contextOf(callId)),
     warn: (callId, message) => {
@@ -140,13 +140,18 @@ export const createHostSession: CreateHostSession = <TContext>(
   };
   const engineSession = engine.open(scope, host);
 
-  const isGlobalInput = (file: string): boolean =>
-    namesOf(file).some(
+  const isGlobalInput = (file: string): boolean => {
+    // The config file the options name is known before any call succeeds, so
+    // fixing a config that broke the first call reaches every root.
+    const configSource = getWywConfigSource(scope.options);
+    return namesOf(file).some(
       (name) =>
         path.basename(name) === PACKAGE_JSON ||
+        name === configSource ||
         optionSources.has(name) ||
         isConfigSearchPlace(name)
     );
+  };
 
   const run = async (
     callId: number,
@@ -158,7 +163,7 @@ export const createHostSession: CreateHostSession = <TContext>(
         callId,
         file
       );
-      addOptionSources(sources);
+      sources.forEach((source) => optionSources.add(source));
       const output = await projectResult({
         file,
         resolve: async (specifier) =>

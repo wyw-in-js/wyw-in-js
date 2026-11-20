@@ -222,12 +222,6 @@ export type EngineScope = {
 /** Requests of the engine to the host; every argument is serializable. */
 export interface EngineHost {
   load(callId: number, request: HostLoadRequest): Promise<string | undefined>;
-  /**
-   * The config files that a new generation of the options is read from,
-   * reported before they are read: a call that fails still lets a change of
-   * them reach every root.
-   */
-  optionSources(sources: readonly string[]): void;
   resolve(callId: number, request: HostResolveRequest): Promise<string | null>;
   warn(callId: number | null, message: string): void;
 }
