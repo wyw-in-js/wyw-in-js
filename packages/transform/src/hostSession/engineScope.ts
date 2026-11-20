@@ -11,9 +11,9 @@ import { disposeEvalBroker } from '../eval/broker';
 import { transform } from '../transform';
 import { getEvalCacheKey } from '../transform/evalSession';
 import {
-  forgetWywConfigFile,
   getWywConfigSource,
   loadWywOptions,
+  reloadWywOptions,
 } from '../transform/helpers/loadWywOptions';
 import type { PartialOptions } from '../transform/helpers/loadWywOptions';
 
@@ -122,13 +122,15 @@ const unusedResolve = async (): Promise<string | null> => null;
 
 /**
  * Opens one scope. Options load on the first transform; a failure rejects
- * that call, and the next call tries again.
+ * that call and the calls that waited for the same load, and the next call
+ * tries again.
  *
  * A change of a global input (`invalidate` with `extent: 'all'`) makes the
- * next call build a new generation of the options. When its evaluation cache
- * key is the key of the current generation, it applies at once; otherwise it
- * waits until no call of the scope is in flight, so that a call nested in a
- * call in flight keeps the key of its parent.
+ * next call build a new generation of the options; calls that come while it
+ * is built wait for it. When its evaluation cache key is the key of the
+ * current generation, it applies at once; otherwise it waits until no call of
+ * the scope is in flight, so that a call nested in a call in flight keeps the
+ * key of its parent.
  */
 export const createEngineScope = ({
   host,
@@ -142,25 +144,16 @@ export const createEngineScope = ({
   const cache = new TransformCacheCollection();
   let current: Generation | null = null;
   let next: Generation | null = null;
-  let reload = false;
   let inFlight = 0;
+  // Changes of global inputs asked for, and the last one a generation saw.
+  let requested = 0;
+  let built = 0;
+  let building: Promise<void> | null = null;
+  let closed = false;
   // Global inputs invalidated since the last generation was built.
   const changedGlobals = new Set<string>();
 
-  // Forgets the config file of the options when a changed global input is
-  // that file, under any of its names, so that the loader reads it again.
-  const forgetChangedConfig = (source: string | null) => {
-    if (
-      source !== null &&
-      [...changedGlobals].some((file) => namesOf(file).includes(source))
-    ) {
-      forgetWywConfigFile(source);
-    }
-
-    changedGlobals.clear();
-  };
-
-  const buildGeneration = (): Generation => {
+  const buildGeneration = async (): Promise<Generation> => {
     // A new object each time: normalization is memoized by identity.
     const pluginOptions = pinPluginOptions(scope);
     const source = getWywConfigSource(pluginOptions);
@@ -169,13 +162,18 @@ export const createEngineScope = ({
     host.optionSources(optionSources);
     // Here, not in `invalidate`: reading a config again can throw, and the
     // call that builds the generation reports it; the next call tries again.
-    forgetChangedConfig(source);
+    const configChanged =
+      source !== null &&
+      [...changedGlobals].some((file) => namesOf(file).includes(source));
+    changedGlobals.clear();
     let options: StrictOptions;
     try {
-      options = loadWywOptions(pluginOptions);
+      options = configChanged
+        ? await reloadWywOptions(pluginOptions, source)
+        : loadWywOptions(pluginOptions);
     } catch (error) {
-      // Node keeps a failed evaluation of an ES module config, so the next
-      // generation reads that config as a changed one.
+      // The runtime keeps a failed evaluation of an ES module config, so the
+      // next generation reads that config again.
       if (source !== null) changedGlobals.add(source);
       throw error;
     }
@@ -202,16 +200,42 @@ export const createEngineScope = ({
     if (share) resetProcessorLookups(share);
   };
 
-  const generationForCall = (): Generation => {
-    if (current === null) {
-      current = buildGeneration();
-      reload = false;
-      return current;
+  const startBuild = async (): Promise<void> => {
+    const seen = requested;
+    const generation = await buildGeneration();
+    if (closed) {
+      forgetLookups(generation);
+      return;
     }
 
-    if (reload) {
-      next = buildGeneration();
-      reload = false;
+    built = seen;
+    if (current === null) {
+      current = generation;
+    } else {
+      next = generation;
+    }
+  };
+
+  // One build at a time; the calls that come meanwhile wait for it.
+  const waitForBuild = (): Promise<void> => {
+    if (building === null) {
+      building = startBuild().finally(() => {
+        building = null;
+      });
+    }
+
+    return building;
+  };
+
+  // Counts the call in flight in the same turn as it takes the generation.
+  const generationForCall = async (): Promise<Generation> => {
+    while (current === null || built < requested) {
+      if (closed) {
+        throw new Error(`[wyw-in-js] The engine session ${key} is closed`);
+      }
+
+      // eslint-disable-next-line no-await-in-loop
+      await waitForBuild();
     }
 
     if (next !== null && (next.salt === current.salt || inFlight === 0)) {
@@ -221,25 +245,24 @@ export const createEngineScope = ({
       cache.clear('all');
     }
 
+    inFlight += 1;
     return current;
   };
 
   const run = async (callId: number, file: HostFile): Promise<EngineResult> => {
-    const generation = generationForCall();
-    // With `globalCache` off, `transform()` keeps a cache and a runner of the
-    // call, so the file must not reach the runner of the scope.
-    const evalBrokerScope =
-      runner !== null &&
-      isFeatureEnabled(
-        generation.options.features,
-        'globalCache',
-        file.filename
-      )
-        ? runner
-        : null;
-
-    inFlight += 1;
+    const generation = await generationForCall();
     try {
+      // With `globalCache` off, `transform()` keeps a cache and a runner of
+      // the call, so the file must not reach the runner of the scope.
+      const evalBrokerScope =
+        runner !== null &&
+        isFeatureEnabled(
+          generation.options.features,
+          'globalCache',
+          file.filename
+        )
+          ? runner
+          : null;
       const result = await transform(
         {
           asyncResolveKey: resolveKey,
@@ -294,6 +317,7 @@ export const createEngineScope = ({
       disposeOwnRunner();
       forgetLookups(current);
       forgetLookups(next);
+      closed = true;
       current = null;
       next = null;
       changedGlobals.clear();
@@ -304,7 +328,7 @@ export const createEngineScope = ({
       files.forEach((file) => cache.invalidateForFile(file));
       if (extent === 'all') {
         files.forEach((file) => changedGlobals.add(file));
-        reload = true;
+        requested += 1;
         next = null;
       }
     },
