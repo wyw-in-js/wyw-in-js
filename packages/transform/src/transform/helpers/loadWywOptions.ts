@@ -661,11 +661,12 @@ export function loadWywOptions(
 }
 
 /**
- * Loads the options as `loadWywOptions(overrides)` does, after `configFile`,
- * the path on disk that it reads, changed. A config that may be an ES module
- * is evaluated again under a new URL, also after its last evaluation failed;
- * any other config is read again by the loader. The options are remembered
- * for `overrides` as `loadWywOptions` remembers them.
+ * Loads the options as `loadWywOptions(overrides)` does, but reads
+ * `configFile`, the path on disk that it reads, from disk again, whatever the
+ * loaders remember of it. A config that may be an ES module is evaluated
+ * again under a new URL, also after its last evaluation failed; any other
+ * config is read again by the loader. The options are remembered for
+ * `overrides` as `loadWywOptions` remembers them.
  */
 export async function reloadWywOptions(
   overrides: PartialOptions,

@@ -17,7 +17,6 @@ import {
 } from '../transform/helpers/loadWywOptions';
 import type { PartialOptions } from '../transform/helpers/loadWywOptions';
 
-import { namesOf } from './output';
 import {
   attachRegistryShare,
   readRegistryShare,
@@ -156,33 +155,19 @@ export const createEngineScope = ({
   let built = 0;
   let building: Promise<void> | null = null;
   let closed = false;
-  // Global inputs invalidated since the last generation was built.
-  const changedGlobals = new Set<string>();
 
   const buildGeneration = async (): Promise<Generation> => {
     // A new object each time: normalization is memoized by identity.
     const pluginOptions = pluginOptionsOf(scope.options);
     const source = getWywConfigSource(pluginOptions);
-    const optionSources = source === null ? [] : [source];
-    // Before the options load and the pipeline runs, either of which can fail.
-    host.optionSources(optionSources);
-    // Here, not in `invalidate`: reading a config again can throw, and the
-    // call that builds the generation reports it; the next call tries again.
-    const configChanged =
-      source !== null &&
-      [...changedGlobals].some((file) => namesOf(file).includes(source));
-    changedGlobals.clear();
-    let options: StrictOptions;
-    try {
-      options = configChanged
-        ? await reloadWywOptions(pluginOptions, source)
-        : loadWywOptions(pluginOptions);
-    } catch (error) {
-      // The runtime keeps a failed evaluation of an ES module config, so the
-      // next generation reads that config again.
-      if (source !== null) changedGlobals.add(source);
-      throw error;
-    }
+    // Every generation reads its config file from disk. The loaders of the
+    // runtime keep the first evaluation of an ES module config for the life
+    // of the process, so a load through them can give a config older than
+    // the one an earlier generation, or another session, read.
+    const options =
+      source === null
+        ? loadWywOptions(pluginOptions)
+        : await reloadWywOptions(pluginOptions, source);
 
     // In place: the loader keeps this object for `pluginOptions`, and
     // `transform()` reads the options of each call from there. The facts go
@@ -192,7 +177,7 @@ export const createEngineScope = ({
 
     return {
       options,
-      optionSources,
+      optionSources: source === null ? [] : [source],
       pluginOptions,
       salt: getEvalCacheKey(
         options,
@@ -330,14 +315,12 @@ export const createEngineScope = ({
       closed = true;
       current = null;
       next = null;
-      changedGlobals.clear();
       cache.clear('all');
     },
     disposeOwnRunner,
     invalidate(files, extent) {
       files.forEach((file) => cache.invalidateForFile(file));
       if (extent === 'all') {
-        files.forEach((file) => changedGlobals.add(file));
         requested += 1;
         next = null;
       }
