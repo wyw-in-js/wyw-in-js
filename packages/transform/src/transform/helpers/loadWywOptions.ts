@@ -499,8 +499,16 @@ const importConfigAgain = async (
   configImports += 1;
   const fileUrl = pathToFileURL(configFile).href;
   const importUrl = `${fileUrl}?wyw-generation=${configImports}`;
+  // The import() stays out of the text of this module: tools that parse the
+  // module warn about an import of a computed URL, as webpack does in every
+  // Next.js build that tracks the dependencies of its config.
+  // eslint-disable-next-line no-new-func, @typescript-eslint/no-implied-eval
+  const importModule = new Function(
+    'specifier',
+    'return import(specifier)'
+  ) as (specifier: string) => Promise<{ default?: unknown }>;
   try {
-    const namespace = (await import(importUrl)) as { default?: unknown };
+    const namespace = await importModule(importUrl);
     return normalizeLoadedConfig(namespace.default ?? namespace);
   } catch (error) {
     throw namingConfigFile(error, configFile, fileUrl, importUrl);
