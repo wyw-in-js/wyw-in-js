@@ -102,10 +102,6 @@ const isOutOfMemory = (error: Error): boolean =>
 export const getDefaultTransformWorkerCount = (): number =>
   Math.max(1, Math.min(4, availableParallelism() - 1));
 
-/**
- * @experimental Intended for wyw-in-js integrations; may change in a minor
- * release.
- */
 // Answers a resolve request of a worker with what `resolve` gives, or with
 // an error when the scope that resolves `specifier` is disposed.
 const answerResolve = (
@@ -142,6 +138,10 @@ const answerResolve = (
     );
 };
 
+/**
+ * @experimental Intended for wyw-in-js integrations; may change in a minor
+ * release.
+ */
 export class TransformWorkerPool {
   // A file always returns to the worker that transformed it first, so its
   // dependencies stay warm in that worker's cache across rebuilds.
