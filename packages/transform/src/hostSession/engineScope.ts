@@ -30,7 +30,7 @@ type Generation = {
   /** Read from the pinned object, so that normalization is memoized. */
   options: StrictOptions;
   optionSources: readonly string[];
-  /** The plugin options as pinned; `transform()` normalizes them again. */
+  /** The plugin options as pinned; `transform()` finds `options` by them. */
   pluginOptions: PartialOptions;
   salt: string;
 };
@@ -59,33 +59,41 @@ export interface EngineScopeState {
 const hasItems = (value: unknown): boolean =>
   Array.isArray(value) && value.length > 0;
 
+/** The plugin options of a scope, without what belongs to the transform. */
+const pluginOptionsOf = ({
+  keepComments,
+  prefixer,
+  preprocessor,
+  ...pluginOptions
+}: EngineScope['options']): PartialOptions => pluginOptions;
+
 /**
- * The plugin options of a scope with the facts of its bundler, which only
- * fill what the user left unset: the alias goes under the user's alias,
- * conditions and extensions go to the native resolver when it has none, and
- * globals extend the evaluation context before `overrideContext` sees it.
+ * What the facts of the bundler change in the options of a scope, as loaded
+ * from the plugin options and the config file. The facts only fill what the
+ * user left unset there: the alias goes under the user's alias, conditions
+ * and extensions go to the native resolver when it has none, and globals
+ * extend the evaluation context before the user's `overrideContext` sees it.
  */
-export const pinPluginOptions = ({
-  alias,
-  conditions,
-  extensions,
-  globals,
-  options,
-}: Pick<
-  EngineScope,
-  'alias' | 'conditions' | 'extensions' | 'globals' | 'options'
->): PartialOptions => {
-  // These belong to the transform, not to the plugin options.
-  const { keepComments, prefixer, preprocessor, ...pluginOptions } = options;
+const bundlerFactsOf = (
+  options: StrictOptions,
+  {
+    alias,
+    conditions,
+    extensions,
+    globals,
+  }: Pick<EngineScope, 'alias' | 'conditions' | 'extensions' | 'globals'>
+): Partial<Pick<StrictOptions, 'oxcOptions' | 'overrideContext'>> => {
+  const facts: Partial<Pick<StrictOptions, 'oxcOptions' | 'overrideContext'>> =
+    {};
   let oxcOptions: OxcOptions | undefined = alias
-    ? mergeOxcResolverAlias(pluginOptions.oxcOptions, alias)
-    : pluginOptions.oxcOptions;
+    ? mergeOxcResolverAlias(options.oxcOptions, alias)
+    : options.oxcOptions;
 
   const resolver = { ...oxcOptions?.resolver };
   let resolverChanged = false;
   if (
     conditions?.length &&
-    !hasItems(pluginOptions.conditionNames) &&
+    !hasItems(options.conditionNames) &&
     !hasItems(resolver.conditionNames)
   ) {
     resolver.conditionNames = [...conditions];
@@ -98,15 +106,13 @@ export const pinPluginOptions = ({
   if (resolverChanged) {
     oxcOptions = { ...oxcOptions, resolver };
   }
-
-  const pinned: PartialOptions = { ...pluginOptions };
-  if (oxcOptions !== undefined) {
-    pinned.oxcOptions = oxcOptions;
+  if (oxcOptions !== undefined && oxcOptions !== options.oxcOptions) {
+    facts.oxcOptions = oxcOptions;
   }
 
   if (globals) {
-    const { overrideContext } = pluginOptions;
-    pinned.overrideContext = (context, filename) => {
+    const { overrideContext } = options;
+    facts.overrideContext = (context, filename) => {
       const withGlobals = { ...context, ...globals };
       return overrideContext
         ? overrideContext(withGlobals, filename)
@@ -114,7 +120,7 @@ export const pinPluginOptions = ({
     };
   }
 
-  return pinned;
+  return facts;
 };
 
 // The keys are given, so the key never reads the identity of the resolver.
@@ -155,7 +161,7 @@ export const createEngineScope = ({
 
   const buildGeneration = async (): Promise<Generation> => {
     // A new object each time: normalization is memoized by identity.
-    const pluginOptions = pinPluginOptions(scope);
+    const pluginOptions = pluginOptionsOf(scope.options);
     const source = getWywConfigSource(pluginOptions);
     const optionSources = source === null ? [] : [source];
     // Before the options load and the pipeline runs, either of which can fail.
@@ -178,6 +184,10 @@ export const createEngineScope = ({
       throw error;
     }
 
+    // In place: the loader keeps this object for `pluginOptions`, and
+    // `transform()` reads the options of each call from there. The facts go
+    // after the config file, so that the file cannot drop them.
+    Object.assign(options, bundlerFactsOf(options, scope));
     attachRegistryShare(options);
 
     return {
