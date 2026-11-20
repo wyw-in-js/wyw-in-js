@@ -106,6 +106,42 @@ export const getDefaultTransformWorkerCount = (): number =>
  * @experimental Intended for wyw-in-js integrations; may change in a minor
  * release.
  */
+// Answers a resolve request of a worker with what `resolve` gives, or with
+// an error when the scope that resolves `specifier` is disposed.
+const answerResolve = (
+  worker: Worker,
+  requestId: number,
+  specifier: string,
+  resolve: (() => Promise<string | null> | string | null) | undefined
+): void => {
+  const reply = (
+    payload: Pick<
+      Extract<MainToWorkerMessage, { type: 'resolved' }>,
+      'error' | 'result'
+    >
+  ) =>
+    worker.postMessage({
+      ...payload,
+      requestId,
+      type: 'resolved',
+    } satisfies MainToWorkerMessage);
+  if (!resolve) {
+    reply({
+      error: serializeError(
+        new Error(`Cannot resolve ${specifier}: the scope is disposed`)
+      ),
+    });
+    return;
+  }
+
+  Promise.resolve()
+    .then(resolve)
+    .then(
+      (result) => reply({ result }),
+      (error) => reply({ error: serializeError(error) })
+    );
+};
+
 export class TransformWorkerPool {
   // A file always returns to the worker that transformed it first, so its
   // dependencies stay warm in that worker's cache across rebuilds.
@@ -405,69 +441,26 @@ export class TransformWorkerPool {
   #onMessage(slot: WorkerSlot, message: WorkerToMainMessage) {
     switch (message.type) {
       case 'resolve': {
-        const reply = (
-          payload: Pick<
-            Extract<MainToWorkerMessage, { type: 'resolved' }>,
-            'error' | 'result'
-          >
-        ) =>
-          slot.worker.postMessage({
-            ...payload,
-            requestId: message.requestId,
-            type: 'resolved',
-          } satisfies MainToWorkerMessage);
         const asyncResolve =
           this.#jobs.get(message.jobId)?.job?.asyncResolve ??
           this.#resolvers.get(message.scopeId);
-        if (!asyncResolve) {
-          reply({
-            error: serializeError(
-              new Error(`Cannot resolve ${message.what}: the scope is disposed`)
-            ),
-          });
-          return;
-        }
-
-        Promise.resolve()
-          .then(() =>
-            asyncResolve(message.what, message.importer, message.stack)
-          )
-          .then(
-            (result) => reply({ result }),
-            (error) => reply({ error: serializeError(error) })
-          );
+        answerResolve(
+          slot.worker,
+          message.requestId,
+          message.what,
+          asyncResolve &&
+            (() => asyncResolve(message.what, message.importer, message.stack))
+        );
         return;
       }
       case 'engineResolve': {
         const host = this.#engineHosts.get(message.scopeId);
-        const reply = (
-          payload: Pick<
-            Extract<MainToWorkerMessage, { type: 'resolved' }>,
-            'error' | 'result'
-          >
-        ) =>
-          slot.worker.postMessage({
-            ...payload,
-            requestId: message.requestId,
-            type: 'resolved',
-          } satisfies MainToWorkerMessage);
-        if (!host) {
-          reply({
-            error: serializeError(
-              new Error(
-                `Cannot resolve ${message.request.specifier}: the scope is disposed`
-              )
-            ),
-          });
-          return;
-        }
-
-        Promise.resolve()
-          .then(() => host.resolve(message.callId, message.request))
-          .then(
-            (result) => reply({ result }),
-            (error) => reply({ error: serializeError(error) })
-          );
+        answerResolve(
+          slot.worker,
+          message.requestId,
+          message.request.specifier,
+          host && (() => host.resolve(message.callId, message.request))
+        );
         return;
       }
       case 'warning': {
