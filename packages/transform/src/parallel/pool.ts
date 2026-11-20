@@ -4,9 +4,11 @@ import { Worker } from 'node:worker_threads';
 
 import type { RawSourceMap } from 'source-map';
 
+import type { EngineHost, EngineResult, HostFile } from '../hostSession/types';
 import type { Result } from '../types';
 import { MAX_PARSE_CACHE_ENTRIES } from '../utils/parseOxc';
 import type {
+  EngineScopeData,
   MainToWorkerMessage,
   TransformWorkerData,
   TransformWorkerScopeConfig,
@@ -44,13 +46,25 @@ export type TransformWorkerJob = {
   outputFilename?: string;
 };
 
-type TransformMessage = Extract<MainToWorkerMessage, { type: 'transform' }>;
+type JobMessage = Extract<
+  MainToWorkerMessage,
+  { type: 'engineTransform' | 'transform' }
+>;
+
+type DoneMessage = Extract<WorkerToMainMessage, { type: 'done' }>;
+
+/** The message that opens a scope; a replacement worker gets it again. */
+type ScopeMessage = Extract<
+  MainToWorkerMessage,
+  { type: 'engineScope' | 'scope' }
+>;
 
 type JobState = {
-  job: TransformWorkerJob;
-  message: TransformMessage;
+  /** `null` for a job of an engine scope: its host answers its requests. */
+  job: TransformWorkerJob | null;
+  message: JobMessage;
   reject: (error: Error) => void;
-  resolve: (result: Result) => void;
+  resolve: (done: DoneMessage) => void;
   slot: WorkerSlot;
 };
 
@@ -88,6 +102,42 @@ const isOutOfMemory = (error: Error): boolean =>
 export const getDefaultTransformWorkerCount = (): number =>
   Math.max(1, Math.min(4, availableParallelism() - 1));
 
+// Answers a resolve request of a worker with what `resolve` gives, or with
+// an error when the scope that resolves `specifier` is disposed.
+const answerResolve = (
+  worker: Worker,
+  requestId: number,
+  specifier: string,
+  resolve: (() => Promise<string | null> | string | null) | undefined
+): void => {
+  const reply = (
+    payload: Pick<
+      Extract<MainToWorkerMessage, { type: 'resolved' }>,
+      'error' | 'result'
+    >
+  ) =>
+    worker.postMessage({
+      ...payload,
+      requestId,
+      type: 'resolved',
+    } satisfies MainToWorkerMessage);
+  if (!resolve) {
+    reply({
+      error: serializeError(
+        new Error(`Cannot resolve ${specifier}: the scope is disposed`)
+      ),
+    });
+    return;
+  }
+
+  Promise.resolve()
+    .then(resolve)
+    .then(
+      (result) => reply({ result }),
+      (error) => reply({ error: serializeError(error) })
+    );
+};
+
 /**
  * @experimental Intended for wyw-in-js integrations; may change in a minor
  * release.
@@ -103,7 +153,10 @@ export class TransformWorkerPool {
   // requests fall back to the latest resolver of the same scope.
   readonly #resolvers = new Map<number, AsyncResolve>();
 
-  readonly #scopes = new Map<number, TransformWorkerScopeConfig>();
+  readonly #scopes = new Map<number, ScopeMessage>();
+
+  // The host halves of the engine scopes, which answer their requests.
+  readonly #engineHosts = new Map<number, EngineHost>();
 
   readonly #parseCacheEntries: number;
 
@@ -148,24 +201,33 @@ export class TransformWorkerPool {
     this.#assertNotDisposed();
     this.#lastScopeId += 1;
     const scopeId = this.#lastScopeId;
-    this.#scopes.set(scopeId, config);
-    this.#broadcast({ config, scopeId, type: 'scope' });
+    this.#openScope({ config, scopeId, type: 'scope' });
     return new TransformWorkerScope(this, scopeId);
+  }
+
+  /**
+   * Opens the engine half of a host session in every worker; `host` answers
+   * the requests of its jobs on this thread. Returns the id of the scope.
+   *
+   * @internal
+   */
+  public createEngineScope(
+    key: string,
+    scope: EngineScopeData,
+    host: EngineHost
+  ): number {
+    this.#assertNotDisposed();
+    this.#lastScopeId += 1;
+    const scopeId = this.#lastScopeId;
+    this.#engineHosts.set(scopeId, host);
+    this.#openScope({ key, scope, scopeId, type: 'engineScope' });
+    return scopeId;
   }
 
   /** @internal */
   public runJob(scopeId: number, job: TransformWorkerJob): Promise<Result> {
-    this.#assertNotDisposed();
-    if (this.#broken) {
-      return Promise.reject(this.#broken);
-    }
-
-    this.#lastJobId += 1;
-    const jobId = this.#lastJobId;
-    const slot = this.#pickSlot(job.filename);
     this.#resolvers.set(scopeId, job.asyncResolve);
-
-    const message: TransformMessage = {
+    return this.#runMessage(job.filename, job, (jobId) => ({
       code: job.code,
       filename: job.filename,
       inputSourceMap: job.inputSourceMap,
@@ -173,27 +235,47 @@ export class TransformWorkerPool {
       outputFilename: job.outputFilename,
       scopeId,
       type: 'transform',
-    };
+    })).then((done) => done.result!);
+  }
 
-    return new Promise<Result>((resolve, reject) => {
-      this.#jobs.set(jobId, { job, message, reject, resolve, slot });
-      slot.inFlight += 1;
-      if (slot.inFlight === 1) slot.worker.ref();
-      slot.worker.postMessage(message);
-    });
+  /** @internal */
+  public runEngineJob(
+    scopeId: number,
+    callId: number,
+    file: HostFile
+  ): Promise<EngineResult> {
+    return this.#runMessage(file.filename, null, (jobId) => ({
+      callId,
+      file,
+      jobId,
+      scopeId,
+      type: 'engineTransform',
+    })).then((done) => ({
+      optionSources: done.engine?.optionSources ?? [],
+      result: done.result!,
+      salt: done.engine?.salt ?? '',
+    }));
   }
 
   /** @internal */
   public notifyScope(
     message: Extract<
       MainToWorkerMessage,
-      { type: 'clear' | 'disposeEvalBroker' | 'disposeScope' | 'invalidate' }
+      {
+        type:
+          | 'clear'
+          | 'disposeEvalBroker'
+          | 'disposeScope'
+          | 'engineInvalidate'
+          | 'invalidate';
+      }
     >
   ): void {
     if (this.#disposed) return;
     if (message.type === 'disposeScope') {
       this.#scopes.delete(message.scopeId);
       this.#resolvers.delete(message.scopeId);
+      this.#engineHosts.delete(message.scopeId);
     }
     this.#broadcast(message);
   }
@@ -229,6 +311,7 @@ export class TransformWorkerPool {
 
     this.#scopes.clear();
     this.#resolvers.clear();
+    this.#engineHosts.clear();
     this.#assignments.clear();
     await Promise.all(
       this.#slots.map(({ exited, worker }) =>
@@ -254,6 +337,34 @@ export class TransformWorkerPool {
             })
       )
     );
+  }
+
+  #openScope(message: ScopeMessage) {
+    this.#scopes.set(message.scopeId, message);
+    this.#broadcast(message);
+  }
+
+  #runMessage(
+    filename: string,
+    job: TransformWorkerJob | null,
+    createMessage: (jobId: number) => JobMessage
+  ): Promise<DoneMessage> {
+    this.#assertNotDisposed();
+    if (this.#broken) {
+      return Promise.reject(this.#broken);
+    }
+
+    this.#lastJobId += 1;
+    const jobId = this.#lastJobId;
+    const slot = this.#pickSlot(filename);
+    const message = createMessage(jobId);
+
+    return new Promise<DoneMessage>((resolve, reject) => {
+      this.#jobs.set(jobId, { job, message, reject, resolve, slot });
+      slot.inFlight += 1;
+      if (slot.inFlight === 1) slot.worker.ref();
+      slot.worker.postMessage(message);
+    });
   }
 
   #assertNotDisposed() {
@@ -314,13 +425,7 @@ export class TransformWorkerPool {
         );
       }
     });
-    this.#scopes.forEach((config, scopeId) =>
-      worker.postMessage({
-        config,
-        scopeId,
-        type: 'scope',
-      } satisfies MainToWorkerMessage)
-    );
+    this.#scopes.forEach((message) => worker.postMessage(message));
     return slot;
   }
 
@@ -336,42 +441,38 @@ export class TransformWorkerPool {
   #onMessage(slot: WorkerSlot, message: WorkerToMainMessage) {
     switch (message.type) {
       case 'resolve': {
-        const reply = (
-          payload: Pick<
-            Extract<MainToWorkerMessage, { type: 'resolved' }>,
-            'error' | 'result'
-          >
-        ) =>
-          slot.worker.postMessage({
-            ...payload,
-            requestId: message.requestId,
-            type: 'resolved',
-          } satisfies MainToWorkerMessage);
         const asyncResolve =
-          this.#jobs.get(message.jobId)?.job.asyncResolve ??
+          this.#jobs.get(message.jobId)?.job?.asyncResolve ??
           this.#resolvers.get(message.scopeId);
-        if (!asyncResolve) {
-          reply({
-            error: serializeError(
-              new Error(`Cannot resolve ${message.what}: the scope is disposed`)
-            ),
-          });
-          return;
-        }
-
-        Promise.resolve()
-          .then(() =>
-            asyncResolve(message.what, message.importer, message.stack)
-          )
-          .then(
-            (result) => reply({ result }),
-            (error) => reply({ error: serializeError(error) })
-          );
+        answerResolve(
+          slot.worker,
+          message.requestId,
+          message.what,
+          asyncResolve &&
+            (() => asyncResolve(message.what, message.importer, message.stack))
+        );
+        return;
+      }
+      case 'engineResolve': {
+        const host = this.#engineHosts.get(message.scopeId);
+        answerResolve(
+          slot.worker,
+          message.requestId,
+          message.request.specifier,
+          host && (() => host.resolve(message.callId, message.request))
+        );
         return;
       }
       case 'warning': {
         const state = this.#jobs.get(message.jobId);
-        if (state?.job.emitWarning) state.job.emitWarning(message.message);
+        if (state?.job?.emitWarning) state.job.emitWarning(message.message);
+        // eslint-disable-next-line no-console
+        else console.warn(message.message);
+        return;
+      }
+      case 'engineWarning': {
+        const host = this.#engineHosts.get(message.scopeId);
+        if (host) host.warn(message.callId, message.message);
         // eslint-disable-next-line no-console
         else console.warn(message.message);
         return;
@@ -380,7 +481,7 @@ export class TransformWorkerPool {
         const state = this.#finishJob(message.jobId);
         if (!state) return;
         if (message.error) state.reject(deserializeError(message.error));
-        else state.resolve(message.result!);
+        else state.resolve(message);
         break;
       }
       case 'ready':

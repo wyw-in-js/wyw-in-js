@@ -7,6 +7,8 @@ import type { TagSource } from '@wyw-in-js/processor-utils';
 import { findPackageJSON, syncResolve } from '@wyw-in-js/shared';
 import type { StrictOptions, TagResolverMeta } from '@wyw-in-js/shared';
 
+import { readRegistryShare } from '../hostSession/registryShare';
+
 import type { ProcessorManifest } from './manifest';
 import { resolveProcessorReference } from './manifest';
 
@@ -20,7 +22,7 @@ export type ProcessorClass = new (
 // installed for different importers declare their tags independently.
 const definedTagsCache = new Map<string, Record<string, string> | undefined>();
 const resolvedTagResolverSourceCache = new Map<string, string | undefined>();
-type ProcessorLookupValue = {
+export type ProcessorLookupValue = {
   manifest: ProcessorManifest | null;
   processor: ProcessorClass | null;
 };
@@ -35,6 +37,28 @@ const tagResolverProcessorLookupCache = new WeakMap<
   NonNullable<StrictOptions['tagResolver']>,
   Map<string, ProcessorLookupValue>
 >();
+
+/**
+ * The caches of one owner of processor lookups: a host session keeps its own
+ * in the registry share of its options, everything else uses the caches of
+ * the process.
+ */
+export type ProcessorLookupCaches = {
+  definedTags: Map<string, Record<string, string> | undefined>;
+  packageProcessors: Map<string, ProcessorLookupValue>;
+  resolvedTagResolverSources: Map<string, string | undefined>;
+  tagResolverProcessors: WeakMap<
+    NonNullable<StrictOptions['tagResolver']>,
+    Map<string, ProcessorLookupValue>
+  >;
+};
+
+const processLookups: ProcessorLookupCaches = {
+  definedTags: definedTagsCache,
+  packageProcessors: packageProcessorLookupCache,
+  resolvedTagResolverSources: resolvedTagResolverSourceCache,
+  tagResolverProcessors: tagResolverProcessorLookupCache,
+};
 
 const createTagResolverLookupCacheKey = (
   source: string,
@@ -76,19 +100,21 @@ const isPackageLookupCandidate = (source: string): boolean => {
 };
 
 const getTagResolverLookupCache = (
+  lookups: ProcessorLookupCaches,
   tagResolver: NonNullable<StrictOptions['tagResolver']>
 ): Map<string, ProcessorLookupValue> => {
-  const existing = tagResolverProcessorLookupCache.get(tagResolver);
+  const existing = lookups.tagResolverProcessors.get(tagResolver);
   if (existing) {
     return existing;
   }
 
   const created = new Map<string, ProcessorLookupValue>();
-  tagResolverProcessorLookupCache.set(tagResolver, created);
+  lookups.tagResolverProcessors.set(tagResolver, created);
   return created;
 };
 
 const getResolvedTagResolverSource = (
+  lookups: ProcessorLookupCaches,
   source: string,
   sourceFile: string | null | undefined
 ): string | undefined => {
@@ -97,21 +123,23 @@ const getResolvedTagResolverSource = (
   }
 
   const key = `${sourceFile}\0${source}`;
-  if (resolvedTagResolverSourceCache.has(key)) {
-    return resolvedTagResolverSourceCache.get(key);
+  const cache = lookups.resolvedTagResolverSources;
+  if (cache.has(key)) {
+    return cache.get(key);
   }
 
   try {
     const resolved = syncResolve(source, sourceFile, []);
-    resolvedTagResolverSourceCache.set(key, resolved);
+    cache.set(key, resolved);
     return resolved;
   } catch {
-    resolvedTagResolverSourceCache.set(key, undefined);
+    cache.set(key, undefined);
     return undefined;
   }
 };
 
 const getDefinedTagsFromPackage = (
+  lookups: ProcessorLookupCaches,
   pkgName: string,
   filename: string | null | undefined
 ): Record<string, string> | undefined => {
@@ -120,8 +148,8 @@ const getDefinedTagsFromPackage = (
     return undefined;
   }
 
-  if (definedTagsCache.has(packageJSONPath)) {
-    return definedTagsCache.get(packageJSONPath);
+  if (lookups.definedTags.has(packageJSONPath)) {
+    return lookups.definedTags.get(packageJSONPath);
   }
 
   const packageDir = dirname(packageJSONPath);
@@ -141,7 +169,7 @@ const getDefinedTagsFromPackage = (
       )
     : undefined;
 
-  definedTagsCache.set(packageJSONPath, normalizedTags);
+  lookups.definedTags.set(packageJSONPath, normalizedTags);
 
   return normalizedTags;
 };
@@ -250,10 +278,15 @@ const getProcessorFromFile = (
 };
 
 const getProcessorFromPackage = (
+  lookups: ProcessorLookupCaches,
   tagSource: TagSource,
   filename: string | null | undefined
 ): ProcessorLookupValue => {
-  const definedTags = getDefinedTagsFromPackage(tagSource.source, filename);
+  const definedTags = getDefinedTagsFromPackage(
+    lookups,
+    tagSource.source,
+    filename
+  );
   const processorPath = definedTags?.[tagSource.imported];
   if (!processorPath) {
     return NO_PROCESSOR;
@@ -268,6 +301,8 @@ export const getProcessorForImport = (
   options: Pick<StrictOptions, 'tagResolver'>
 ): [ProcessorClass | null, TagSource, ProcessorManifest | null] => {
   const { tagResolver } = options;
+  const lookups =
+    readRegistryShare(options)?.processorLookups ?? processLookups;
   const packageLookupCandidate = isPackageLookupCandidate(source);
 
   if (!tagResolver && !packageLookupCandidate) {
@@ -278,8 +313,8 @@ export const getProcessorForImport = (
     ? createTagResolverLookupCacheKey(source, imported, filename)
     : createPackageLookupCacheKey(source, imported, filename);
   const lookupCache = tagResolver
-    ? getTagResolverLookupCache(tagResolver)
-    : packageProcessorLookupCache;
+    ? getTagResolverLookupCache(lookups, tagResolver)
+    : lookups.packageProcessors;
 
   if (lookupCache.has(cacheKey)) {
     const cached = lookupCache.get(cacheKey);
@@ -294,7 +329,7 @@ export const getProcessorForImport = (
   if (tagResolver) {
     const tagResolverMeta: TagResolverMeta = {
       sourceFile: filename,
-      resolvedSource: getResolvedTagResolverSource(source, filename),
+      resolvedSource: getResolvedTagResolverSource(lookups, source, filename),
     };
 
     customFile = tagResolver(source, imported, tagResolverMeta);
@@ -303,7 +338,11 @@ export const getProcessorForImport = (
   if (customFile) {
     lookupValue = getProcessorFromFile(customFile, { imported, source });
   } else if (packageLookupCandidate) {
-    lookupValue = getProcessorFromPackage({ imported, source }, filename);
+    lookupValue = getProcessorFromPackage(
+      lookups,
+      { imported, source },
+      filename
+    );
   }
 
   lookupCache.set(cacheKey, lookupValue);
