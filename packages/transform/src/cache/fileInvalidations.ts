@@ -1,4 +1,4 @@
-import { stripQueryAndHash } from '../utils/parseRequest';
+import { stripQueryAndHash } from '@wyw-in-js/shared';
 
 /** Invalidations of files, and which of them consumers have already seen. */
 export class FileInvalidations {

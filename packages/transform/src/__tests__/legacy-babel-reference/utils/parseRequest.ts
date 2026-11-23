@@ -1,2 +1,1 @@
-export * from '../../../utils/parseRequest';
-
+export { stripQueryAndHash } from '@wyw-in-js/shared';

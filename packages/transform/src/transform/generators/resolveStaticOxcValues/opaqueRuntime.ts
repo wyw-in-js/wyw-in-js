@@ -4,9 +4,10 @@ import { dirname, isAbsolute, resolve as resolvePath } from 'path';
 
 import type { Expression, Node, Program } from 'oxc-parser';
 
+import { stripQueryAndHash } from '@wyw-in-js/shared';
+
 import { oxcShaker } from '../../../shaker';
 import { getOxcNodeChildren } from '../../../utils/oxc/ast';
-import { stripQueryAndHash } from '../../../utils/parseRequest';
 import type { ITransformAction, SyncScenarioFor } from '../../types';
 import { hashStaticContent, getStaticMetadataPreevalResult } from './cache';
 import { resolveDependency } from './dependencies';

@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'async_hooks';
 import * as vm from 'vm';
 
-import type { Debugger } from '@wyw-in-js/shared';
+import { stripQueryAndHash, type Debugger } from '@wyw-in-js/shared';
 
 import type { TransformCacheCollection, TransformCacheEpoch } from './cache';
 import { BaseEntrypoint } from './transform/BaseEntrypoint';
@@ -11,7 +11,6 @@ import { AbortError } from './transform/actions/AbortError';
 import { isCacheEpochAbortedError } from './transform/actions/CacheEpochAbortedError';
 import { isUnprocessedEntrypointError } from './transform/actions/UnprocessedEntrypointError';
 import type { Services } from './transform/types';
-import { stripQueryAndHash } from './utils/parseRequest';
 
 const NOOP = () => {};
 const TROUBLESHOOTING_URL = 'https://wyw-in-js.dev/troubleshooting';

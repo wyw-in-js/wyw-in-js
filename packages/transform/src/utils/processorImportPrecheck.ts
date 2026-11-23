@@ -2,7 +2,7 @@ import { extname } from 'path';
 
 import type { ImportDeclaration, Program } from 'oxc-parser';
 
-import type { StrictOptions } from '@wyw-in-js/shared';
+import { stripQueryAndHash, type StrictOptions } from '@wyw-in-js/shared';
 
 import { getProcessorForImport } from '../processors/processorLookup';
 import { oxcShaker } from '../shaker';
@@ -16,7 +16,6 @@ import {
   isTypeOnlyImport,
   isTypeOnlyImportSpecifier,
 } from './oxc/typeOnlyImport';
-import { stripQueryAndHash } from './parseRequest';
 
 type PrecheckImport = Pick<OxcCollectedImport, 'imported' | 'source'> & {
   localName: string | undefined;

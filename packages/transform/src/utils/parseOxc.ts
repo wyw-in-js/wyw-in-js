@@ -1,7 +1,7 @@
 import { parseSync, rawTransferSupported } from 'oxc-parser';
 import type { Comment, Program } from 'oxc-parser';
 
-import { logger } from '@wyw-in-js/shared';
+import { logger, stripQueryAndHash } from '@wyw-in-js/shared';
 
 import {
   currentPipelineObserver,
@@ -12,7 +12,6 @@ import {
   getOxcParserLanguage,
   type OxcParserLanguage,
 } from './oxcParserLanguage';
-import { stripQueryAndHash } from './parseRequest';
 
 // The single parse entry of the transform package. Internal parses go through
 // parseOxcCached, or parseOxcFragmentProgramCached for the static expression

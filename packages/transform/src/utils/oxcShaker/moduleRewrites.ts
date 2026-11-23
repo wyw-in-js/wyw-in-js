@@ -6,6 +6,7 @@ import path from 'path';
 import type { Node, Program } from 'oxc-parser';
 
 import {
+  stripQueryAndHash,
   syncResolve,
   type ImportOverride,
   type ImportOverrides,
@@ -23,7 +24,6 @@ import {
 import { toOxcImportMap } from '../oxcImportMap';
 import { collectOxcPatternIdentifierNames as collectPatternNames } from '../oxc/patterns';
 import { parseOxcCached } from '../parseOxc';
-import { stripQueryAndHash } from '../parseRequest';
 import { collectModuleReferences } from './executableIndex';
 
 type AnyNode = Node & Record<string, unknown>;

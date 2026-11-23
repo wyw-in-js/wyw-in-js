@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 
+import { stripQueryAndHash } from '@wyw-in-js/shared';
+
 import { hashContent } from '../utils/contentHash';
-import { stripQueryAndHash } from '../utils/parseRequest';
 
 /** The content hash of a file's bytes on disk, if they can be read. */
 export const hashDiskContent = (filename: string): string | undefined => {

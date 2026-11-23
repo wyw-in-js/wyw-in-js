@@ -2,13 +2,12 @@ import { readFileSync } from 'fs';
 import { createRequire } from 'module';
 import { dirname, extname, isAbsolute } from 'path';
 import type { Debugger, EvalRule, Evaluator } from '@wyw-in-js/shared';
-import { logger } from '@wyw-in-js/shared';
+import { logger, stripQueryAndHash } from '@wyw-in-js/shared';
 
 import { oxcShaker } from '../shaker';
 import type { ParentEntrypoint } from '../types';
 import { getFileIdx } from '../utils/getFileIdx';
 import { parseOxcProgramFresh } from '../utils/parseOxc';
-import { stripQueryAndHash } from '../utils/parseRequest';
 
 import type {
   IEntrypointCode,

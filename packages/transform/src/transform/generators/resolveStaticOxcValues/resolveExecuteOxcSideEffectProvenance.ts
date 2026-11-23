@@ -2,8 +2,9 @@
 
 import { isAbsolute } from 'path';
 
+import { stripQueryAndHash } from '@wyw-in-js/shared';
+
 import type { OxcStaticValueCandidate } from '../../../utils/collectOxcTemplateDependencies';
-import { stripQueryAndHash } from '../../../utils/parseRequest';
 import type { ITransformAction, SyncScenarioFor } from '../../types';
 import { resolveCandidateSideEffectProvenance } from './candidateResolver';
 import type { StaticExportResult } from './types';
