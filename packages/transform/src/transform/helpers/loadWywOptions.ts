@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import Module, { createRequire } from 'module';
 import path from 'path';
+import { pathToFileURL } from 'url';
 
 import { cosmiconfigSync } from 'cosmiconfig';
 
@@ -21,7 +22,8 @@ import { warnAboutLoadedOptions } from './onceWarnings';
 import type { PluginOptions } from '../../types';
 import { DEFAULT_EVAL_STRATEGY } from '../../utils/evalStrategy';
 
-const searchPlaces = [
+/** Where the config file is looked for, relative to each directory. */
+export const searchPlaces = [
   `.wyw-in-jsrc`,
   `.wyw-in-jsrc.json`,
   `.wyw-in-jsrc.yaml`,
@@ -265,15 +267,17 @@ const loadMjsConfig = (configFile: string): Partial<StrictOptions> => {
 const usesImportMeta = (content: string): boolean =>
   /\bimport\.meta\b/.test(content);
 
+// The compiled CommonJS output of a .ts config cannot hold import.meta, so a
+// runtime that strips types loads such a config with require(), and every .ts
+// config when there is no compiler API.
+const loadsTypeScriptThroughRequire = (content: string): boolean =>
+  runtimeStripsTypes &&
+  (getTypeScriptCompiler() === null || usesImportMeta(content));
+
 // The compiled config behaves as with cosmiconfig's .ts loader, on Node.js and
-// Bun alike. Its CommonJS output cannot hold import.meta, so a runtime that
-// strips types loads such a config with require(), and every .ts config when
-// there is no compiler API.
+// Bun alike.
 const loadTypeScriptConfig = (filepath: string, content: string): unknown => {
-  if (
-    runtimeStripsTypes &&
-    (getTypeScriptCompiler() === null || usesImportMeta(content))
-  ) {
+  if (loadsTypeScriptThroughRequire(content)) {
     return loadMjsConfig(filepath);
   }
 
@@ -368,7 +372,7 @@ const findConfigFile = (cwd: string): string | null => {
 // Remember the outcome per working directory; loading stays uncached.
 const discoveredConfigFiles = new Map<string, string | null>();
 
-const searchConfig = (): Partial<StrictOptions> => {
+const discoverConfigFile = (): string | null => {
   const cwd = process.cwd();
   let configFile = discoveredConfigFiles.get(cwd);
   if (
@@ -379,16 +383,138 @@ const searchConfig = (): Partial<StrictOptions> => {
     discoveredConfigFiles.set(cwd, configFile);
   }
 
+  return configFile;
+};
+
+const searchConfig = (): Partial<StrictOptions> => {
+  const configFile = discoverConfigFile();
   return configFile ? loadConfigFromFile(configFile) : {};
 };
 
-export function loadWywOptions(
+/**
+ * The config file that `loadWywOptions(overrides)` reads, as an absolute
+ * path, or `null` when it reads none.
+ */
+export const getWywConfigSource = (
   overrides: PartialOptions = defaultOverrides
-): StrictOptions {
-  if (cache.has(overrides)) {
-    return cache.get(overrides)!;
+): string | null => {
+  const { configFile } = overrides;
+  if (configFile === false) {
+    return null;
   }
 
+  if (configFile !== undefined) {
+    return resolveConfigFilePath(configFile);
+  }
+
+  return discoverConfigFile();
+};
+
+/**
+ * Drops what the config loader remembers of loaded files, so that the next
+ * options read `configFile`, a path on disk, again. Discovery stays
+ * remembered.
+ */
+export const forgetWywConfigFile = (configFile: string): void => {
+  if (path.extname(configFile) === '.mjs') {
+    // Loaded without a cache of the loader: each load reads the file again.
+    return;
+  }
+
+  explorerSync.clearLoadCache();
+};
+
+// Whether the loader reads the config with require() as a file that may be
+// an ES module. Node evaluates an ES module once per URL, also when the
+// evaluation fails, so require() cannot read such a config again. For a .js
+// and a stripped .ts config the package type and the syntax decide the
+// format.
+const mayLoadAsEsModule = (configFile: string): boolean => {
+  switch (path.extname(configFile)) {
+    case '.js':
+    case '.mjs':
+      return true;
+    case '.mts':
+      return runtimeStripsTypes;
+    case '.ts':
+      try {
+        return loadsTypeScriptThroughRequire(
+          fs.readFileSync(configFile, 'utf8')
+        );
+      } catch {
+        return false;
+      }
+    default:
+      return false;
+  }
+};
+
+const replaceAll = (text: string, from: string, to: string): string =>
+  text.split(from).join(to);
+
+// What a config throws names the config file, not the URL of its import.
+const namingConfigFile = (
+  error: unknown,
+  configFile: string,
+  fileUrl: string,
+  importUrl: string
+): unknown => {
+  if (!(error instanceof Error)) {
+    return error;
+  }
+
+  const message = replaceAll(error.message, importUrl, fileUrl);
+  // eslint-disable-next-line no-param-reassign
+  error.message = message.includes(configFile)
+    ? message
+    : `[wyw-in-js] Failed to load ${configFile}: ${message}`;
+  if (error.stack) {
+    // eslint-disable-next-line no-param-reassign
+    error.stack = replaceAll(error.stack, importUrl, fileUrl).replace(
+      message,
+      error.message
+    );
+  }
+
+  return error;
+};
+
+// Evaluates the config again under the URL of `loadId`; a CommonJS config
+// comes as the default export of its namespace.
+const importConfigAgain = async (
+  configFile: string,
+  loadId: string
+): Promise<Partial<StrictOptions>> => {
+  const configRequire = createRequire(configFile);
+  try {
+    // A CommonJS config is evaluated again only without its cache entry.
+    delete configRequire.cache[configRequire.resolve(configFile)];
+  } catch {
+    // Let the import surface the real error.
+  }
+
+  const fileUrl = pathToFileURL(configFile).href;
+  const importUrl = `${fileUrl}?wyw-generation=${encodeURIComponent(loadId)}`;
+  // The import() stays out of the text of this module: tools that parse the
+  // module warn about an import of a computed URL, as webpack does in every
+  // Next.js build that tracks the dependencies of its config.
+  // eslint-disable-next-line no-new-func, @typescript-eslint/no-implied-eval
+  const importModule = new Function(
+    'specifier',
+    'return import(specifier)'
+  ) as (specifier: string) => Promise<{ default?: unknown }>;
+  try {
+    const namespace = await importModule(importUrl);
+    return normalizeLoadedConfig(namespace.default ?? namespace);
+  } catch (error) {
+    throw namingConfigFile(error, configFile, fileUrl, importUrl);
+  }
+};
+
+function buildWywOptions(
+  overrides: PartialOptions,
+  config: Partial<StrictOptions>
+): StrictOptions {
   const {
     configFile,
     ignore,
@@ -411,17 +537,6 @@ export function loadWywOptions(
     strategy: DEFAULT_EVAL_STRATEGY,
   };
 
-  const config = (() => {
-    if (configFile === false) {
-      return {};
-    }
-
-    if (configFile !== undefined) {
-      return loadConfigFromFile(configFile);
-    }
-
-    return searchConfig();
-  })();
   const configImportLoaders = config.importLoaders;
   const configFeatures = config.features;
   const configEval = config.eval;
@@ -516,4 +631,55 @@ export function loadWywOptions(
   cache.set(overrides, options);
 
   return options;
+}
+
+export function loadWywOptions(
+  overrides: PartialOptions = defaultOverrides
+): StrictOptions {
+  if (cache.has(overrides)) {
+    return cache.get(overrides)!;
+  }
+
+  const { configFile } = overrides;
+  const config = (() => {
+    if (configFile === false) {
+      return {};
+    }
+
+    if (configFile !== undefined) {
+      return loadConfigFromFile(configFile);
+    }
+
+    return searchConfig();
+  })();
+
+  return buildWywOptions(overrides, config);
+}
+
+/**
+ * Loads the options as `loadWywOptions(overrides)` does, but reads
+ * `configFile`, the path on disk that it reads, from disk again, whatever the
+ * loaders remember of it. A config that may be an ES module is evaluated
+ * again under a URL made from `loadId`, also after its last evaluation
+ * failed; any other config is read again by the loader. The options are
+ * remembered for `overrides` as `loadWywOptions` remembers them.
+ *
+ * The ES module registry of the runtime keeps one evaluation per URL for the
+ * life of the process, so `loadId` must be unique in the process for each
+ * load: a repeated one gives the evaluation of the earlier load.
+ */
+export async function reloadWywOptions(
+  overrides: PartialOptions,
+  configFile: string,
+  loadId: string
+): Promise<StrictOptions> {
+  if (!mayLoadAsEsModule(configFile)) {
+    forgetWywConfigFile(configFile);
+    return buildWywOptions(overrides, loadConfigFromFile(configFile));
+  }
+
+  return buildWywOptions(
+    overrides,
+    await importConfigAgain(configFile, loadId)
+  );
 }

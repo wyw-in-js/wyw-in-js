@@ -5,6 +5,10 @@ import { canonicalizeForHash } from '@wyw-in-js/shared';
 import type { StrictOptions } from '@wyw-in-js/shared';
 
 import { getEvalBroker } from '../eval/broker';
+import {
+  getSharedFunctionId,
+  readRegistryShare,
+} from '../hostSession/registryShare';
 import { encodeGlobals } from '../eval/serialize';
 
 import { asyncResolveImports } from './generators/resolveImports';
@@ -45,6 +49,11 @@ export const getEvalCacheKey = (
   loadDependencyCodeKey?: string
 ) => {
   const evalOptions = pluginOptions.eval ?? {};
+  // Options of a host session number their functions in its own share, so
+  // the same options give the same key in every worker and generation.
+  const share = readRegistryShare(pluginOptions);
+  const getOptionFunctionId = (fn: unknown) =>
+    share ? getSharedFunctionId(share, fn) : getResolverId(fn);
   const payload = JSON.stringify({
     errors: evalOptions.errors,
     resolver: evalOptions.resolver,
@@ -52,13 +61,13 @@ export const getEvalCacheKey = (
     runtime: evalOptions.runtime,
     strategy: evalOptions.strategy,
     globals: canonicalizeForHash(encodeGlobals(evalOptions.globals ?? {})),
-    customResolver: getResolverId(evalOptions.customResolver),
-    customLoader: getResolverId(evalOptions.customLoader),
+    customResolver: getOptionFunctionId(evalOptions.customResolver),
+    customLoader: getOptionFunctionId(evalOptions.customLoader),
     // Bundlers can recreate transport callbacks per file. Stable scope keys
     // attest unchanged semantics without conflating resolver and loader axes.
     bundlerResolver: asyncResolveKey ?? getResolverId(asyncResolve),
     bundlerLoader: loadDependencyCodeKey ?? getResolverId(loadDependencyCode),
-    overrideContext: getResolverId(pluginOptions.overrideContext),
+    overrideContext: getOptionFunctionId(pluginOptions.overrideContext),
     importOverrides: pluginOptions.importOverrides ?? null,
     extensions: pluginOptions.extensions,
     features: pluginOptions.features,

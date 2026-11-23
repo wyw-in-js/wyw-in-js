@@ -5,8 +5,8 @@
  * and projects every `Result` into one normalized output, so that bundler
  * integrations stop re-implementing these rules around `transform()`.
  *
- * Types only: the implementation and the package export come later. Until
- * then nothing here is part of the public API.
+ * @experimental Intended for wyw-in-js integrations; may change in a minor
+ * release.
  */
 import type { RawSourceMap } from 'source-map';
 
@@ -163,7 +163,11 @@ export interface HostSession<TContext = void> {
    */
   close(): Promise<void>;
   /**
-   * Files changed on disk. Applies to calls that start after it returns.
+   * Files changed on disk. Applies to calls that start after it returns,
+   * with one exception: when a config file or a `package.json` changed and
+   * the new options change the evaluation cache key (the salt), they apply
+   * once no call of the session is in flight, so that calls nested in a call
+   * in flight keep its key.
    * Returns the roots whose last output depended on them, or every root when
    * a config file or a `package.json` changed.
    */
