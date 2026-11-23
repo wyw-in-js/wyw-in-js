@@ -17,6 +17,21 @@ bun add -d @wyw-in-js/webpack-loader
 
 ### Rsbuild configuration
 
+The configuration below also uses `@rsbuild/plugin-react`, `@rsbuild/plugin-babel` and `@babel/preset-react`:
+
+```sh
+# npm
+npm i -D @rsbuild/plugin-react @rsbuild/plugin-babel @babel/preset-react@7
+# yarn
+yarn add --dev @rsbuild/plugin-react @rsbuild/plugin-babel @babel/preset-react@7
+# pnpm
+pnpm add -D @rsbuild/plugin-react @rsbuild/plugin-babel @babel/preset-react@7
+# bun
+bun add -d @rsbuild/plugin-react @rsbuild/plugin-babel @babel/preset-react@7
+```
+
+Until `@rsbuild/plugin-babel` supports Babel 8, keep `@babel/preset-react` on 7.x. The plugin ships Babel 7 presets, and installing `@babel/preset-react` 8 pulls in `@babel/core` 8, which fails with `Requires Babel "^7.0.0-0", but was loaded with "8.x"`.
+
 ```ts
 import { defineConfig } from '@rsbuild/core';
 import { pluginReact } from '@rsbuild/plugin-react';
