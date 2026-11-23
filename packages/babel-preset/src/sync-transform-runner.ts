@@ -1,14 +1,12 @@
 import { readFileSync } from 'fs';
 
-import { asyncResolveFallback } from '@wyw-in-js/shared';
+import { asyncResolveFallback, decodeGlobals } from '@wyw-in-js/shared';
 import {
   disposeEvalBroker,
   transform,
   TransformCacheCollection,
 } from '@wyw-in-js/transform';
 import type { PluginOptions, Result } from '@wyw-in-js/transform';
-
-import { decodeGlobals } from './globals';
 
 type SyncTransformPayload = {
   code: string;

@@ -1,14 +1,14 @@
 import fs from 'fs';
 import path from 'path';
 
+import { stripQueryAndHash, type SerializedValue } from '@wyw-in-js/shared';
+
 import type {
   NativeResolveRequest,
   ResolveTrace,
   ResolveTraceEvent,
 } from '../resolve/resolvePolicy';
-import { stripQueryAndHash } from '../utils/parseRequest';
 import type { DebugEvalFileValues } from './protocol';
-import type { SerializedValue } from './serialize';
 
 export type DebugEvalValueStatus =
   | 'mixed'

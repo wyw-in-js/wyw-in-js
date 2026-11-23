@@ -1,12 +1,16 @@
-import { isPlainObject } from '@wyw-in-js/shared';
+import { isPlainObject } from '../isPlainObject';
 
-export type SerializedError = {
-  message: string;
-  name?: string;
-  stack?: string;
-  cause?: SerializedError;
-};
+import {
+  deserializeError,
+  serializeError,
+  type SerializedError,
+} from './serializeError';
 
+/**
+ * A value as it crosses the eval protocol.
+ *
+ * @internal Shared by the eval broker and the eval runner.
+ */
 export type SerializedValue =
   | { kind: 'value'; value: unknown }
   | { kind: 'null' }
@@ -25,35 +29,12 @@ export type SerializedValue =
   | { kind: 'array'; items: SerializedValue[] }
   | { kind: 'object'; entries: Record<string, SerializedValue> };
 
-const ENCODED_GLOBAL_ENVELOPE_KEY = '__wyw_eval_global';
-const ENCODED_GLOBAL_SIGNATURE = 'wyw-eval-global';
-const ENCODED_GLOBAL_VERSION = 1;
 const IDENTIFIER_RE = /^[A-Za-z_$][\w$]*$/u;
 const ARRAY_INDEX_RE = /^(?:0|[1-9]\d*)$/;
 const IPC_SUPPORTED_VALUE_HINT =
   'Use importOverrides to mock the import or return plain data: null, booleans, strings, numbers, bigint, undefined, arrays, plain objects, and Error.';
 
-type EncodedFunctionPayload = {
-  signature: typeof ENCODED_GLOBAL_SIGNATURE;
-  version: typeof ENCODED_GLOBAL_VERSION;
-  kind: 'function';
-  source: string;
-};
-
-type EncodedSymbolPayload = {
-  signature: typeof ENCODED_GLOBAL_SIGNATURE;
-  version: typeof ENCODED_GLOBAL_VERSION;
-  kind: 'symbol';
-  description: string;
-};
-
-type EncodedGlobalPayload = EncodedFunctionPayload | EncodedSymbolPayload;
-
-export type EncodedGlobal = {
-  [ENCODED_GLOBAL_ENVELOPE_KEY]: EncodedGlobalPayload;
-};
-
-type PathSegment = string | number | symbol;
+export type PathSegment = string | number | symbol;
 
 type SerializeValueOptions = {
   allowFunctions?: boolean;
@@ -71,9 +52,6 @@ const isLikeError = (value: unknown): value is Error =>
   'message' in value &&
   typeof value.message === 'string' &&
   ('stack' in value || 'name' in value);
-
-const isCallable = (value: unknown): value is (...args: unknown[]) => unknown =>
-  typeof value === 'function';
 
 const getBoxedPrimitiveValue = (
   value: object
@@ -99,7 +77,7 @@ const getBoxedPrimitiveValue = (
   return null;
 };
 
-const getObjectTypeName = (value: object): string => {
+export const getObjectTypeName = (value: object): string => {
   const { constructor } = value as { constructor?: { name?: unknown } };
   if (
     constructor &&
@@ -113,11 +91,7 @@ const getObjectTypeName = (value: object): string => {
   return tag.slice(8, -1) || 'Object';
 };
 
-const formatPath = (
-  rootLabel: string,
-  path: PathSegment[],
-  identifierRe: RegExp = IDENTIFIER_RE
-): string =>
+export const formatPath = (rootLabel: string, path: PathSegment[]): string =>
   path.reduce<string>((acc, segment) => {
     if (typeof segment === 'number') {
       return `${acc}[${segment}]`;
@@ -127,15 +101,12 @@ const formatPath = (
       return `${acc}[${String(segment)}]`;
     }
 
-    if (identifierRe.test(segment)) {
+    if (IDENTIFIER_RE.test(segment)) {
       return `${acc}.${segment}`;
     }
 
     return `${acc}[${JSON.stringify(segment)}]`;
   }, rootLabel);
-
-const formatGlobalsPath = (path: Array<string | number>): string =>
-  formatPath('eval.globals', path);
 
 const getEnumerableSymbolKeys = (value: object): symbol[] =>
   Object.getOwnPropertySymbols(value).filter((key) =>
@@ -163,34 +134,6 @@ const throwUnsupportedIpcValue = (
       path
     )}. ${IPC_SUPPORTED_VALUE_HINT}`
   );
-};
-
-const serializeUnavailableError = (error: unknown): SerializedError => {
-  if (typeof error === 'object' && error !== null) {
-    try {
-      const { message, name, stack } = error as {
-        message?: unknown;
-        name?: unknown;
-        stack?: unknown;
-      };
-      if (typeof message === 'string') {
-        return {
-          message,
-          name: typeof name === 'string' ? name : undefined,
-          stack: typeof stack === 'string' ? stack : undefined,
-        };
-      }
-    } catch {
-      // Fall through to the guarded string representation below. Errors may
-      // come from another VM context or even be proxy-like thrown values.
-    }
-  }
-
-  try {
-    return { message: String(error) };
-  } catch {
-    return { message: 'Unknown error' };
-  }
 };
 
 type SerializeValueAtPath = (
@@ -224,7 +167,7 @@ const serializeNestedValue = (
   } catch (error) {
     return {
       kind: 'unavailable',
-      error: serializeUnavailableError(error),
+      error: serializeError(error),
     };
   }
 
@@ -246,7 +189,7 @@ const serializeNestedValue = (
 
     return {
       kind: 'unavailable',
-      error: serializeUnavailableError(error),
+      error: serializeError(error),
     };
   }
 };
@@ -334,14 +277,7 @@ const serializeValueAtPath: SerializeValueAtPath = (
   }
 
   if (isLikeError(value)) {
-    return {
-      kind: 'error',
-      error: {
-        message: value.message,
-        name: value.name,
-        stack: value.stack,
-      },
-    };
+    return { kind: 'error', error: serializeError(value) };
   }
 
   const currentPath = formatPath(rootLabel, path);
@@ -462,6 +398,12 @@ const serializeValueAtPath: SerializeValueAtPath = (
   }
 };
 
+/**
+ * Encodes a value for the eval protocol and throws on a value that the
+ * protocol cannot carry, naming where it was found.
+ *
+ * @internal Shared by the eval broker and the eval runner.
+ */
 export const serializeValue = (
   value: unknown,
   options: SerializeValueOptions = {}
@@ -477,26 +419,13 @@ export const serializeValue = (
     options.ignoreSymbolKeys ?? false
   );
 
-const deserializeError = (value: SerializedError): Error => {
-  const error = new Error(value.message);
-  if (value.name) {
-    error.name = value.name;
-  }
-
-  if (value.stack) {
-    error.stack = value.stack;
-  }
-
-  return error;
-};
-
 const defineDeserializedProperty = (
   target: object,
   key: string | number,
-  value: SerializedValue,
-  deserialize: (serialized: SerializedValue) => unknown
+  value: SerializedValue | null | undefined,
+  deserialize: (serialized: SerializedValue | null | undefined) => unknown
 ): void => {
-  if (value.kind === 'unavailable') {
+  if (value?.kind === 'unavailable') {
     Object.defineProperty(target, key, {
       configurable: true,
       enumerable: true,
@@ -523,8 +452,15 @@ const defineDeserializedProperty = (
   });
 };
 
-export const deserializeValue = (value: SerializedValue): unknown => {
-  switch (value.kind) {
+/**
+ * Restores an encoded value. A missing value restores as `undefined`.
+ *
+ * @internal Shared by the eval broker and the eval runner.
+ */
+export const deserializeValue = (
+  value: SerializedValue | null | undefined
+): unknown => {
+  switch (value?.kind) {
     case 'null':
       return null;
     case 'boolean':
@@ -567,10 +503,18 @@ export const deserializeValue = (value: SerializedValue): unknown => {
     }
     case 'value':
     default:
-      return value.value;
+      // An unknown kind, like a missing value, falls back to its raw value.
+      return (value as { value?: unknown } | null | undefined)?.value;
   }
 };
 
+/**
+ * Encodes the values of `__wywPreval`: functions become stubs, symbols keep
+ * their description, and a value that cannot be read or encoded fails only
+ * where it is read.
+ *
+ * @internal Shared by the eval broker and the eval runner.
+ */
 export const serializePreval = (
   values: Record<string, unknown>
 ): Record<string, SerializedValue> =>
@@ -587,193 +531,3 @@ export const serializePreval = (
       }),
     ])
   );
-
-const throwUnsupportedNonPlainObject = (
-  value: object,
-  path: Array<string | number>
-): never => {
-  throw new Error(
-    `[wyw-in-js] eval.globals contains an unsupported non-plain object at ${formatGlobalsPath(
-      path
-    )} (${getObjectTypeName(value)}). ` +
-      `Use JSON-like primitives, arrays, plain objects, functions, and symbols.`
-  );
-};
-
-const restoreFunction = (source: string, path: Array<string | number>) => {
-  try {
-    // eslint-disable-next-line no-eval
-    const restored = eval(`(${source})`) as unknown;
-    if (typeof restored !== 'function') {
-      throw new TypeError('decoded source is not a function');
-    }
-
-    return restored;
-  } catch (error) {
-    throw new Error(
-      `[wyw-in-js] Failed to restore eval.globals function at ${formatGlobalsPath(
-        path
-      )}. ` +
-        `Ensure the value is a user-defined function expression/arrow function. ` +
-        `Native and bound functions are not supported. ` +
-        `Original error: ${String(error)}`
-    );
-  }
-};
-
-const validateFunctionSource = (
-  source: string,
-  path: Array<string | number>
-) => {
-  try {
-    // eslint-disable-next-line no-eval
-    const restored = eval(`(${source})`) as unknown;
-    if (typeof restored !== 'function') {
-      throw new TypeError('decoded source is not a function');
-    }
-  } catch (error) {
-    throw new Error(
-      `[wyw-in-js] eval.globals contains an unsupported function at ${formatGlobalsPath(
-        path
-      )}. ` +
-        `Ensure the value is a user-defined function expression/arrow function. ` +
-        `Native and bound functions are not supported. ` +
-        `Original error: ${String(error)}`
-    );
-  }
-};
-
-const serializeFunction = (
-  value: (...args: unknown[]) => unknown,
-  path: Array<string | number>
-) => {
-  const source = value.toString();
-
-  // Validate that the source is restorable before storing it.
-  validateFunctionSource(source, path);
-
-  return source;
-};
-
-const isEncodedGlobalPayload = (
-  value: unknown
-): value is EncodedGlobalPayload => {
-  if (!isPlainObject(value)) {
-    return false;
-  }
-
-  if (
-    value.signature !== ENCODED_GLOBAL_SIGNATURE ||
-    value.version !== ENCODED_GLOBAL_VERSION
-  ) {
-    return false;
-  }
-
-  if (value.kind === 'function') {
-    return typeof value.source === 'string';
-  }
-
-  if (value.kind === 'symbol') {
-    return typeof value.description === 'string';
-  }
-
-  return false;
-};
-
-const isEncodedGlobal = (value: unknown): value is EncodedGlobal => {
-  if (!isPlainObject(value)) {
-    return false;
-  }
-
-  const keys = Object.keys(value);
-  if (keys.length !== 1 || keys[0] !== ENCODED_GLOBAL_ENVELOPE_KEY) {
-    return false;
-  }
-
-  return isEncodedGlobalPayload(value[ENCODED_GLOBAL_ENVELOPE_KEY]);
-};
-
-const encodeGlobalsAtPath = (
-  value: unknown,
-  path: Array<string | number>
-): unknown => {
-  if (isCallable(value)) {
-    return {
-      [ENCODED_GLOBAL_ENVELOPE_KEY]: {
-        signature: ENCODED_GLOBAL_SIGNATURE,
-        version: ENCODED_GLOBAL_VERSION,
-        kind: 'function',
-        source: serializeFunction(value, path),
-      },
-    } satisfies EncodedGlobal;
-  }
-
-  if (typeof value === 'symbol') {
-    return {
-      [ENCODED_GLOBAL_ENVELOPE_KEY]: {
-        signature: ENCODED_GLOBAL_SIGNATURE,
-        version: ENCODED_GLOBAL_VERSION,
-        kind: 'symbol',
-        description: value.description ?? '',
-      },
-    } satisfies EncodedGlobal;
-  }
-
-  if (Array.isArray(value)) {
-    return value.map((item, index) =>
-      encodeGlobalsAtPath(item, [...path, index])
-    );
-  }
-
-  if (isPlainObject(value)) {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [
-        key,
-        encodeGlobalsAtPath(item, [...path, key]),
-      ])
-    );
-  }
-
-  if (typeof value === 'object' && value !== null) {
-    throwUnsupportedNonPlainObject(value, path);
-  }
-
-  return value;
-};
-
-export const encodeGlobals = (value: unknown): unknown =>
-  encodeGlobalsAtPath(value, []);
-
-const decodeGlobalsAtPath = (
-  value: unknown,
-  path: Array<string | number>
-): unknown => {
-  if (Array.isArray(value)) {
-    return value.map((item, index) =>
-      decodeGlobalsAtPath(item, [...path, index])
-    );
-  }
-
-  if (isEncodedGlobal(value)) {
-    const payload = value[ENCODED_GLOBAL_ENVELOPE_KEY];
-    if (payload.kind === 'function') {
-      return restoreFunction(payload.source, path);
-    }
-
-    return Symbol(payload.description);
-  }
-
-  if (isPlainObject(value)) {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [
-        key,
-        decodeGlobalsAtPath(item, [...path, key]),
-      ])
-    );
-  }
-
-  return value;
-};
-
-export const decodeGlobals = (value: unknown): unknown =>
-  decodeGlobalsAtPath(value, []);

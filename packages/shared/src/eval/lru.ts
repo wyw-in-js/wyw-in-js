@@ -1,3 +1,9 @@
+/**
+ * A size-bounded map that evicts the least recently used key. A key that
+ * holds `undefined` is still a hit.
+ *
+ * @internal Shared by the eval broker and the eval runner.
+ */
 export class LruCache<K, V> {
   private readonly maxSize: number;
 
@@ -16,9 +22,9 @@ export class LruCache<K, V> {
   }
 
   public get(key: K): V | undefined {
-    const value = this.map.get(key);
-    if (value === undefined) return undefined;
+    if (!this.map.has(key)) return undefined;
 
+    const value = this.map.get(key) as V;
     this.map.delete(key);
     this.map.set(key, value);
     return value;

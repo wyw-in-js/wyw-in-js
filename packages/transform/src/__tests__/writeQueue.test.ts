@@ -3,10 +3,10 @@ import { EventEmitter } from 'events';
 import path from 'path';
 import { pathToFileURL } from 'url';
 
-import { createWriteQueue, writeToStream } from '../eval/writeQueue';
+import { createWriteQueue, writeToStream } from '@wyw-in-js/shared';
 
 const writeQueueUrl = pathToFileURL(
-  path.join(__dirname, '..', 'eval', 'writeQueue.ts')
+  path.join(__dirname, '../../../shared/src/eval/writeQueue.ts')
 ).href;
 
 // Under bun a write to the stdin of a killed child does not fail, so the
@@ -99,6 +99,32 @@ describe('write queue', () => {
 
     stream.completeWrite(1);
     await Promise.all([second, queue.onIdle()]);
+  });
+
+  it('settles onIdle after the writes queued while it waits', async () => {
+    const stream = new MockWritable();
+    const queue = createWriteQueue(stream, 'test stream');
+    const flush = () =>
+      new Promise<void>((resolveFlush) => {
+        setImmediate(resolveFlush);
+      });
+
+    const first = queue.write('first');
+    let idle = false;
+    const waiting = queue.onIdle().then(() => {
+      idle = true;
+    });
+    const second = queue.write('second');
+
+    await flush();
+    stream.completeWrite(0);
+    await flush();
+    expect(stream.writes).toEqual(['first', 'second']);
+    expect(idle).toBe(false);
+
+    stream.completeWrite(1);
+    await Promise.all([first, second, waiting]);
+    expect(idle).toBe(true);
   });
 
   it('rejects without throwing when the stream emits the error after the write callback', async () => {

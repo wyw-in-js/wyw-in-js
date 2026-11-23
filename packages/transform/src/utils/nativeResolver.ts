@@ -3,15 +3,14 @@ import path from 'path';
 
 import { ResolverFactory, type NapiResolveOptions } from 'oxc-resolver';
 
-import type {
-  EvalResolverKind,
-  OxcOptions,
-  StrictOptions,
+import {
+  parseRequest,
+  type EvalResolverKind,
+  type OxcOptions,
+  type StrictOptions,
 } from '@wyw-in-js/shared';
 
 import type { EvalRunnerConditions } from '../eval/protocol';
-
-import { parseRequest } from './parseRequest';
 
 const CJS_DEFAULT_CONDITIONS = ['require', 'node', 'default'] as const;
 const ESM_DEFAULT_CONDITIONS = ['node', 'import', 'default'] as const;

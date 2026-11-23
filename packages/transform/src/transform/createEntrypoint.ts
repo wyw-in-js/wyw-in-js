@@ -1,8 +1,9 @@
 import fs from 'node:fs';
 
+import { stripQueryAndHash } from '@wyw-in-js/shared';
+
 import type { ParentEntrypoint } from '../types';
 import { currentPipelineObserver } from '../telemetry/observer';
-import { stripQueryAndHash } from '../utils/parseRequest';
 
 import { isSuperSet, mergeOnly } from './Entrypoint.helpers';
 import { hasLoop } from './hasLoop';

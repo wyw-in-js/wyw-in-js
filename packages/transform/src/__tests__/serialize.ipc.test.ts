@@ -2,7 +2,7 @@ import {
   deserializeValue,
   serializePreval,
   serializeValue,
-} from '../eval/serialize';
+} from '@wyw-in-js/shared';
 
 class ComponentStyle {
   public readonly current = 1;

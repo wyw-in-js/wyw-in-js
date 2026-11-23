@@ -1,9 +1,10 @@
+import { serializeValue, type SerializedValue } from '@wyw-in-js/shared';
+
 import { oxcShaker } from '../shaker';
 import { isSuperSet } from '../transform/Entrypoint.helpers';
 import { collectOxcExportsAndImports } from '../utils/collectOxcExportsAndImports';
 
 import type { EpochServices } from './brokerSession';
-import { serializeValue, type SerializedValue } from './serialize';
 
 export const isEvalOnlyKey = (key: string) =>
   key === '__wywPreval' || key === 'side-effect';

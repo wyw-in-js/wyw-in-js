@@ -1,5 +1,7 @@
 /* eslint-disable no-continue */
 
+import { stripQueryAndHash } from '@wyw-in-js/shared';
+
 import type {
   IProcessImportsAction,
   Services,
@@ -12,7 +14,6 @@ import {
 } from '../../utils/hasCachedWywPrevalExport';
 import { isAborted } from '../actions/AbortError';
 import { toImportKey } from '../../utils/importOverrides';
-import { stripQueryAndHash } from '../../utils/parseRequest';
 import { isSuperSet, mergeOnly } from '../Entrypoint.helpers';
 import { hasLoop } from '../hasLoop';
 

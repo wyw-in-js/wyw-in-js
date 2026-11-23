@@ -2,8 +2,9 @@
 
 import { isAbsolute } from 'path';
 
+import { stripQueryAndHash } from '@wyw-in-js/shared';
+
 import { getEvalStrategy } from '../../../utils/evalStrategy';
-import { stripQueryAndHash } from '../../../utils/parseRequest';
 import { remapPureCallHints } from '../../../utils/pureCallHintSourceMap';
 import type { ITransformAction, SyncScenarioFor } from '../../types';
 import {

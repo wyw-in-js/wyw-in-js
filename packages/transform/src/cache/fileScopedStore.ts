@@ -1,4 +1,4 @@
-import { stripQueryAndHash } from '../utils/parseRequest';
+import { stripQueryAndHash } from '@wyw-in-js/shared';
 
 /**
  * Names a store of a `TransformCacheCollection` and carries the type of its

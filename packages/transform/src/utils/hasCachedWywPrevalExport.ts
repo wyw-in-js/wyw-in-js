@@ -1,9 +1,10 @@
 import fs from 'node:fs';
 
+import { stripQueryAndHash } from '@wyw-in-js/shared';
+
 import type { Services } from '../transform/types';
 
 import { collectOxcExportsAndImports } from './collectOxcExportsAndImports';
-import { stripQueryAndHash } from './parseRequest';
 
 type CachedEntrypointLike = {
   evaluated?: boolean;

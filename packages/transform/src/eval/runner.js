@@ -1,5 +1,4 @@
 /* eslint-disable no-underscore-dangle */
-/* global BigInt */
 import fs from 'node:fs';
 import { Console } from 'node:console';
 import { Writable } from 'node:stream';
@@ -8,48 +7,34 @@ import path from 'node:path';
 import NativeModule, { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { Minimatch } from 'minimatch';
+import {
+  EVAL_LOAD_CACHE_SIZE,
+  EVAL_RESOLVE_CACHE_SIZE,
+  LruCache,
+  canonicalizeForHash,
+  createWriteQueue,
+  decodeGlobals,
+  deserializeError,
+  deserializeValue,
+  isBuiltinSpecifier,
+  isFeatureEnabled,
+  isPlainObject,
+  serializeError,
+  serializePreval,
+  serializeValue,
+  stripQueryAndHash,
+} from '@wyw-in-js/shared';
 
 // The runner runs as plain ESM in Node, which needs the file extension.
 // eslint-disable-next-line import/extensions
 import { createHappyDomWindow } from './happyDomWindow.js';
 
-class LruCache {
-  constructor(maxSize) {
-    this.maxSize = Math.max(1, maxSize);
-    this.map = new Map();
-  }
-
-  get(key) {
-    if (!this.map.has(key)) return undefined;
-    const value = this.map.get(key);
-    this.map.delete(key);
-    this.map.set(key, value);
-    return value;
-  }
-
-  set(key, value) {
-    if (this.map.has(key)) {
-      this.map.delete(key);
-    }
-    this.map.set(key, value);
-    if (this.map.size > this.maxSize) {
-      const firstKey = this.map.keys().next().value;
-      if (firstKey !== undefined) {
-        this.map.delete(firstKey);
-      }
-    }
-  }
-
-  delete(key) {
-    this.map.delete(key);
-  }
-
-  clear() {
-    this.map.clear();
-  }
-}
-
 const NOOP = () => {};
+
+// Functions of eval.globals are restored by a direct eval in the scope of this
+// module, the scope they have always been restored in.
+// eslint-disable-next-line no-eval
+const evaluateGlobalFunction = (source) => eval(`(${source})`);
 
 // stdout is reserved for the JSON IPC protocol; host-side logs must not share it.
 const prefixStream = (getPrefix) =>
@@ -123,19 +108,7 @@ const builtins = {
   zlib: true,
 };
 
-const RESOLVE_CACHE_SIZE = 5000;
-const LOAD_CACHE_SIZE = 1000;
 const MODULE_VARIANT_LIMIT = 8;
-
-const isBuiltinSpecifier = (specifier) => {
-  const normalized = specifier.startsWith('node:')
-    ? specifier.slice(5)
-    : specifier;
-  return (
-    NativeModule.builtinModules?.includes(normalized) ||
-    NativeModule.builtinModules?.includes(`node:${normalized}`)
-  );
-};
 
 const packageTypeCache = new Map();
 
@@ -171,578 +144,11 @@ const shouldPreferImport = (resolvedFile) => {
   return getPackageType(resolvedFile) === 'module';
 };
 
-const isPlainObject = (value) => {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return false;
-  }
-
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype === null || prototype === Object.prototype) {
-    return true;
-  }
-
-  return Object.getPrototypeOf(prototype) === null;
-};
-
-const ENCODED_GLOBAL_ENVELOPE_KEY = '__wyw_eval_global';
-const ENCODED_GLOBAL_SIGNATURE = 'wyw-eval-global';
-const ENCODED_GLOBAL_VERSION = 1;
-const IDENTIFIER_RE = /^[A-Za-z_$][\w$]*$/u;
-const ARRAY_INDEX_RE = /^(?:0|[1-9]\d*)$/;
-const IPC_SUPPORTED_VALUE_HINT =
-  'Use importOverrides to mock the import or return plain data: null, booleans, strings, numbers, bigint, undefined, arrays, plain objects, and Error.';
-
-const getObjectTypeName = (value) => {
-  const { constructor } = value ?? {};
-  if (
-    constructor &&
-    typeof constructor.name === 'string' &&
-    constructor.name.length > 0
-  ) {
-    return constructor.name;
-  }
-
-  const tag = Object.prototype.toString.call(value);
-  return tag.slice(8, -1) || 'Object';
-};
-
-const getBoxedPrimitiveValue = (value) => {
-  const tag = Object.prototype.toString.call(value);
-
-  if (tag === '[object String]') {
-    return { kind: 'string', value: String(value.valueOf()) };
-  }
-
-  if (tag === '[object Number]') {
-    return { kind: 'number', value: Number(value.valueOf()) };
-  }
-
-  if (tag === '[object Boolean]') {
-    return { kind: 'boolean', value: Boolean(value.valueOf()) };
-  }
-
-  return null;
-};
-
-const formatPath = (rootLabel, pathSegments) =>
-  pathSegments.reduce((acc, segment) => {
-    if (typeof segment === 'number') {
-      return `${acc}[${segment}]`;
-    }
-
-    if (typeof segment === 'symbol') {
-      return `${acc}[${String(segment)}]`;
-    }
-
-    if (IDENTIFIER_RE.test(segment)) {
-      return `${acc}.${segment}`;
-    }
-
-    return `${acc}[${JSON.stringify(segment)}]`;
-  }, rootLabel);
-
-const formatGlobalsPath = (pathSegments) =>
-  formatPath('eval.globals', pathSegments);
-
-const restoreGlobalFunction = (source, pathSegments) => {
-  try {
-    // eslint-disable-next-line no-eval
-    const restored = eval(`(${source})`);
-    if (typeof restored !== 'function') {
-      throw new TypeError('decoded source is not a function');
-    }
-
-    return restored;
-  } catch (error) {
-    throw new Error(
-      `[wyw-in-js] Failed to restore eval.globals function at ${formatGlobalsPath(
-        pathSegments
-      )}. ` +
-        `Ensure the value is a user-defined function expression/arrow function. ` +
-        `Native and bound functions are not supported. ` +
-        `Original error: ${String(error)}`
-    );
-  }
-};
-
-const isEncodedGlobalPayload = (value) => {
-  if (!isPlainObject(value)) {
-    return false;
-  }
-
-  if (
-    value.signature !== ENCODED_GLOBAL_SIGNATURE ||
-    value.version !== ENCODED_GLOBAL_VERSION
-  ) {
-    return false;
-  }
-
-  if (value.kind === 'function') {
-    return typeof value.source === 'string';
-  }
-
-  if (value.kind === 'symbol') {
-    return typeof value.description === 'string';
-  }
-
-  return false;
-};
-
-const isEncodedGlobalEnvelope = (value) => {
-  if (!isPlainObject(value)) {
-    return false;
-  }
-
-  const keys = Object.keys(value);
-  if (keys.length !== 1 || keys[0] !== ENCODED_GLOBAL_ENVELOPE_KEY) {
-    return false;
-  }
-
-  return isEncodedGlobalPayload(value[ENCODED_GLOBAL_ENVELOPE_KEY]);
-};
-
-const canonicalizeForSignature = (value) => {
-  if (Array.isArray(value)) {
-    return value.map((item) => canonicalizeForSignature(item));
-  }
-
-  if (isPlainObject(value)) {
-    return Object.fromEntries(
-      Object.keys(value)
-        .sort()
-        .map((key) => [key, canonicalizeForSignature(value[key])])
-    );
-  }
-
-  return value;
-};
-
-const decodeGlobals = (value, pathSegments = []) => {
-  if (Array.isArray(value)) {
-    return value.map((item, index) =>
-      decodeGlobals(item, [...pathSegments, index])
-    );
-  }
-
-  if (isEncodedGlobalEnvelope(value)) {
-    const payload = value[ENCODED_GLOBAL_ENVELOPE_KEY];
-    if (payload.kind === 'function') {
-      return restoreGlobalFunction(payload.source, pathSegments);
-    }
-
-    return Symbol(payload.description);
-  }
-
-  if (isPlainObject(value)) {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [
-        key,
-        decodeGlobals(item, [...pathSegments, key]),
-      ])
-    );
-  }
-
-  return value;
-};
-
-const getEnumerableSymbolKeys = (value) =>
-  Object.getOwnPropertySymbols(value).filter((key) =>
-    Object.prototype.propertyIsEnumerable.call(value, key)
-  );
-
-const IPC_SERIALIZATION_ERROR = Symbol('wyw.ipcSerializationError');
-
-const createIpcSerializationError = (message) =>
-  Object.assign(new Error(message), { [IPC_SERIALIZATION_ERROR]: true });
-
-const isIpcSerializationError = (error) =>
-  typeof error === 'object' &&
-  error !== null &&
-  IPC_SERIALIZATION_ERROR in error;
-
-const isLikeError = (value) =>
-  typeof value === 'object' &&
-  value !== null &&
-  !isPlainObject(value) &&
-  'message' in value &&
-  typeof value.message === 'string' &&
-  ('stack' in value || 'name' in value);
-
-const throwUnsupportedIpcValue = (rootLabel, pathSegments, description) => {
-  throw createIpcSerializationError(
-    `[wyw-in-js] ${rootLabel} contains ${description} at ${formatPath(
-      rootLabel,
-      pathSegments
-    )}. ${IPC_SUPPORTED_VALUE_HINT}`
-  );
-};
-
-const serializeUnavailableError = (error) => {
-  if (typeof error === 'object' && error !== null) {
-    try {
-      const { message, name, stack } = error;
-      if (typeof message === 'string') {
-        return {
-          message,
-          name: typeof name === 'string' ? name : undefined,
-          stack: typeof stack === 'string' ? stack : undefined,
-        };
-      }
-    } catch {
-      // Fall through to the guarded string representation below. Errors may
-      // come from another VM context or even be proxy-like thrown values.
-    }
-  }
-
-  try {
-    return { message: String(error) };
-  } catch {
-    return { message: 'Unknown error' };
-  }
-};
-
-const serializeNestedValue = (
-  readValue,
-  rootLabel,
-  pathSegments,
-  seen,
-  allowFunctions,
-  allowSymbols,
-  ignoreSymbolKeys,
-  serialize
-) => {
-  // Processor values are demand-driven: a processor may inspect one metadata
-  // field without observing unrelated runtime state on the same object. Keep
-  // the serializable shell usable, but preserve failures at the exact property
-  // so data consumers still fail when they actually read it.
-  let value;
-  try {
-    value = readValue();
-  } catch (error) {
-    return {
-      kind: 'unavailable',
-      error: serializeUnavailableError(error),
-    };
-  }
-
-  try {
-    return serialize(
-      value,
-      rootLabel,
-      pathSegments,
-      seen,
-      allowFunctions,
-      allowSymbols,
-      true,
-      ignoreSymbolKeys
-    );
-  } catch (error) {
-    if (!isIpcSerializationError(error)) {
-      throw error;
-    }
-
-    return {
-      kind: 'unavailable',
-      error: serializeUnavailableError(error),
-    };
-  }
-};
-
-const serializeValueAtPath = (
-  value,
-  rootLabel,
-  pathSegments,
-  seen,
-  allowFunctions,
-  allowSymbols,
-  deferNestedFailures,
-  ignoreSymbolKeys
-) => {
-  if (value === null) {
-    return { kind: 'null' };
-  }
-  if (value === undefined) return { kind: 'undefined' };
-  if (typeof value === 'boolean') {
-    return { kind: 'boolean', value };
-  }
-  if (typeof value === 'string') {
-    return { kind: 'string', value };
-  }
-  if (typeof value === 'number') {
-    if (Number.isNaN(value)) return { kind: 'nan' };
-    if (value === Infinity) return { kind: 'infinity' };
-    if (value === -Infinity) return { kind: '-infinity' };
-    return { kind: 'number', value };
-  }
-  if (typeof value === 'bigint') {
-    return { kind: 'bigint', value: value.toString() };
-  }
-  if (typeof value === 'function') {
-    if (allowFunctions) {
-      // __wywPreval consumers only rely on function-ness, not implementation
-      // identity. Preserve that signal explicitly instead of letting JSON
-      // coerce to null/undefined.
-      return { kind: 'function' };
-    }
-
-    throwUnsupportedIpcValue(
-      rootLabel,
-      pathSegments,
-      'an unsupported function'
-    );
-  }
-  if (typeof value === 'symbol') {
-    if (allowSymbols) {
-      return { kind: 'symbol', description: value.description ?? '' };
-    }
-
-    throwUnsupportedIpcValue(rootLabel, pathSegments, 'an unsupported symbol');
-  }
-  if (typeof value === 'object' && value !== null) {
-    const boxed = getBoxedPrimitiveValue(value);
-    if (boxed) {
-      if (boxed.kind === 'number') {
-        if (Number.isNaN(boxed.value)) return { kind: 'nan' };
-        if (boxed.value === Infinity) return { kind: 'infinity' };
-        if (boxed.value === -Infinity) return { kind: '-infinity' };
-      }
-
-      return boxed;
-    }
-  }
-  if (isLikeError(value)) {
-    return {
-      kind: 'error',
-      error: {
-        message: value.message,
-        name: value.name,
-        stack: value.stack,
-      },
-    };
-  }
-
-  const currentPath = formatPath(rootLabel, pathSegments);
-  const seenAt = seen.get(value);
-  if (seenAt) {
-    throw createIpcSerializationError(
-      `[wyw-in-js] ${rootLabel} contains a circular reference at ${currentPath} (from ${seenAt}). ${IPC_SUPPORTED_VALUE_HINT}`
-    );
-  }
-
-  if (Array.isArray(value)) {
-    const symbolKeys = getEnumerableSymbolKeys(value);
-    if (symbolKeys.length > 0 && !ignoreSymbolKeys) {
-      throwUnsupportedIpcValue(
-        rootLabel,
-        [...pathSegments, symbolKeys[0]],
-        'an unsupported symbol-keyed property'
-      );
-    }
-
-    const extraKey = Object.keys(value).find(
-      (key) => !ARRAY_INDEX_RE.test(key) || Number(key) >= value.length
-    );
-    if (extraKey !== undefined) {
-      throwUnsupportedIpcValue(
-        rootLabel,
-        [...pathSegments, extraKey],
-        'an unsupported non-index array property'
-      );
-    }
-
-    seen.set(value, currentPath);
-    try {
-      return {
-        kind: 'array',
-        items: Array.from({ length: value.length }, (_, index) =>
-          deferNestedFailures
-            ? serializeNestedValue(
-                () => value[index],
-                rootLabel,
-                [...pathSegments, index],
-                seen,
-                allowFunctions,
-                allowSymbols,
-                ignoreSymbolKeys,
-                serializeValueAtPath
-              )
-            : serializeValueAtPath(
-                value[index],
-                rootLabel,
-                [...pathSegments, index],
-                seen,
-                allowFunctions,
-                allowSymbols,
-                false,
-                ignoreSymbolKeys
-              )
-        ),
-      };
-    } finally {
-      seen.delete(value);
-    }
-  }
-
-  if (!isPlainObject(value)) {
-    throwUnsupportedIpcValue(
-      rootLabel,
-      pathSegments,
-      `an unsupported non-plain object (${getObjectTypeName(value)})`
-    );
-  }
-
-  const symbolKeys = getEnumerableSymbolKeys(value);
-  if (symbolKeys.length > 0 && !ignoreSymbolKeys) {
-    throwUnsupportedIpcValue(
-      rootLabel,
-      [...pathSegments, symbolKeys[0]],
-      'an unsupported symbol-keyed property'
-    );
-  }
-
-  seen.set(value, currentPath);
-  try {
-    return {
-      kind: 'object',
-      entries: Object.fromEntries(
-        deferNestedFailures
-          ? Object.keys(value).map((key) => [
-              key,
-              serializeNestedValue(
-                () => value[key],
-                rootLabel,
-                [...pathSegments, key],
-                seen,
-                allowFunctions,
-                allowSymbols,
-                ignoreSymbolKeys,
-                serializeValueAtPath
-              ),
-            ])
-          : Object.entries(value).map(([key, item]) => [
-              key,
-              serializeValueAtPath(
-                item,
-                rootLabel,
-                [...pathSegments, key],
-                seen,
-                allowFunctions,
-                allowSymbols,
-                false,
-                ignoreSymbolKeys
-              ),
-            ])
-      ),
-    };
-  } finally {
-    seen.delete(value);
-  }
-};
-
 const isErrRequireEsm = (error) =>
   typeof error === 'object' &&
   error !== null &&
   'code' in error &&
   error.code === 'ERR_REQUIRE_ESM';
-
-const serializeValue = (value, options = {}) =>
-  serializeValueAtPath(
-    value,
-    options.rootLabel ?? 'value',
-    options.path ?? [],
-    new WeakMap(),
-    options.allowFunctions ?? false,
-    options.allowSymbols ?? false,
-    options.deferNestedFailures ?? false,
-    options.ignoreSymbolKeys ?? false
-  );
-
-const deserializeError = (value) => {
-  const error = new Error(value?.message ?? '');
-  if (value?.name) {
-    error.name = value.name;
-  }
-  if (value?.stack) {
-    error.stack = value.stack;
-  }
-  return error;
-};
-
-const defineDeserializedProperty = (target, key, value, deserialize) => {
-  if (value?.kind === 'unavailable') {
-    Object.defineProperty(target, key, {
-      configurable: true,
-      enumerable: true,
-      get() {
-        throw deserializeError(value.error);
-      },
-      set(replacement) {
-        Object.defineProperty(this, key, {
-          configurable: true,
-          enumerable: true,
-          value: replacement,
-          writable: true,
-        });
-      },
-    });
-    return;
-  }
-
-  Object.defineProperty(target, key, {
-    configurable: true,
-    enumerable: true,
-    value: deserialize(value),
-    writable: true,
-  });
-};
-
-const deserializeValue = (value) => {
-  switch (value?.kind) {
-    case 'null':
-      return null;
-    case 'boolean':
-    case 'string':
-    case 'number':
-      return value.value;
-    case 'undefined':
-      return undefined;
-    case 'bigint':
-      return BigInt(value.value);
-    case 'nan':
-      return Number.NaN;
-    case 'infinity':
-      return Infinity;
-    case '-infinity':
-      return -Infinity;
-    case 'function':
-      return () => {};
-    case 'symbol':
-      // eslint-disable-next-line symbol-description
-      return value.description ? Symbol.for(value.description) : Symbol();
-    case 'unavailable':
-      throw deserializeError(value.error);
-    case 'error': {
-      return deserializeError(value.error);
-    }
-    case 'array': {
-      const result = new Array(value.items.length);
-      value.items.forEach((item, index) => {
-        defineDeserializedProperty(result, index, item, deserializeValue);
-      });
-      return result;
-    }
-    case 'object': {
-      const result = {};
-      Object.entries(value.entries).forEach(([key, item]) => {
-        defineDeserializedProperty(result, key, item, deserializeValue);
-      });
-      return result;
-    }
-    case 'value':
-    default:
-      return value?.value;
-  }
-};
 
 const IMPORT_META_ENV = '__wyw_import_meta_env';
 
@@ -919,29 +325,6 @@ const createBaseContext = (win, additionalContext) => {
   return baseContext;
 };
 
-const featureMatchers = new Map();
-
-const isFeatureEnabled = (features, featureName, filename) => {
-  const value = features?.[featureName] ?? false;
-  if (typeof value === 'boolean') return value;
-  if (value === '*' || value === '**/*') return true;
-
-  const array = Array.isArray(value) ? value : [value];
-  return array
-    .map((pattern) => {
-      let matcher = featureMatchers.get(pattern);
-      if (!matcher) {
-        matcher = [pattern.startsWith('!'), new Minimatch(pattern)];
-        featureMatchers.set(pattern, matcher);
-      }
-      return [matcher[0], matcher[1].match(filename)];
-    })
-    .reduce(
-      (acc, [negated, match]) => (negated ? acc && match : acc || match),
-      false
-    );
-};
-
 const createVmContext = async (filename, features, globals) => {
   const isHappyDomEnabled = isFeatureEnabled(features, 'happyDOM', filename);
   const win = isHappyDomEnabled ? await createWindow() : undefined;
@@ -969,9 +352,6 @@ const createVmContext = async (filename, features, globals) => {
     },
   };
 };
-
-const stripQueryAndHash = (value) =>
-  value.split('?')[0]?.split('#')[0] ?? value;
 
 const isBarePackageSubpath = (id) => {
   if (id.startsWith('.') || path.isAbsolute(id)) return false;
@@ -1197,7 +577,7 @@ const state = {
   entrypoint: 'eval-runner',
 };
 
-const moduleCache = new LruCache(LOAD_CACHE_SIZE);
+const moduleCache = new LruCache(EVAL_LOAD_CACHE_SIZE);
 const moduleHashes = new Map();
 const moduleData = new Map();
 const moduleOnly = new Map();
@@ -1207,7 +587,7 @@ const linkPromises = new Map();
 const loadInFlight = new Map();
 const externalInFlight = new Map();
 const dynamicEvaluations = new Set();
-const resolveCache = new LruCache(RESOLVE_CACHE_SIZE);
+const resolveCache = new LruCache(EVAL_RESOLVE_CACHE_SIZE);
 const resolveInFlight = new Map();
 
 const pending = new Map();
@@ -1221,10 +601,7 @@ let activeSessionRef = { id: 0 };
 // would have no way to obtain fresh source.
 const evictedThisSession = new Set();
 let nextId = 0;
-const stdoutWriteQueue = [];
-let stdoutWriteInFlight = false;
-let stdoutWriteFailed = null;
-let shutdownRequested = false;
+let stdoutWriteFailed = false;
 let shutdownFinished = false;
 
 // Tracks the SourceTextModule identifier (versioned with hash) that was last
@@ -1330,14 +707,6 @@ const abandonStaleSession = () => new Promise(() => {});
 
 const isSessionActive = (sessionId) => sessionId === activeSessionId;
 
-const normalizeWriteError = (label, error) => {
-  if (error instanceof Error) {
-    return error;
-  }
-
-  return new Error(`[wyw-in-js] Failed to write to ${label}: ${String(error)}`);
-};
-
 const keepAlive = setInterval(() => {}, 60_000);
 
 const finishShutdown = (exitCode = 0) => {
@@ -1353,150 +722,41 @@ const finishShutdown = (exitCode = 0) => {
   process.exit(exitCode);
 };
 
-const flushStdoutWriteQueue = () => {
-  if (stdoutWriteInFlight || stdoutWriteFailed) {
+// Frames go out one at a time through the saved write of the real stdout,
+// while the stream events come from process.stdout itself.
+const stdoutWriteQueue = createWriteQueue(
+  {
+    off: (event, listener) => process.stdout.off(event, listener),
+    once: (event, listener) => process.stdout.once(event, listener),
+    write: (chunk, callback) => writeProtocolStdout(chunk, callback),
+  },
+  'eval runner stdout'
+);
+
+const onStdoutWriteFailed = (error) => {
+  if (stdoutWriteFailed) {
     return;
   }
 
-  const next = stdoutWriteQueue.shift();
-  if (!next) {
-    if (shutdownRequested) {
-      finishShutdown(0);
-    }
-    return;
-  }
-
-  stdoutWriteInFlight = true;
-  let settled = false;
-  let writeCompleted = false;
-  let drainCompleted = true;
-  let onClose;
-  let onDrain;
-  let onError;
-
-  const cleanup = () => {
-    process.stdout.off('close', onClose);
-    process.stdout.off('drain', onDrain);
-    process.stdout.off('error', onError);
-  };
-
-  const finish = (error) => {
-    if (settled) {
-      return;
-    }
-
-    if (error) {
-      settled = true;
-      stdoutWriteInFlight = false;
-      cleanup();
-      stdoutWriteFailed = normalizeWriteError('eval runner stdout', error);
-      next.reject(stdoutWriteFailed);
-      while (stdoutWriteQueue.length > 0) {
-        stdoutWriteQueue.shift().reject(stdoutWriteFailed);
-      }
-      process.stderr.write(`[wyw-eval-runner] ${stdoutWriteFailed.message}\n`);
-      finishShutdown(1);
-      return;
-    }
-
-    if (!writeCompleted || !drainCompleted) {
-      return;
-    }
-
-    settled = true;
-    stdoutWriteInFlight = false;
-    cleanup();
-    next.resolve();
-    flushStdoutWriteQueue();
-  };
-
-  onClose = () => {
-    finish(
-      new Error('eval runner stdout closed before pending write completed')
-    );
-  };
-
-  onDrain = () => {
-    drainCompleted = true;
-    finish();
-  };
-
-  onError = (error) => {
-    finish(error);
-  };
-
-  process.stdout.once('close', onClose);
-  process.stdout.once('error', onError);
-
-  const needsDrain = !writeProtocolStdout(next.chunk, (error) => {
-    writeCompleted = true;
-    if (error) {
-      finish(error);
-      return;
-    }
-
-    finish();
-  });
-
-  if (needsDrain) {
-    drainCompleted = false;
-    process.stdout.once('drain', onDrain);
-  }
+  stdoutWriteFailed = true;
+  process.stderr.write(`[wyw-eval-runner] ${error.message}\n`);
+  finishShutdown(1);
 };
-
-const queueStdoutWrite = (chunk) =>
-  new Promise((resolve, reject) => {
-    if (stdoutWriteFailed) {
-      reject(stdoutWriteFailed);
-      return;
-    }
-
-    stdoutWriteQueue.push({ chunk, resolve, reject });
-    flushStdoutWriteQueue();
-  });
 
 const sendMessage = (message) => {
-  queueStdoutWrite(`${JSON.stringify(message)}\n`).catch(() => {});
+  stdoutWriteQueue
+    .write(`${JSON.stringify(message)}\n`)
+    .catch(onStdoutWriteFailed);
 };
 
+// Exits once every frame is written. A failed write exits through
+// onStdoutWriteFailed instead.
 const shutdown = () => {
-  shutdownRequested = true;
-  if (!stdoutWriteInFlight && stdoutWriteQueue.length === 0) {
-    finishShutdown(0);
-  }
+  stdoutWriteQueue.onIdle().then(() => finishShutdown(0), NOOP);
 };
 
 const sendWarn = (warning) => {
   sendMessage({ type: 'WARN', payload: warning });
-};
-
-const reviveSerializedError = (error) => {
-  if (error instanceof Error) {
-    return error;
-  }
-
-  const revived = new Error(error?.message ?? String(error));
-  if (error?.name) {
-    revived.name = error.name;
-  }
-  if (error?.stack) {
-    revived.stack = error.stack;
-  }
-  if (error?.cause) {
-    revived.cause = reviveSerializedError(error.cause);
-  }
-  return revived;
-};
-
-const serializeError = (error) => {
-  const result = {
-    message: error?.message ?? String(error),
-    stack: error?.stack,
-  };
-  if (error?.cause instanceof Error) {
-    result.cause = serializeError(error.cause);
-  }
-  return result;
 };
 
 const request = (type, payload, sessionId = activeSessionId) => {
@@ -1702,13 +962,10 @@ const createRequireFn = (importer) => {
       return {};
     }
 
-    const normalized = specifier.startsWith('node:')
-      ? specifier.slice(5)
-      : specifier;
-    if (
-      NativeModule.builtinModules?.includes(normalized) ||
-      NativeModule.builtinModules?.includes(`node:${normalized}`)
-    ) {
+    if (isBuiltinSpecifier(specifier)) {
+      const normalized = specifier.startsWith('node:')
+        ? specifier.slice(5)
+        : specifier;
       if (normalized in builtins) {
         if (builtins[normalized]) {
           return nodeRequire(normalized);
@@ -2211,7 +1468,7 @@ resolveModule = async (
     );
 
     if (resolved.error) {
-      throw new Error(resolved.error.message);
+      throw deserializeError(resolved.error);
     }
 
     const normalized = resolved.resolvedId
@@ -2331,7 +1588,7 @@ const loadModuleUnqueued = async (
     }
     evictPoisonedModule(id);
     const enhanced = new Error(detail);
-    enhanced.cause = reviveSerializedError(loaded.error);
+    enhanced.cause = deserializeError(loaded.error);
     throw enhanced;
   }
 
@@ -2767,14 +2024,7 @@ async function evaluateEntrypoint(id) {
     } catch (error) {
       value = error;
     }
-    values[key] = serializeValue(value, {
-      allowFunctions: true,
-      allowSymbols: true,
-      deferNestedFailures: true,
-      ignoreSymbolKeys: true,
-      rootLabel: '__wywPreval',
-      path: [key],
-    });
+    Object.assign(values, serializePreval({ [key]: value }));
     if (debugPreval) {
       debugPreval[key] = {
         serialized: values[key],
@@ -2823,7 +2073,7 @@ const handleMessage = async (message) => {
         }
         const encodedGlobals = message.payload.evalOptions.globals ?? {};
         const nextGlobalsSignature = JSON.stringify(
-          canonicalizeForSignature(encodedGlobals)
+          canonicalizeForHash(encodedGlobals)
         );
         const nextFeatures = message.payload.features ?? {};
         const nextDebugEvalFiles = Boolean(message.payload.debugEvalFiles);
@@ -2840,7 +2090,7 @@ const handleMessage = async (message) => {
         const nextGlobals =
           reuseModules && !globalsChanged && state.globalsSignature !== null
             ? state.evalOptions.globals
-            : decodeGlobals(encodedGlobals);
+            : decodeGlobals(encodedGlobals, evaluateGlobalFunction);
         const nextEvalOptions = {
           ...message.payload.evalOptions,
           globals: nextGlobals,

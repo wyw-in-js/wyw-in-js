@@ -10,6 +10,8 @@ import {
 import { dirname, join, resolve } from 'path';
 import { tmpdir } from 'os';
 
+import { serializeValue } from '@wyw-in-js/shared';
+
 import {
   loadWywOptions,
   type PartialOptions,
@@ -30,7 +32,6 @@ import {
   stripEntrypointGlobalsFromRunnerContext,
 } from '../eval/broker';
 import { prepareModuleOnDemand } from '../eval/prepareModuleOnDemand';
-import { serializeValue } from '../eval/serialize';
 import { registerEvalTelemetryReporter } from '../debug/evalTelemetry';
 import { EventEmitter } from '../utils/EventEmitter';
 import {
@@ -6377,6 +6378,110 @@ describe('EvalBroker', () => {
 
     broker.dispose();
     rmSync(root, { recursive: true, force: true });
+  });
+
+  it('fails an evaluation with the name and the cause chain of a resolver error', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wyw-eval-broker-'));
+    const entry = join(root, 'entry.js');
+    writeFileSync(
+      entry,
+      [
+        "import { value } from './dep.js';",
+        'export const __wywPreval = { v: () => value };',
+      ].join('\n')
+    );
+
+    const customResolver = jest.fn(async () => {
+      throw new TypeError('resolver failed', {
+        cause: new RangeError('resolver detail'),
+      });
+    });
+    const services = createServices(root, entry, {
+      eval: { customResolver, resolver: 'custom' },
+    });
+    const broker = new EvalBroker(
+      services,
+      jest.fn(async () => null)
+    );
+    services.evalBroker = broker;
+
+    const ep = Entrypoint.createRoot(
+      services,
+      entry,
+      ['__wywPreval'],
+      readFileSync(entry, 'utf-8')
+    );
+
+    try {
+      const error = await broker.evaluate(ep).then(
+        () => undefined,
+        (reason: unknown) => reason
+      );
+
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe('resolver failed');
+      expect((error as Error).name).toBe('TypeError');
+      const cause = (error as Error).cause as Error | undefined;
+      expect(cause?.message).toBe('resolver detail');
+      expect(cause?.name).toBe('RangeError');
+    } finally {
+      broker.dispose();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the name and the cause chain of a loader error under the load failure', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wyw-eval-broker-'));
+    const entry = join(root, 'entry.js');
+    const dep = join(root, 'dep.js');
+    writeFileSync(
+      entry,
+      [
+        "import { value } from './dep.js';",
+        'export const __wywPreval = { v: () => value };',
+      ].join('\n')
+    );
+    writeFileSync(dep, 'export const value = 1;');
+
+    const customLoader = jest.fn(async () => {
+      throw new TypeError('loader failed', {
+        cause: new RangeError('loader detail'),
+      });
+    });
+    const services = createServices(root, entry, {
+      eval: { customLoader },
+    });
+    const broker = new EvalBroker(
+      services,
+      jest.fn(async () => dep)
+    );
+    services.evalBroker = broker;
+
+    const ep = Entrypoint.createRoot(
+      services,
+      entry,
+      ['__wywPreval'],
+      readFileSync(entry, 'utf-8')
+    );
+
+    try {
+      const error = await broker.evaluate(ep).then(
+        () => undefined,
+        (reason: unknown) => reason
+      );
+
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toMatch(/loader failed/);
+      const loaderError = (error as Error).cause as Error | undefined;
+      expect(loaderError?.message).toBe('loader failed');
+      expect(loaderError?.name).toBe('TypeError');
+      const detail = loaderError?.cause as Error | undefined;
+      expect(detail?.message).toBe('loader detail');
+      expect(detail?.name).toBe('RangeError');
+    } finally {
+      broker.dispose();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('recovers after a transient missing import is fixed on disk', async () => {

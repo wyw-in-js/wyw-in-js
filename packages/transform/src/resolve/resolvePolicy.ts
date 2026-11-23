@@ -12,17 +12,17 @@
 import fs from 'fs';
 import path from 'path';
 
-import type {
-  EvalOptionsV2,
-  EvalRequireMode,
-  EvalResolverKind,
-  EvalResolverMode,
-  ImportOverride,
-  StrictOptions,
+import {
+  stripQueryAndHash,
+  type EvalOptionsV2,
+  type EvalRequireMode,
+  type EvalResolverKind,
+  type EvalResolverMode,
+  type ImportOverride,
+  type StrictOptions,
 } from '@wyw-in-js/shared';
 
 import { resolveWithNativeResolver } from '../utils/nativeResolver';
-import { stripQueryAndHash } from '../utils/parseRequest';
 
 /**
  * `prepare` builds the dependency graph: a miss means the import is ignored.

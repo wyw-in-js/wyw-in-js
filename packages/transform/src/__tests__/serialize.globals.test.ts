@@ -1,4 +1,4 @@
-import { decodeGlobals, encodeGlobals } from '../eval/serialize';
+import { decodeGlobals, encodeGlobals } from '@wyw-in-js/shared';
 
 describe('eval.globals serialization', () => {
   it('does not treat user data marker-like keys as encoded payload', () => {

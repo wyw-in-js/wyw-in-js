@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events';
 
-import { createWriteQueue } from '../eval/writeQueue';
+import { createWriteQueue } from '@wyw-in-js/shared';
 
 class MockWritable extends EventEmitter {
   public readonly writes: string[] = [];

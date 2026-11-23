@@ -18,14 +18,15 @@ import * as vm from 'vm';
 import { pathToFileURL } from 'url';
 
 import { invariant } from 'ts-invariant';
-
-import { isFeatureEnabled } from '@wyw-in-js/shared';
-import type {
-  Debugger,
-  EvalResolverKind,
-  EvalWarning,
-  ImportLoaderContext,
-  ImportLoaders,
+import {
+  isFeatureEnabled,
+  parseRequest,
+  stripQueryAndHash,
+  type Debugger,
+  type EvalResolverKind,
+  type EvalWarning,
+  type ImportLoaderContext,
+  type ImportLoaders,
 } from '@wyw-in-js/shared';
 
 import './utils/dispose-polyfill';
@@ -53,7 +54,6 @@ import {
   toImportKey,
 } from './utils/importOverrides';
 import { resolveWithNativeResolver } from './utils/nativeResolver';
-import { parseRequest, stripQueryAndHash } from './utils/parseRequest';
 import { resolveFilenameWithConditions } from './utils/resolveWithConditions';
 import { createVmContext } from './vm/createVmContext';
 

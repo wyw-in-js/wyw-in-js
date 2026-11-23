@@ -4,11 +4,12 @@ import { createHash } from 'crypto';
 import { readFileSync, statSync } from 'fs';
 import { isAbsolute } from 'path';
 
+import { stripQueryAndHash } from '@wyw-in-js/shared';
+
 import { defineFileScopedStore } from '../../../cache/fileScopedStore';
 import type { FileScopedStore } from '../../../cache/fileScopedStore';
 import { oxcShaker } from '../../../shaker';
 import { runOxcPreevalStage } from '../../../utils/oxcPreevalStage';
-import { stripQueryAndHash } from '../../../utils/parseRequest';
 import type { ITransformAction } from '../../types';
 import { isEnvDisabled, parseProgram } from './environment';
 import type {

@@ -1,8 +1,8 @@
 import path from 'path';
 
-import { stripQueryAndHash } from '../utils/parseRequest';
+import { isBuiltinSpecifier, stripQueryAndHash } from '@wyw-in-js/shared';
 
-import { isBuiltinSpecifier, isVirtualSpecifier } from './brokerSession';
+import { isVirtualSpecifier } from './brokerSession';
 
 type DependencyGraphEntrypoint = {
   dependencies?: ReadonlyMap<string, { resolved: string | null }>;

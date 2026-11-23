@@ -12,7 +12,17 @@ type QueueWritable = {
   write(chunk: string, callback?: StreamWriteCallback): boolean;
 };
 
+/**
+ * Serializes writes to one stream: each write waits for the previous one and
+ * for `drain`. After the first failure every later write is rejected.
+ *
+ * @internal Shared by the eval broker and the eval runner.
+ */
 export type WriteQueue = {
+  /**
+   * Settles once no write is pending, writes queued while waiting included.
+   * Rejects with the error of a failed write.
+   */
   onIdle(): Promise<void>;
   write(chunk: string): Promise<void>;
 };
@@ -25,6 +35,12 @@ const normalizeWriteError = (label: string, error: unknown): Error => {
   return new Error(`[wyw-in-js] Failed to write to ${label}: ${String(error)}`);
 };
 
+/**
+ * Writes one chunk and settles when the chunk is flushed, or rejects when the
+ * stream fails or closes first.
+ *
+ * @internal Shared by the eval broker and the eval runner.
+ */
 export const writeToStream = (
   stream: QueueWritable,
   chunk: string,
@@ -104,6 +120,7 @@ export const writeToStream = (
     }
   });
 
+/** @internal Shared by the eval broker and the eval runner. */
 export const createWriteQueue = (
   stream: QueueWritable,
   label: string
@@ -111,10 +128,13 @@ export const createWriteQueue = (
   let failed: Error | null = null;
   let tail = Promise.resolve();
 
+  const onIdle = (): Promise<void> => {
+    const current = tail;
+    return current.then(() => (tail === current ? undefined : onIdle()));
+  };
+
   return {
-    onIdle() {
-      return tail;
-    },
+    onIdle,
     write(chunk: string) {
       if (failed) {
         return Promise.reject(failed);

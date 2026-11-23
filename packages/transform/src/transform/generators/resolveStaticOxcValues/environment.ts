@@ -4,8 +4,9 @@ import { isAbsolute, relative } from 'path';
 
 import type { Program } from 'oxc-parser';
 
+import { stripQueryAndHash } from '@wyw-in-js/shared';
+
 import { parseOxcProgram } from '../../../utils/oxc/parse';
-import { stripQueryAndHash } from '../../../utils/parseRequest';
 import type { ITransformAction } from '../../types';
 import type { StaticResolveDebugEvent } from './types';
 import type { OxcPureCallHint } from '../../../utils/collectOxcTemplateDependencies';

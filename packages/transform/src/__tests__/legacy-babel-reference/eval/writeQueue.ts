@@ -1,2 +1,1 @@
-export * from '../../../eval/writeQueue';
-
+export { writeToStream } from '@wyw-in-js/shared';

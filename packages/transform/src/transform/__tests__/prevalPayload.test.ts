@@ -1,7 +1,8 @@
 /* eslint-env jest */
 
+import { deserializeValue, serializePreval } from '@wyw-in-js/shared';
+
 import { createPrevalPayload } from '../prevalPayload';
-import { deserializeValue, serializePreval } from '../../eval/serialize';
 
 const filename = '/project/src/entry.tsx';
 

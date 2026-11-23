@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { logger } from '@wyw-in-js/shared';
+import { logger, stripQueryAndHash } from '@wyw-in-js/shared';
 
 import type { TransformCacheEpoch } from './cacheLifecycle';
 import { hashDiskContent } from './diskContent';
@@ -16,7 +16,6 @@ import {
   type DependencyToCheck,
 } from './cacheTypes';
 import { hashContent } from '../utils/contentHash';
-import { stripQueryAndHash } from '../utils/parseRequest';
 
 const cacheLogger = logger.extend('cache');
 
