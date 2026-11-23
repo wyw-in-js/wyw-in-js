@@ -1186,9 +1186,7 @@ export class EvalBroker {
         resolve(value);
       };
 
-      const finalizeReject = (
-        value: Error | { message: string; stack?: string }
-      ) => {
+      const finalizeReject = (value: Error) => {
         if (settled) {
           return;
         }
@@ -1242,7 +1240,7 @@ export class EvalBroker {
 
           if (message.error) {
             runner.kill();
-            finalizeReject(message.error);
+            finalizeReject(deserializeError(message.error));
             return;
           }
 
@@ -1553,7 +1551,7 @@ export class EvalBroker {
             this.retireRunner(
               failedRunner,
               'init-error',
-              new Error(message.error.message)
+              deserializeError(message.error)
             );
           }
           return;

@@ -1475,7 +1475,7 @@ resolveModule = async (
     );
 
     if (resolved.error) {
-      throw new Error(resolved.error.message);
+      throw deserializeError(resolved.error);
     }
 
     const normalized = resolved.resolvedId
