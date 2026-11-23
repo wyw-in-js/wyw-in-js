@@ -9,14 +9,12 @@ import type {
   TransformCaller,
 } from '@babel/core';
 import { parseSync } from '@babel/core';
-import { isPlainObject } from '@wyw-in-js/shared';
+import { encodeGlobals, isPlainObject } from '@wyw-in-js/shared';
 import type {
   PluginOptions,
   WYWTransformMetadata,
   WYWTransformResultMetadata,
 } from '@wyw-in-js/transform';
-
-import { encodeGlobals } from './globals';
 
 type SyncTransformPayload = {
   code: string;
