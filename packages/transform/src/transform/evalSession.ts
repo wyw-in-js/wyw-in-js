@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 import path from 'path';
 
-import { canonicalizeForHash } from '@wyw-in-js/shared';
+import { canonicalizeForHash, encodeGlobals } from '@wyw-in-js/shared';
 import type { StrictOptions } from '@wyw-in-js/shared';
 
 import { getEvalBroker } from '../eval/broker';
@@ -9,7 +9,6 @@ import {
   getSharedFunctionId,
   readRegistryShare,
 } from '../hostSession/registryShare';
-import { encodeGlobals } from '../eval/serialize';
 
 import { asyncResolveImports } from './generators/resolveImports';
 import type { Handler, IResolveImportsAction, Services } from './types';

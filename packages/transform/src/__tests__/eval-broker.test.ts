@@ -10,6 +10,8 @@ import {
 import { dirname, join, resolve } from 'path';
 import { tmpdir } from 'os';
 
+import { serializeValue } from '@wyw-in-js/shared';
+
 import {
   loadWywOptions,
   type PartialOptions,
@@ -30,7 +32,6 @@ import {
   stripEntrypointGlobalsFromRunnerContext,
 } from '../eval/broker';
 import { prepareModuleOnDemand } from '../eval/prepareModuleOnDemand';
-import { serializeValue } from '../eval/serialize';
 import { registerEvalTelemetryReporter } from '../debug/evalTelemetry';
 import { EventEmitter } from '../utils/EventEmitter';
 import {

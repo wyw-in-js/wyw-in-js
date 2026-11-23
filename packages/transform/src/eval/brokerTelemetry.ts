@@ -1,6 +1,8 @@
 /* eslint-disable no-await-in-loop, no-void */
 import { invariant } from 'ts-invariant';
 
+import type { WriteQueue } from '@wyw-in-js/shared';
+
 import type {
   EvalBrokerMirrorSnapshot,
   EvalLoadTransmission,
@@ -8,7 +10,6 @@ import type {
 } from '../debug/evalTelemetry';
 
 import type { LoadResultPayload, MainToRunnerMessage } from './protocol';
-import type { WriteQueue } from './writeQueue';
 
 export const EVAL_MAX_MESSAGE_SIZE = 10 * 1024 * 1024;
 const EVAL_MAX_CHUNK_SIZE = 512 * 1024;

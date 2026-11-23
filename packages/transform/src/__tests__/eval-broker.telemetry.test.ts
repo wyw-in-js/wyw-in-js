@@ -5,8 +5,9 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { PassThrough } from 'stream';
 
+import { LruCache, serializeValue } from '@wyw-in-js/shared';
+
 import { disposeEvalBroker, EvalBroker, getEvalBroker } from '../eval/broker';
-import { LruCache } from '../eval/lru';
 import {
   beginEvalTelemetry,
   registerEvalTelemetryReporter,
@@ -21,7 +22,6 @@ import {
 } from '../transform/helpers/loadWywOptions';
 import { withDefaultServices } from '../transform/helpers/withDefaultServices';
 import { shaker } from '../shaker';
-import { serializeValue } from '../eval/serialize';
 import { EventEmitter } from '../utils/EventEmitter';
 
 const createEmitter = () => {

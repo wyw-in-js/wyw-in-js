@@ -4,7 +4,22 @@ import path from 'path';
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 
 import type { EvalWarning, FeatureFlags } from '@wyw-in-js/shared';
-import { isFeatureEnabled } from '@wyw-in-js/shared';
+import {
+  EVAL_LOAD_CACHE_SIZE,
+  EVAL_RESOLVE_CACHE_SIZE,
+  LruCache,
+  createWriteQueue,
+  deserializeError,
+  deserializeValue,
+  isBuiltinSpecifier,
+  isFeatureEnabled,
+  serializeError,
+  stripQueryAndHash,
+  writeToStream,
+  type SerializedError,
+  type SerializedValue,
+  type WriteQueue,
+} from '@wyw-in-js/shared';
 
 import type { Entrypoint } from '../transform/Entrypoint';
 import type { IEvaluatedEntrypoint } from '../transform/EvaluatedEntrypoint';
@@ -22,7 +37,7 @@ import {
 } from '../utils/importOverrides';
 import { getEvalOptions } from '../utils/evalOptions';
 import { getFileIdx } from '../utils/getFileIdx';
-import { stripQueryAndHash } from '../utils/parseRequest';
+import { hashContent } from '../utils/contentHash';
 import {
   createNativeResolverAdapter,
   getCustomResolverAdapter,
@@ -57,14 +72,11 @@ import {
   type ResolveRequestPayload,
   type RunnerToMainMessage,
 } from './protocol';
-import { LruCache } from './lru';
 import {
   PREPARED_MODULE_PUBLICATION,
   prepareModuleOnDemand,
   type PreparedModule,
 } from './prepareModuleOnDemand';
-import { deserializeValue, type SerializedValue } from './serialize';
-import { createWriteQueue, type WriteQueue, writeToStream } from './writeQueue';
 import {
   BrokerLoadMirror,
   createLoadTransmissionTelemetry,
@@ -101,10 +113,8 @@ import {
   EVAL_TIMEOUT_MS,
   HAPPYDOM_INIT_TIMEOUT_MS,
   INIT_TIMEOUT_MS,
-  LOAD_CACHE_SIZE,
   PREPARED_PUBLICATION,
   REQUEST_TIMEOUT_MS,
-  RESOLVE_CACHE_SIZE,
   bindServicesToEpoch,
   buildRunnerInitPayload,
   buildRunnerPath,
@@ -119,14 +129,11 @@ import {
   getTransformCacheSessionToken,
   getWarnedSlowImports,
   getWarnedUnknownImports,
-  hashContent,
-  isBuiltinSpecifier,
   isEvalTimeoutError,
   isVirtualSpecifier,
   isWarningEnabled,
   loadByImportLoaders,
   toResolveCacheEntry,
-  toSerializedError,
   type ActiveEvalRequest,
   type CacheGeneration,
   type CachedDependencyOwner,
@@ -194,7 +201,7 @@ export class EvalBroker {
   private nextId = 0;
 
   private readonly resolveCache = new LruCache<string, ResolveCacheEntry>(
-    RESOLVE_CACHE_SIZE
+    EVAL_RESOLVE_CACHE_SIZE
   );
 
   private readonly resolveInFlight = new Map<
@@ -207,7 +214,7 @@ export class EvalBroker {
   );
 
   private readonly loadCache = new LruCache<string, PreparedCacheEntry>(
-    LOAD_CACHE_SIZE
+    EVAL_LOAD_CACHE_SIZE
   );
 
   private readonly loadInFlight = new Map<
@@ -1612,7 +1619,7 @@ export class EvalBroker {
                 id: message.id,
                 payload: {
                   resolvedId: null,
-                  error: toSerializedError(error),
+                  error: serializeError(error),
                 },
               },
               undefined,
@@ -1647,7 +1654,7 @@ export class EvalBroker {
               message.id,
               {
                 id: message.payload.id,
-                error: toSerializedError(error),
+                error: serializeError(error),
               },
               telemetry
                 ? { details: { mode: 'error' }, token: telemetry }
@@ -2898,13 +2905,9 @@ export class EvalBroker {
   ) {
     const runnerError =
       error instanceof Error ? error : new Error(String(error));
-    const serialized =
-      error instanceof Error
-        ? { message: error.message, stack: error.stack }
-        : { message: String(error) };
 
     if (id) {
-      this.rejectPending(id, serialized);
+      this.rejectPending(id, serializeError(error));
     }
 
     if (runner && this.runner === runner) {
@@ -2988,31 +2991,13 @@ export class EvalBroker {
     return true;
   }
 
-  private rejectPending(
-    id: string,
-    error: {
-      message: string;
-      stack?: string;
-      cause?: { message: string; stack?: string };
-    }
-  ) {
+  private rejectPending(id: string, error: SerializedError) {
     const pending = this.pending.get(id);
     if (!pending) return;
     clearTimeout(pending.timeout);
     this.pending.delete(id);
     this.clearActiveEvalRequest(id);
-    const cause = error.cause
-      ? Object.assign(new Error(error.cause.message), {
-          stack: error.cause.stack,
-        })
-      : undefined;
-    const err = cause
-      ? new Error(error.message, { cause })
-      : new Error(error.message);
-    if (error.stack) {
-      err.stack = error.stack;
-    }
-    pending.reject(err);
+    pending.reject(deserializeError(error));
   }
 
   private rejectAllPending(error: Error) {

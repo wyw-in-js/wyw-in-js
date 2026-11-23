@@ -1,3 +1,5 @@
+import { deserializeValue, type SerializedValue } from '@wyw-in-js/shared';
+
 import type { Entrypoint } from '../transform/Entrypoint';
 import type { IEvaluatedEntrypoint } from '../transform/EvaluatedEntrypoint';
 import { mergeOnly } from '../transform/Entrypoint.helpers';
@@ -5,7 +7,6 @@ import { AbortError } from '../transform/actions/AbortError';
 
 import { collectKnownExportNames, isEvalOnlyKey } from './brokerCache';
 import type { EntrypointPublication, EpochServices } from './brokerSession';
-import { deserializeValue, type SerializedValue } from './serialize';
 
 type PublishModuleExportsOptions = {
   assertCurrent: () => void;

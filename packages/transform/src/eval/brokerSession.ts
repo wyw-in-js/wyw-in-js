@@ -1,15 +1,18 @@
-import { createHash } from 'crypto';
 import fs from 'fs';
-import NativeModule from 'module';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import type { ChildProcessWithoutNullStreams } from 'child_process';
 
-import type {
-  EvalWarning,
-  FeatureFlags,
-  ImportLoaderContext,
-  ImportLoaders,
+import {
+  encodeGlobals,
+  parseRequest,
+  stripQueryAndHash,
+  type EvalWarning,
+  type FeatureFlags,
+  type ImportLoaderContext,
+  type ImportLoaders,
+  type SerializedValue,
+  type WriteQueue,
 } from '@wyw-in-js/shared';
 
 import { TransformCacheCollection, type TransformCacheEpoch } from '../cache';
@@ -26,33 +29,14 @@ import {
 } from '../resolve/resolvePolicy';
 import { EventEmitter } from '../utils/EventEmitter';
 import { DEFAULT_EVAL_OPTIONS, getEvalOptions } from '../utils/evalOptions';
-import { parseRequest, stripQueryAndHash } from '../utils/parseRequest';
 import { getEvalRunnerConditions } from '../utils/nativeResolver';
 
 import type { DebugEvalValueStatus } from './debugEval';
 import type { EvalRunnerInitPayload } from './protocol';
-import { encodeGlobals, type SerializedValue } from './serialize';
 import type { PreparedModule } from './prepareModuleOnDemand';
-import type { WriteQueue } from './writeQueue';
-
-const DefaultModuleImplementation = NativeModule as typeof NativeModule & {
-  builtinModules?: string[];
-};
-
-export const isBuiltinSpecifier = (specifier: string) => {
-  const normalized = specifier.startsWith('node:')
-    ? specifier.slice(5)
-    : specifier;
-  return (
-    DefaultModuleImplementation.builtinModules?.includes(normalized) ||
-    DefaultModuleImplementation.builtinModules?.includes(`node:${normalized}`)
-  );
-};
 
 export const isVirtualSpecifier = isVirtualModuleId;
 
-export const RESOLVE_CACHE_SIZE = 5000;
-export const LOAD_CACHE_SIZE = 1000;
 export const REQUEST_TIMEOUT_MS = 30_000;
 export const EVAL_TIMEOUT_MS = Number(
   process.env.WYW_EVAL_TIMEOUT_MS ?? 300_000
@@ -431,9 +415,6 @@ export const loadByImportLoaders = (
   return { handled: false, value: undefined };
 };
 
-export const hashContent = (content: string): string =>
-  createHash('sha256').update(content).digest('hex');
-
 // A scoped broker must distinguish transform-cache lifecycles without keeping
 // the latest cache (and its Entrypoint -> Services -> LoaderContext graph)
 // alive. WeakMap values do not retain their keys when the token has no back
@@ -462,15 +443,6 @@ export const formatLoaderResult = (code: string, loader?: string | null) => {
     return `export default ${JSON.stringify(code)};`;
   }
   return code;
-};
-
-export const toSerializedError = (error: unknown) => {
-  const err = error instanceof Error ? error : new Error(String(error));
-  return {
-    message: err.message,
-    name: err.name,
-    stack: err.stack,
-  };
 };
 
 export const createDetachedServices = (

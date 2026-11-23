@@ -3,10 +3,10 @@ import { EventEmitter } from 'events';
 import path from 'path';
 import { pathToFileURL } from 'url';
 
-import { createWriteQueue, writeToStream } from '../eval/writeQueue';
+import { createWriteQueue, writeToStream } from '@wyw-in-js/shared';
 
 const writeQueueUrl = pathToFileURL(
-  path.join(__dirname, '..', 'eval', 'writeQueue.ts')
+  path.join(__dirname, '../../../shared/src/eval/writeQueue.ts')
 ).href;
 
 // Under bun a write to the stdin of a killed child does not fail, so the

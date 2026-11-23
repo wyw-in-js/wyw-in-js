@@ -3,9 +3,9 @@ import type {
   EvalWarning,
   FeatureFlags,
   ImportOverrides,
+  SerializedError,
+  SerializedValue,
 } from '@wyw-in-js/shared';
-
-import type { SerializedError, SerializedValue } from './serialize';
 
 /**
  * Export conditions for the runner's own resolution, expanded per edge kind

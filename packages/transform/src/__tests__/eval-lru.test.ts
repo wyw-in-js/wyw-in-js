@@ -1,4 +1,4 @@
-import { LruCache } from '../eval/lru';
+import { LruCache } from '@wyw-in-js/shared';
 
 describe('eval LruCache', () => {
   it('reports the exact capacity eviction without changing LRU order', () => {
