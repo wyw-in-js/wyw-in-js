@@ -19,6 +19,10 @@ type QueueWritable = {
  * @internal Shared by the eval broker and the eval runner.
  */
 export type WriteQueue = {
+  /**
+   * Settles once no write is pending, writes queued while waiting included.
+   * Rejects with the error of a failed write.
+   */
   onIdle(): Promise<void>;
   write(chunk: string): Promise<void>;
 };
@@ -124,10 +128,13 @@ export const createWriteQueue = (
   let failed: Error | null = null;
   let tail = Promise.resolve();
 
+  const onIdle = (): Promise<void> => {
+    const current = tail;
+    return current.then(() => (tail === current ? undefined : onIdle()));
+  };
+
   return {
-    onIdle() {
-      return tail;
-    },
+    onIdle,
     write(chunk: string) {
       if (failed) {
         return Promise.reject(failed);

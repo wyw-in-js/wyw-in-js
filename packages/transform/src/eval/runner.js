@@ -749,17 +749,10 @@ const sendMessage = (message) => {
     .catch(onStdoutWriteFailed);
 };
 
-// Exits once every frame is written, frames queued while waiting included. A
-// failed write exits through onStdoutWriteFailed instead.
+// Exits once every frame is written. A failed write exits through
+// onStdoutWriteFailed instead.
 const shutdown = () => {
-  const idle = stdoutWriteQueue.onIdle();
-  idle.then(() => {
-    if (stdoutWriteQueue.onIdle() === idle) {
-      finishShutdown(0);
-    } else {
-      shutdown();
-    }
-  }, NOOP);
+  stdoutWriteQueue.onIdle().then(() => finishShutdown(0), NOOP);
 };
 
 const sendWarn = (warning) => {

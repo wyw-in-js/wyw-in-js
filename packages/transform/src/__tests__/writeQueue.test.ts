@@ -101,6 +101,32 @@ describe('write queue', () => {
     await Promise.all([second, queue.onIdle()]);
   });
 
+  it('settles onIdle after the writes queued while it waits', async () => {
+    const stream = new MockWritable();
+    const queue = createWriteQueue(stream, 'test stream');
+    const flush = () =>
+      new Promise<void>((resolveFlush) => {
+        setImmediate(resolveFlush);
+      });
+
+    const first = queue.write('first');
+    let idle = false;
+    const waiting = queue.onIdle().then(() => {
+      idle = true;
+    });
+    const second = queue.write('second');
+
+    await flush();
+    stream.completeWrite(0);
+    await flush();
+    expect(stream.writes).toEqual(['first', 'second']);
+    expect(idle).toBe(false);
+
+    stream.completeWrite(1);
+    await Promise.all([first, second, waiting]);
+    expect(idle).toBe(true);
+  });
+
   it('rejects without throwing when the stream emits the error after the write callback', async () => {
     const stream = new MockWritable();
     const error = new Error('write EPIPE');
