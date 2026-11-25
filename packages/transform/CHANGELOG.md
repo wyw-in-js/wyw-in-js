@@ -1,5 +1,23 @@
 # @wyw-in-js/transform
 
+## 2.8.0
+
+### Minor Changes
+
+- 26882ae: Add an experimental host session API for bundler integrations: `createHostSession`, `createHostEngine`, `HostSessionClosedError` and their types. An integration opens one session per compiler or plugin instance. The session loads and normalizes the options once and keeps one evaluation cache key, one cache and one eval runner for all of its calls, so integrations no longer pass stable keys with each call. Each call returns a normalized output: code, CSS, resolved dependencies and warnings. `invalidate(files)` picks up edits of the config file and of `wyw-in-js.tags` in a `package.json` without a restart, and `close()` disposes the eval runner. `createHostEngine({ workers })` runs sessions in the worker pool, and keeps a session on the calling thread when a worker cannot take what it needs (functions in the options, a loader, an event emitter). The API is marked `@experimental`: it is meant for wyw-in-js integrations and may change in a minor release.
+
+  The `asyncResolveKey` and `evalBrokerScope` options of `transform()` are now marked `@deprecated` in favour of the host session. They keep working and print no warning.
+
+### Patch Changes
+
+- f998875: The eval broker, the eval runner and the Babel preset now share one codec for the values, errors and `eval.globals` that cross the eval protocol, instead of keeping a copy each. An error thrown while a module is evaluated now reaches the build with its original `name` and its whole chain of `cause` errors, where it used to lose its name and the causes created by the evaluated code; the same holds for error values exported by evaluated modules. The Babel preset reports an invalid `eval.globals` value with the same messages as `@wyw-in-js/transform`. The codec is exported from `@wyw-in-js/shared` for wyw-in-js packages only and is not a public API.
+- 6b86a7e: Update `happy-dom` to `^21.0.4`, which fixes GHSA-c8p4-j97h-3vg8 and GHSA-834v-8h66-3h79. With `happy-dom` 21, code evaluated at build time no longer loads external stylesheets or iframe pages: `<link rel="stylesheet">` and `<iframe>` elements it creates fire an `error` event instead of sending a request.
+- fc7ba89: Stop keeping every earlier version of an edited module in memory. A dev server that edits a file imported by styled modules used to grow by the size of its code and syntax tree on every edit, with or without a shared `TransformCacheCollection`, until the process ran out of memory. The parse cache now keeps at most 16 versions of each file, the static resolution caches of a cache collection keep one version per file, and `invalidateForFile` also clears the static resolution entries of that file.
+- f02fdc9: The eval runner starts faster: it no longer loads `debug` and `find-up` at startup. Functions passed in `eval.globals` or returned by `overrideContext` are restored in the eval runner with access to the Node.js modules `fs`, `path`, `vm`, `NativeModule`, `createRequire`, `pathToFileURL`, `Console` and `Writable`, and no longer see the runner's internal variables. A line on the runner's stdout that is valid JSON but not a protocol message is now reported as a warning and skipped.
+- Updated dependencies
+  - @wyw-in-js/processor-utils@2.8.0
+  - @wyw-in-js/shared@2.8.0
+
 ## 2.7.2
 
 ### Patch Changes
