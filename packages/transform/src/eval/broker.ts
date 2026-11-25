@@ -63,6 +63,8 @@ import {
 } from '../telemetry/observer';
 
 import {
+  parseRunnerMessage,
+  type EvalRequest,
   type EvalRunnerInitPayload,
   type EvalResultPayload,
   type DebugEvalFileValues,
@@ -70,7 +72,9 @@ import {
   type LoadResultPayload,
   type MainToRunnerMessage,
   type ResolveRequestPayload,
+  type RunnerRequestArgs,
   type RunnerToMainMessage,
+  type RunnerWarning,
 } from './protocol';
 import {
   PREPARED_MODULE_PUBLICATION,
@@ -643,7 +647,7 @@ export class EvalBroker {
       this.semanticSessionCacheToken = nextSemanticSessionCacheToken;
       this.semanticSessionCacheGeneration = cacheGeneration;
 
-      const payload = await this.request<EvalResultPayload>(
+      const payload = await this.request(
         'EVAL',
         { id: entrypoint.name },
         EVAL_TIMEOUT_MS
@@ -1218,10 +1222,8 @@ export class EvalBroker {
         lines.forEach((line) => {
           if (!line.trim()) return;
 
-          let message: RunnerToMainMessage;
-          try {
-            message = JSON.parse(line);
-          } catch {
+          const message = parseRunnerMessage(line);
+          if (!message) {
             emitWarning(
               this.currentServices,
               `[wyw-eval-runner] Failed to parse message: ${line}`
@@ -1523,10 +1525,8 @@ export class EvalBroker {
     this.runnerOutputBuffer = lines.pop() ?? '';
     lines.forEach((line) => {
       if (!line.trim()) return;
-      let message: RunnerToMainMessage;
-      try {
-        message = JSON.parse(line);
-      } catch (error /* eslint-disable-line @typescript-eslint/no-unused-vars */) {
+      const message = parseRunnerMessage(line);
+      if (!message) {
         emitWarning(
           this.currentServices,
           `[wyw-eval-runner] Failed to parse message: ${line}`
@@ -1575,9 +1575,7 @@ export class EvalBroker {
         // import). Mirror those evictions here — otherwise loadMirror
         // would keep claiming the runner has them and handleLoad would ship
         // empty `code` on the next session, leaving the runner stuck.
-        const evictedIds = (
-          message.payload as { evictedIds?: readonly string[] } | null
-        )?.evictedIds;
+        const { evictedIds } = message.payload;
         if (evictedIds && evictedIds.length > 0) {
           this.activeEvalTelemetry?.recordRunnerSignal({
             ids: evictedIds,
@@ -1797,11 +1795,12 @@ export class EvalBroker {
     }
   }
 
-  private handleWarn(warning: EvalWarning) {
+  private handleWarn(warning: RunnerWarning) {
     if (warning.importer && warning.specifier) {
       this.trackRuntimeDependency(warning.importer, warning.specifier);
     }
-    emitEvalWarning(this.currentServices, warning);
+    // The public EvalWarning of the 2.x line does not list every runner code.
+    emitEvalWarning(this.currentServices, warning as EvalWarning);
   }
 
   private async handleResolve(
@@ -2914,25 +2913,31 @@ export class EvalBroker {
     }
   }
 
-  private request<TPayload>(
-    type: MainToRunnerMessage['type'],
-    payload: unknown,
-    timeoutMs: number = REQUEST_TIMEOUT_MS
-  ): Promise<TPayload> {
+  private request(
+    type: 'INIT',
+    payload: EvalRunnerInitPayload,
+    timeoutMs?: number
+  ): Promise<unknown>;
+
+  private request(
+    type: 'EVAL',
+    payload: EvalRequest,
+    timeoutMs?: number
+  ): Promise<EvalResultPayload>;
+
+  private request(...args: RunnerRequestArgs): Promise<unknown> {
+    const [type, payload, timeoutMs = REQUEST_TIMEOUT_MS] = args;
     this.nextId += 1;
     const id = `${this.nextId}`;
-    const message: MainToRunnerMessage = {
-      type: type as MainToRunnerMessage['type'],
-      id,
-      payload: payload as never,
-    } as MainToRunnerMessage;
+    const message: MainToRunnerMessage =
+      type === 'INIT' ? { type, id, payload } : { type, id, payload };
     const requestRunner = this.runner;
     const requestContext = requestRunner
       ? this.captureRequestContext(requestRunner, this.activeRunnerSessionId) ??
         undefined
       : undefined;
 
-    return new Promise<TPayload>((resolve, reject) => {
+    return new Promise<unknown>((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pending.delete(id);
         this.clearActiveEvalRequest(id);
@@ -2946,11 +2951,7 @@ export class EvalBroker {
         reject(error);
       }, timeoutMs);
 
-      this.pending.set(id, {
-        resolve: resolve as PendingRequest['resolve'],
-        reject,
-        timeout,
-      });
+      this.pending.set(id, { resolve, reject, timeout });
       if (type === 'EVAL' && requestContext) {
         this.activeEvalRequest = { context: requestContext, id };
       }
