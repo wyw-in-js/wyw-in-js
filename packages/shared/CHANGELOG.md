@@ -1,5 +1,16 @@
 # @wyw-in-js/shared
 
+## 2.8.0
+
+### Minor Changes
+
+- Bump versions
+
+### Patch Changes
+
+- f998875: The eval broker, the eval runner and the Babel preset now share one codec for the values, errors and `eval.globals` that cross the eval protocol, instead of keeping a copy each. An error thrown while a module is evaluated now reaches the build with its original `name` and its whole chain of `cause` errors, where it used to lose its name and the causes created by the evaluated code; the same holds for error values exported by evaluated modules. The Babel preset reports an invalid `eval.globals` value with the same messages as `@wyw-in-js/transform`. The codec is exported from `@wyw-in-js/shared` for wyw-in-js packages only and is not a public API.
+- f02fdc9: The eval runner starts faster: it no longer loads `debug` and `find-up` at startup. Functions passed in `eval.globals` or returned by `overrideContext` are restored in the eval runner with access to the Node.js modules `fs`, `path`, `vm`, `NativeModule`, `createRequire`, `pathToFileURL`, `Console` and `Writable`, and no longer see the runner's internal variables. A line on the runner's stdout that is valid JSON but not a protocol message is now reported as a warning and skipped.
+
 ## 2.7.2
 
 ### Patch Changes

@@ -1,6 +1,6 @@
 {
   "name": "@wyw-in-js/turbopack-loader",
-  "version": "2.7.2",
+  "version": "2.8.0",
   "type": "module",
   "dependencies": {
     "@wyw-in-js/shared": "workspace:*",
