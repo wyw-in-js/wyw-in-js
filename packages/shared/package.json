@@ -22,6 +22,10 @@
     ".": {
       "types": "./types/index.d.ts",
       "default": "./esm/index.js"
+    },
+    "./eval": {
+      "types": "./types/eval/index.d.ts",
+      "default": "./esm/eval/index.js"
     }
   },
   "files": [
