@@ -227,7 +227,7 @@ export const getSlowImportThresholdMs = () => {
 };
 
 export const buildRunnerPath = (): string => {
-  const url = new URL('./runner.js', import.meta.url);
+  const url = new URL('./runnerMain.js', import.meta.url);
   return fileURLToPath(url);
 };
 

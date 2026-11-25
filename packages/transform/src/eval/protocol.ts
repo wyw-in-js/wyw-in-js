@@ -1,6 +1,8 @@
+import { isPlainObject } from '@wyw-in-js/shared';
 import type {
   EvalResolverKind,
   EvalWarning,
+  EvalWarningCode,
   FeatureFlags,
   ImportOverrides,
   SerializedError,
@@ -43,6 +45,8 @@ export type EvalResultPayload = {
   values: Record<string, SerializedValue> | null;
   modules?: Record<string, Record<string, SerializedValue>>;
   debugEvalFiles?: Record<string, DebugEvalFileValues>;
+  /** Ids the runner dropped from its caches during this evaluation. */
+  evictedIds?: string[];
 };
 
 export type DebugEvalFileValue =
@@ -149,9 +153,19 @@ export type LoadResultMessage = {
   payload: LoadResultPayload;
 };
 
+/**
+ * Warning codes the runner sends: the public `EvalWarningCode` and the codes
+ * the public type of the 2.x line does not list.
+ */
+export type RunnerWarningCode = EvalWarningCode | 'eval-stale-module';
+
+export type RunnerWarning = Omit<EvalWarning, 'code'> & {
+  code: RunnerWarningCode;
+};
+
 export type WarnMessage = {
   type: 'WARN';
-  payload: EvalWarning;
+  payload: RunnerWarning;
 };
 
 export type RunnerToMainMessage =
@@ -166,3 +180,62 @@ export type MainToRunnerMessage =
   | EvalMessage
   | ResolveResultMessage
   | LoadResultMessage;
+
+/** The arguments of a request from the broker to the runner. */
+export type RunnerRequestArgs =
+  | [type: 'INIT', payload: EvalRunnerInitPayload, timeoutMs?: number]
+  | [type: 'EVAL', payload: EvalRequest, timeoutMs?: number];
+
+const RUNNER_MESSAGE_TYPES = new Set([
+  'INIT_ACK',
+  'EVAL_RESULT',
+  'RESOLVE',
+  'LOAD',
+  'WARN',
+]);
+
+const isStringArray = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((item) => typeof item === 'string');
+
+/**
+ * Parses one line that the runner wrote to stdout and checks the envelope of
+ * the message: its type, its id and its payload. Returns `null` for a line
+ * that is not JSON or not a message of the protocol.
+ */
+export const parseRunnerMessage = (
+  line: string
+): RunnerToMainMessage | null => {
+  let message: unknown;
+  try {
+    message = JSON.parse(line);
+  } catch {
+    return null;
+  }
+
+  if (!isPlainObject(message) || typeof message.type !== 'string') {
+    return null;
+  }
+
+  const { type, id, payload } = message;
+  if (!RUNNER_MESSAGE_TYPES.has(type)) return null;
+  if (type !== 'WARN' && typeof id !== 'string') return null;
+  if (type === 'INIT_ACK') return message as RunnerToMainMessage;
+  if (!isPlainObject(payload)) return null;
+
+  if (
+    type === 'WARN' &&
+    (typeof payload.code !== 'string' || typeof payload.message !== 'string')
+  ) {
+    return null;
+  }
+
+  if (
+    type === 'EVAL_RESULT' &&
+    payload.evictedIds !== undefined &&
+    !isStringArray(payload.evictedIds)
+  ) {
+    return null;
+  }
+
+  return message as RunnerToMainMessage;
+};

@@ -98,6 +98,7 @@ module.exports = {
   - WyW invalidates eval cache/re-init state when the serialized `eval.globals` payload changes (not just keys, but values too).
   - Runtime mutations inside evaluated modules are not persisted as source of truth; the next run starts from `eval.globals` in config.
   - Supported value shapes are JSON-like primitives/arrays/plain objects plus functions and symbols; non-plain objects (for example `Date`, `Map`, `Set`, class instances) are rejected to avoid silent prototype/state loss.
+  - Functions are restored from their source text, so they do not keep variables they closed over in your config. In the eval runner, a restored function can use the global names of the runner process and the Node.js modules `fs`, `path`, `vm`, `NativeModule` (`node:module`), `createRequire`, `pathToFileURL`, `Console` and `Writable`.
 
   Keep `eval.globals` deterministic when possible (avoid `Date.now()`/`Math.random()` style values if you want stable cache behavior).
 

@@ -23,7 +23,7 @@ export const createHarness = (
   cwd: string,
   { nodeArgs = [] }: { nodeArgs?: string[] } = {}
 ) => {
-  const runnerPath = join(__dirname, '..', '..', 'eval', 'runner.js');
+  const runnerPath = join(__dirname, '..', '..', 'eval', 'runnerMain.js');
   const nodeBinary = process.execPath.includes('bun')
     ? 'node'
     : process.execPath;
